@@ -1,0 +1,17 @@
+.ace-tool/
+.aionrs/
+3d-render-agent/.env
+3d-render-agent/config.json
+3d-render-agent/outputs/
+node_modules/
+dist/
+build/
+coverage/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.log
+.playwright-cli/
+test-results/
+output/
