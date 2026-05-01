@@ -2,6 +2,15 @@
 
 PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图项目。项目核心是 `3d-render-agent`：它可以读取设计需求、平面图和参考图，自动生成提示词，调用图像模型生成效果图，再用视觉模型对结果进行评估，并根据反馈继续迭代优化。
 
+当前版本已经完成一轮前后端分离与 UI 重构：后端保留 Gradio 本地工作台，同时新增分层 FastAPI 服务；前端 React 原型可以通过 API 与后端联动，便于后续做产品化交互和实际测试。
+
+## 当前状态
+
+- Gradio 应用：适合本地快速调试、直接上传文件、查看运行日志和生成结果。
+- FastAPI 服务：提供 `/api` 接口，供前端或其他系统调用。
+- React 前端原型：位于 `3d-render-agent/ui-prototype`，已经接入后端生成接口和 API 配置验证接口。
+- 测试覆盖：包含核心 pipeline 策略、模型适配器、评估逻辑和后端 API 基础测试。
+
 ## 主要功能
 
 - 常规生图：根据自然语言需求或手动提示词生成室内效果图。
@@ -14,6 +23,7 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
 - Web 操作界面：内置 Gradio 界面，支持上传、预览、复制当前大图、查看提示词和评估报告。
 - HTTP API：提供 FastAPI 服务，便于前端或其他系统调用。
 - React 原型：`ui-prototype` 提供一个 Vite + React 的产品界面原型，通过 `/api/generate` 调用后端。
+- 前端 API 配置验证：React 原型可调用 `/api/config/verify-analysis` 和 `/api/config/verify-image` 检查模型配置。
 
 ## 项目结构
 
@@ -23,7 +33,15 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
 ├── start_3d_render_agent.bat
 └── 3d-render-agent/
     ├── main.py                  # Gradio 主界面与运行入口
-    ├── api_server.py            # FastAPI 接口服务
+    ├── app_runtime.py           # Gradio/FastAPI 共用的运行时、配置覆盖、API 验证和 pipeline 调用
+    ├── api_server.py            # FastAPI 兼容启动入口
+    ├── backend/                 # 分层 FastAPI 应用
+    │   └── app/
+    │       ├── main.py          # create_app 与路由装配
+    │       ├── settings.py      # 服务端口、host、CORS 配置
+    │       ├── routes/          # health/config/generate 路由
+    │       ├── services/        # 生成服务、上传文件处理
+    │       └── schemas/         # API 表单/领域数据结构
     ├── pipeline.py              # 生图、评估、迭代与模型切换流程
     ├── config.py                # 配置加载、API 格式与能力判断
     ├── config.example.json      # 配置样例
@@ -33,8 +51,14 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
     ├── agents/                  # 平面图分析、提示词生成、评估、路由策略
     ├── models/                  # Pydantic 数据结构
     ├── benchmarks/              # 基准样例
-    ├── tests/                   # pytest 测试
+    ├── tests/                   # pytest 测试，含后端 API 测试
     └── ui-prototype/            # React + Vite 前端原型
+        └── src/
+            ├── api/             # 前端 API client、生成接口、配置验证接口
+            ├── components/      # UI 组件
+            ├── data/            # 静态文案和演示数据
+            ├── types/           # 前端领域类型
+            └── utils/           # 文案和数据处理工具
 ```
 
 ## 快速启动
@@ -71,6 +95,9 @@ macOS / Linux 可将激活命令替换为：
 
 ```bash
 source .venv/bin/activate
+cp config.example.json config.json
+cp .env.example .env
+python main.py
 ```
 
 ## 配置 API Key
@@ -81,6 +108,13 @@ source .venv/bin/activate
 cd 3d-render-agent
 copy config.example.json config.json
 copy .env.example .env
+```
+
+macOS / Linux：
+
+```bash
+cp config.example.json config.json
+cp .env.example .env
 ```
 
 然后编辑 `.env`：
@@ -142,6 +176,14 @@ python api_server.py
 http://127.0.0.1:8787
 ```
 
+可通过环境变量调整 host、端口和 CORS：
+
+```bash
+APP_HOST=0.0.0.0 APP_PORT=8787 APP_CORS_ORIGINS=http://127.0.0.1:5174 python api_server.py
+```
+
+兼容旧变量名：`API_HOST`、`API_PORT`。
+
 可用接口：
 
 - `GET /api/health`：健康检查。
@@ -149,9 +191,19 @@ http://127.0.0.1:8787
 - `POST /api/config/verify-image`：验证画图模型。
 - `POST /api/generate`：提交需求、平面图和参考图并生成结果。
 
+`/api/generate` 使用 `multipart/form-data`，常用字段包括：
+
+- `mode`：`normal` 或 `render3d`。
+- `requirement`：设计需求文本。
+- `manual_prompt`：手动提示词，可选。
+- `max_iterations`：最大迭代次数。
+- `floor_plans`：平面图文件，可多选。
+- `reference_image`：参考图文件，可选。
+- `analysis_*` / `img_*`：前端临时覆盖的模型配置，可选。
+
 ### React 前端原型
 
-React 原型位于 `3d-render-agent/ui-prototype`，通过 Vite 代理把 `/api` 请求转发到 `http://127.0.0.1:8787`。
+React 原型位于 `3d-render-agent/ui-prototype`。
 
 先启动后端：
 
@@ -174,6 +226,20 @@ npm run dev
 http://127.0.0.1:5174/
 ```
 
+前端 API 配置方式：
+
+- `VITE_API_TARGET`：Vite 开发代理目标，默认 `http://127.0.0.1:8787`。
+- `VITE_API_BASE_URL`：前端直接请求的 API Base URL。为空时使用同源 `/api`，适合走 Vite 代理；部署到静态站点时可设为后端完整地址。
+- `VITE_PORT`：前端开发服务端口。
+
+示例：
+
+```bash
+VITE_API_TARGET=http://127.0.0.1:8787 npm run dev
+# 或部署/预览时直接指定 API Base URL
+VITE_API_BASE_URL=http://127.0.0.1:8787 npm run build
+```
+
 ## 生成流程
 
 ```text
@@ -192,7 +258,7 @@ http://127.0.0.1:5174/
 输出最优图片、提示词、评分、报告和运行记录
 ```
 
-## 测试
+## 测试与验证
 
 运行 Python 测试：
 
@@ -201,12 +267,50 @@ cd 3d-render-agent
 pytest
 ```
 
-运行前端构建检查：
+运行 Python 编译检查：
+
+```bash
+cd 3d-render-agent
+python -m py_compile api_server.py app_runtime.py main.py backend/app/main.py backend/app/routes/*.py backend/app/services/*.py backend/app/schemas/*.py
+```
+
+运行前端依赖审计和构建检查：
 
 ```bash
 cd 3d-render-agent/ui-prototype
+npm install
+npm audit --audit-level=moderate
 npm run build
 ```
+
+本轮重构验证结果：
+
+- `python -m pytest -q`：20 passed。
+- `npm audit --audit-level=moderate`：0 vulnerabilities。
+- `npm run build`：通过。
+- FastAPI smoke：`GET /api/health` 返回 200。
+- Gradio smoke：首页返回 200。
+
+## 已完成的重构重点
+
+- 后端从单文件 API 入口拆分为 `backend.app` 分层结构。
+- `api_server.py` 保留为兼容启动入口，实际委托 `backend.app.main.app`。
+- `app_runtime.py` 统一承载 Gradio 与 FastAPI 共用的运行时逻辑，降低重复代码。
+- FastAPI 路由拆分为 health、config、generate。
+- 上传文件处理和生成服务拆入 services。
+- 新增后端 API 测试，覆盖健康检查、非法生成模式、配置验证错误路径。
+- 前端拆出 API client、领域类型、静态数据、工具函数和基础组件。
+- React 原型支持生成请求、API Base URL 配置、模型配置验证和状态提示。
+- Vite dev/preview 支持 `0.0.0.0`、`allowedHosts` 和可配置代理目标。
+
+## 后续计划
+
+- 继续拆分 React 页面中的中大型区域组件，例如 `ChatWorkspace`、`RenderControlPanel`、`ModelConfigPanel`、`QualityReviewPanel`。
+- 增强前端实际运行态：生成进度、错误恢复、结果图库、历史记录和下载/导出。
+- 为 `/api/generate` 增加更多 mock pipeline 测试，覆盖成功返回、上传文件、多图输入和模型配置覆盖。
+- 增加前后端联调测试或端到端 smoke 测试。
+- 进一步规范 API 响应结构，便于前端统一展示错误、日志、图片和评估结果。
+- 根据实际模型测试结果优化提示词模板、质量阈值和失败切换策略。
 
 ## 注意事项
 

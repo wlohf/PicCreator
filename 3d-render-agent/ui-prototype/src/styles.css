@@ -1507,3 +1507,115 @@ p {
     justify-self: start;
   }
 }
+
+.config-toggle {
+  width: 100%;
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 0;
+  color: var(--soft);
+  background: transparent;
+  cursor: pointer;
+}
+
+.config-toggle span {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.config-toggle .is-open {
+  transform: rotate(180deg);
+}
+
+.config-hint {
+  margin: 4px 0 12px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.api-config-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.api-config-grid label {
+  display: grid;
+  gap: 5px;
+}
+
+.api-config-grid label > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.api-config-grid input,
+.api-config-grid select,
+.api-config-grid textarea {
+  width: 100%;
+  min-height: 34px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--soft);
+  background: rgba(255, 255, 255, 0.045);
+  outline: 0;
+}
+
+.api-config-grid textarea {
+  resize: vertical;
+}
+
+.api-config-grid input:focus,
+.api-config-grid select:focus,
+.api-config-grid textarea:focus {
+  border-color: rgba(98, 215, 196, 0.55);
+  box-shadow: 0 0 0 2px rgba(98, 215, 196, 0.12);
+}
+
+.config-action-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.config-action-row button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--soft);
+  background: rgba(255, 255, 255, 0.05);
+  cursor: pointer;
+}
+
+.config-action-row button:hover {
+  border-color: rgba(98, 215, 196, 0.35);
+  background: rgba(98, 215, 196, 0.08);
+}
+
+.config-status {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.config-status--good {
+  color: var(--sage);
+  background: rgba(155, 182, 138, 0.08);
+}
+
+.config-status--warn {
+  color: var(--amber);
+  background: rgba(217, 167, 78, 0.08);
+}

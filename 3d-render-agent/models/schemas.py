@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from typing import Optional, List
 from enum import Enum
 
@@ -187,8 +187,7 @@ class PromptSet(BaseModel):
     def requires_image_inputs(self) -> bool:
         return bool(self.floor_plan or self.reference_image)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class NormalizedImage(BaseModel):
@@ -197,8 +196,7 @@ class NormalizedImage(BaseModel):
     generation_params: dict = Field(default_factory=dict)
     iteration: int = 0
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class DimensionScore(BaseModel):
@@ -269,8 +267,7 @@ class PipelineResult(BaseModel):
     iteration_image_paths: List[str] = Field(default_factory=list)
     run_record_path: str = ""
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
 
 class ValidationArtifactRecord(BaseModel):
