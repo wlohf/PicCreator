@@ -8,6 +8,7 @@ import {
   Clock3,
   Download,
   Eye,
+  FileText,
   ImagePlus,
   Maximize2,
   PanelRight,
@@ -26,6 +27,7 @@ import { ConfigStatus, type ConfigStatusState } from "./components/ConfigStatus"
 import { MousePointerIcon } from "./components/MousePointerIcon";
 import { ParameterSlider } from "./components/ParameterSlider";
 import { ProjectBriefPanel } from "./components/ProjectBriefPanel";
+import { ResultLibrary } from "./components/ResultLibrary";
 import { StatusBadge } from "./components/StatusBadge";
 import { TimelinePanel } from "./components/TimelinePanel";
 import {
@@ -40,7 +42,7 @@ import {
   styleTokens,
   tools
 } from "./data/studioData";
-import type { ApiConfig, ChatMessage, Locale, Metric, ParameterKey, ToolKey } from "./types/domain";
+import type { ApiConfig, ChatMessage, Locale, Metric, ParameterKey, RenderHistoryItem, ToolKey } from "./types/domain";
 import { compactLines, localized } from "./utils/text";
 
 function App() {
@@ -64,11 +66,18 @@ function App() {
   const [showApiConfig, setShowApiConfig] = useState(false);
   const [apiConfig, setApiConfig] = useState<ApiConfig>(defaultApiConfig);
   const [configStatus, setConfigStatus] = useState<ConfigStatusState | null>(null);
+  const [renderHistory, setRenderHistory] = useState<RenderHistoryItem[]>([]);
+  const [activeResultId, setActiveResultId] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
 
   const t = copy[locale];
   const selectedVersion = useMemo(
     () => renderVersions.find((version) => version.id === selectedVersionId) ?? renderVersions[0],
     [selectedVersionId]
+  );
+  const activeResult = useMemo(
+    () => renderHistory.find((item) => item.id === activeResultId) ?? renderHistory[0] ?? null,
+    [activeResultId, renderHistory]
   );
   const activeToolLabel = tools.find((tool) => tool.key === activeTool)?.label[locale] ?? "";
   const qualityMetrics: Metric[] = [
@@ -100,6 +109,59 @@ function App() {
 
   function updateParameter(key: ParameterKey, value: number) {
     setParameters((current) => ({ ...current, [key]: value }));
+  }
+
+  function showToast(message: string) {
+    setToast(message);
+    window.setTimeout(() => setToast((current) => (current === message ? null : current)), 2600);
+  }
+
+  function downloadDataUrl(dataUrl: string, filename: string) {
+    const link = document.createElement("a");
+    link.href = dataUrl;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  function handleDownloadResult(item?: RenderHistoryItem | null) {
+    if (!item?.imageUrl) {
+      showToast(locale === "zh" ? "暂无可下载的图片" : "No image to download yet");
+      return;
+    }
+    const safeName = (item.imageLabel || item.title || "render-result").replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "");
+    downloadDataUrl(item.imageUrl, `${safeName || "render-result"}.png`);
+  }
+
+  function handleOpenResult(item?: RenderHistoryItem | null) {
+    if (!item?.imageUrl) {
+      showToast(locale === "zh" ? "暂无可预览的图片" : "No image to preview yet");
+      return;
+    }
+    window.open(item.imageUrl, "_blank", "noopener,noreferrer");
+  }
+
+  async function handleCopyRunSummary(item?: RenderHistoryItem | null) {
+    if (!item) {
+      showToast(locale === "zh" ? "暂无生成摘要" : "No run summary yet");
+      return;
+    }
+    const summary = [
+      `# ${item.title}`,
+      item.status ? `Status: ${item.status}` : "",
+      item.prompt ? `Prompt:\n${item.prompt}` : "",
+      item.evaluation ? `Evaluation:\n${item.evaluation}` : "",
+      item.logs ? `Logs:\n${item.logs}` : ""
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+    try {
+      await navigator.clipboard.writeText(summary);
+      showToast(locale === "zh" ? "已复制本次生成摘要" : "Run summary copied");
+    } catch {
+      showToast(locale === "zh" ? "复制失败，请手动复制" : "Copy failed");
+    }
   }
 
   async function runConversationFlow(userPrompt?: string) {
@@ -144,6 +206,20 @@ function App() {
       setSelectedVersionId("A.04");
       setActiveStep("04");
       const firstImage = result.images?.[0];
+      const historyItem: RenderHistoryItem = {
+        id: `r-${idBase}`,
+        title: firstImage?.label || (locale === "zh" ? `生成结果 ${new Date().toLocaleTimeString()}` : `Render ${new Date().toLocaleTimeString()}`),
+        status: result.status,
+        imageUrl: firstImage?.data_url,
+        imageLabel: firstImage?.label,
+        prompt: result.prompt,
+        evaluation: result.evaluation,
+        logs: result.logs,
+        createdAt: new Date().toISOString()
+      };
+      setRenderHistory((current) => [historyItem, ...current].slice(0, 8));
+      setActiveResultId(historyItem.id);
+      showToast(locale === "zh" ? "生成完成，已加入结果库" : "Generation completed and added to library");
       const resultMessages: ChatMessage[] = [
         {
           id: `m-api-analysis-${idBase}`,
@@ -242,10 +318,13 @@ function App() {
               EN
             </button>
           </div>
-          <button className="icon-button" aria-label={t.preview}>
+          <button className="icon-button" aria-label={t.preview} onClick={() => handleOpenResult(activeResult)} title={t.preview}>
             <Eye size={18} />
           </button>
-          <button className="icon-button" aria-label={t.export}>
+          <button className="icon-button" aria-label={locale === "zh" ? "复制摘要" : "Copy summary"} onClick={() => handleCopyRunSummary(activeResult)} title={locale === "zh" ? "复制摘要" : "Copy summary"}>
+            <FileText size={18} />
+          </button>
+          <button className="icon-button" aria-label={t.export} onClick={() => handleDownloadResult(activeResult)} title={t.export}>
             <Download size={18} />
           </button>
           <button className="primary-button" onClick={handleGenerate} disabled={isRendering}>
@@ -334,7 +413,19 @@ function App() {
                         <span className="score-pill">{selectedVersion.score}</span>
                       </div>
                       {message.imageUrl ? (
-                        <img className="api-render-image" src={message.imageUrl} alt={message.imageLabel || t.renderPreview} />
+                        <>
+                          <img className="api-render-image" src={message.imageUrl} alt={message.imageLabel || t.renderPreview} />
+                          <div className="render-card-actions">
+                            <button type="button" onClick={() => handleOpenResult({ id: message.id, title: message.imageLabel || t.renderPreview, imageUrl: message.imageUrl, imageLabel: message.imageLabel, createdAt: new Date().toISOString() })}>
+                              <Eye size={14} />
+                              {locale === "zh" ? "打开" : "Open"}
+                            </button>
+                            <button type="button" onClick={() => handleDownloadResult({ id: message.id, title: message.imageLabel || t.renderPreview, imageUrl: message.imageUrl, imageLabel: message.imageLabel, createdAt: new Date().toISOString() })}>
+                              <Download size={14} />
+                              {locale === "zh" ? "下载" : "Download"}
+                            </button>
+                          </div>
+                        </>
                       ) : (
                         <div className="render-viewport render-viewport--chat">
                           <div className="viewport-gridlines" />
@@ -398,6 +489,15 @@ function App() {
             })}
           </div>
 
+          <ResultLibrary
+            locale={locale}
+            items={renderHistory}
+            activeId={activeResultId}
+            onSelect={setActiveResultId}
+            onDownload={handleDownloadResult}
+            onOpen={handleOpenResult}
+          />
+
           <form className="chat-composer" onSubmit={handleComposerSubmit}>
             <div className="composer-head">
               <span>{t.quickBrief}</span>
@@ -441,7 +541,7 @@ function App() {
                   />
                 </label>
               </div>
-              <button className="primary-button composer-submit" type="submit" disabled={isRendering || !chatInput.trim()}>
+              <button className="primary-button composer-submit" type="submit" disabled={isRendering}>
                 <Send size={16} />
                 {isRendering ? t.rendering : t.sendPrompt}
               </button>
@@ -453,6 +553,9 @@ function App() {
                   <em key={`${file.name}-${file.size}`}>{file.name}</em>
                 ))}
                 {referenceFile && <em>{referenceFile.name}</em>}
+                <button type="button" onClick={() => { setFloorPlanFiles([]); setReferenceFile(null); }}>
+                  {locale === "zh" ? "清空" : "Clear"}
+                </button>
               </div>
             )}
           </form>
@@ -714,6 +817,7 @@ function App() {
       </section>
 
       <TimelinePanel locale={locale} copy={t} activeStep={activeStep} onSelectStep={setActiveStep} />
+      {toast && <div className="toast-message" role="status">{toast}</div>}
     </main>
   );
 }

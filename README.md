@@ -24,6 +24,7 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
 - HTTP API：提供 FastAPI 服务，便于前端或其他系统调用。
 - React 原型：`ui-prototype` 提供一个 Vite + React 的产品界面原型，通过 `/api/generate` 调用后端。
 - 前端 API 配置验证：React 原型可调用 `/api/config/verify-analysis` 和 `/api/config/verify-image` 检查模型配置。
+- 结果库体验：React 原型会在当前浏览器会话中保留最近生成结果，支持预览、下载图片和复制运行摘要。
 
 ## 项目结构
 
@@ -240,6 +241,112 @@ VITE_API_TARGET=http://127.0.0.1:8787 npm run dev
 VITE_API_BASE_URL=http://127.0.0.1:8787 npm run build
 ```
 
+## 部署方式建议：EXE 还是 VPS？
+
+当前阶段更建议先用“本地源码运行”或“VPS 部署”测试，不建议立刻打包成 EXE。
+
+### 推荐结论
+
+- 本地测试：直接拉取源码运行，最方便排查 API Key、模型接口、依赖和生成质量问题。
+- 小范围自用/团队测试：部署到 VPS 更合适，可以统一配置模型 Key、统一保存 outputs，并通过浏览器访问。
+- EXE 打包：适合功能稳定之后再做。当前项目包含 Python、Gradio、FastAPI、React、模型配置、上传文件和输出目录，打包成单个 EXE 会增加依赖体积、路径处理、密钥配置和升级维护成本。
+
+### 什么时候选择 EXE？
+
+如果目标用户是完全不懂命令行的 Windows 用户，并且希望双击运行、离线配置、单机使用，可以后续用 PyInstaller/Nuitka 做 EXE 包。但建议等下面这些能力稳定后再做：
+
+- 配置向导和 API Key 本地加密保存。
+- 输出目录、日志目录和缓存目录可配置。
+- 前后端静态资源打包流程稳定。
+- 模型接口和错误提示已充分测试。
+
+### 什么时候选择 VPS？
+
+如果你希望自己或团队用浏览器访问，建议 VPS 部署：
+
+- 后端统一运行 FastAPI 或 Gradio。
+- 前端 React 构建后通过 Nginx/Caddy 托管。
+- API Key 放在 VPS 的 `.env` 和 `config.json`，不需要每台电脑重复配置。
+- 后续可以更容易增加登录、任务队列、历史记录和对象存储。
+
+## 本地拉取测试
+
+如果你要测试当前 PR 分支：
+
+```bash
+git clone https://github.com/wlohf/PicCreator.git
+cd PicCreator
+git fetch origin
+git checkout refine-3d-render-agent-frontend-backend
+```
+
+如果你已经 clone 过仓库：
+
+```bash
+cd PicCreator
+git fetch origin
+git checkout refine-3d-render-agent-frontend-backend
+git pull
+```
+
+### 本地测试 Gradio
+
+```bash
+cd 3d-render-agent
+python -m venv .venv
+```
+
+Windows：
+
+```bat
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy config.example.json config.json
+copy .env.example .env
+python main.py
+```
+
+macOS / Linux：
+
+```bash
+source .venv/bin/activate
+pip install -r requirements.txt
+cp config.example.json config.json
+cp .env.example .env
+python main.py
+```
+
+然后编辑 `config.json` 和 `.env`，填入你的模型配置和 API Key。
+
+### 本地测试前后端分离版本
+
+启动后端：
+
+```bash
+cd 3d-render-agent
+python api_server.py
+```
+
+启动前端：
+
+```bash
+cd 3d-render-agent/ui-prototype
+npm install
+npm run dev
+```
+
+浏览器打开：
+
+```text
+http://127.0.0.1:5174/
+```
+
+如需指定 API 地址：
+
+```bash
+VITE_API_TARGET=http://127.0.0.1:8787 npm run dev
+```
+
 ## 生成流程
 
 ```text
@@ -301,12 +408,13 @@ npm run build
 - 新增后端 API 测试，覆盖健康检查、非法生成模式、配置验证错误路径。
 - 前端拆出 API client、领域类型、静态数据、工具函数和基础组件。
 - React 原型支持生成请求、API Base URL 配置、模型配置验证和状态提示。
+- React 原型新增会话级结果库、图片打开/下载、运行摘要复制和操作 toast。
 - Vite dev/preview 支持 `0.0.0.0`、`allowedHosts` 和可配置代理目标。
 
 ## 后续计划
 
 - 继续拆分 React 页面中的中大型区域组件，例如 `ChatWorkspace`、`RenderControlPanel`、`ModelConfigPanel`、`QualityReviewPanel`。
-- 增强前端实际运行态：生成进度、错误恢复、结果图库、历史记录和下载/导出。
+- 增强前端实际运行态：更细粒度生成进度、错误恢复、持久化历史记录和批量导出。
 - 为 `/api/generate` 增加更多 mock pipeline 测试，覆盖成功返回、上传文件、多图输入和模型配置覆盖。
 - 增加前后端联调测试或端到端 smoke 测试。
 - 进一步规范 API 响应结构，便于前端统一展示错误、日志、图片和评估结果。

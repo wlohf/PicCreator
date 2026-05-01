@@ -76,6 +76,18 @@ export type ApiImage = {
   data_url: string;
 };
 
+export type RenderHistoryItem = {
+  id: string;
+  title: string;
+  status?: string;
+  imageUrl?: string;
+  imageLabel?: string;
+  prompt?: string;
+  evaluation?: string;
+  logs?: string;
+  createdAt: string;
+};
+
 export type GenerateResponse = {
   ok: boolean;
   status?: string;
