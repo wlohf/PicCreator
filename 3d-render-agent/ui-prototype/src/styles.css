@@ -251,9 +251,22 @@ p {
 }
 
 .primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.72;
+  transform: none;
+}
+
+.primary-button[aria-busy="true"]:disabled {
   cursor: wait;
   opacity: 0.82;
-  transform: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid rgba(209, 164, 108, 0.72);
+  outline-offset: 2px;
 }
 
 .language-toggle {
@@ -957,7 +970,12 @@ p {
 
 .composer-head,
 .composer-actions,
-.composer-attachments {
+.composer-attachments,
+.composer-meta-row,
+.shortcut-toolbar__head,
+.shortcut-chip-row,
+.shortcut-editor,
+.parameter-stepper {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -981,7 +999,10 @@ p {
 
 .composer-head button,
 .composer-attachments label,
-.composer-attachments button {
+.composer-attachments button,
+.shortcut-chip-row button,
+.shortcut-editor button,
+.parameter-stepper button {
   min-height: 30px;
   display: inline-flex;
   align-items: center;
@@ -996,9 +1017,12 @@ p {
 
 .composer-head button:hover,
 .composer-attachments label:hover,
-.composer-attachments button:hover:not(:disabled) {
-  border-color: rgba(98, 215, 196, 0.3);
-  background: rgba(98, 215, 196, 0.06);
+.composer-attachments button:hover:not(:disabled),
+.shortcut-chip-row button:hover:not(:disabled),
+.shortcut-editor button:hover:not(:disabled),
+.parameter-stepper button:hover:not(:disabled) {
+  border-color: rgba(209, 164, 108, 0.38);
+  background: rgba(209, 164, 108, 0.08);
 }
 
 .composer-attachments input {
@@ -1015,6 +1039,87 @@ p {
   color: var(--text);
   outline: 0;
   background: rgba(16, 19, 18, 0.74);
+}
+
+.composer-meta-row {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.shortcut-toolbar {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid rgba(209, 164, 108, 0.16);
+  border-radius: var(--radius-sm);
+  background: rgba(209, 164, 108, 0.045);
+}
+
+.shortcut-toolbar__head {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  color: var(--soft);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.shortcut-toolbar__head em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.shortcut-chip-row {
+  flex-wrap: wrap;
+}
+
+.shortcut-chip {
+  display: inline-flex;
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.shortcut-chip button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.shortcut-chip__remove {
+  width: 28px;
+  min-width: 28px;
+  justify-content: center;
+  padding: 0;
+  color: var(--danger);
+  border-left: 1px solid var(--line) !important;
+}
+
+.shortcut-editor {
+  align-items: stretch;
+}
+
+.shortcut-editor input {
+  flex: 1 1 180px;
+  min-width: 0;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--text);
+  background: rgba(16, 19, 18, 0.74);
+  outline: 0;
+}
+
+.shortcut-editor input:focus {
+  border-color: rgba(209, 164, 108, 0.56);
+  box-shadow: 0 0 0 3px rgba(209, 164, 108, 0.1);
 }
 
 .chat-composer textarea:focus {
@@ -1435,11 +1540,17 @@ p {
   cursor: pointer;
 }
 
+.quick-stack .shortcut-chip button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
 .direction-row button:hover,
 .direction-actions button:hover:not(:disabled),
 .quick-stack button:hover {
-  border-color: rgba(98, 215, 196, 0.35);
-  background: rgba(98, 215, 196, 0.08);
+  border-color: rgba(209, 164, 108, 0.38);
+  background: rgba(209, 164, 108, 0.08);
 }
 
 .direction-actions,
@@ -1493,20 +1604,21 @@ p {
   gap: 12px;
 }
 
-.parameter-grid label {
+.parameter-card {
   display: grid;
-  gap: 8px;
-}
-
-.parameter-grid label > span {
-  color: var(--muted);
-  font-size: 12px;
+  gap: 9px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .parameter-label {
   display: flex;
   justify-content: space-between;
   gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .parameter-label strong {
@@ -1514,9 +1626,37 @@ p {
   font-weight: 760;
 }
 
-.parameter-grid input {
+.parameter-card > input[type="range"] {
   width: 100%;
   accent-color: var(--cyan);
+}
+
+.parameter-stepper {
+  justify-content: space-between;
+}
+
+.parameter-stepper button {
+  width: 34px;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  font-size: 16px;
+}
+
+.parameter-stepper input {
+  width: 76px;
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--soft);
+  text-align: center;
+  background: rgba(16, 19, 18, 0.74);
+  outline: 0;
+}
+
+.parameter-stepper input:focus {
+  border-color: rgba(209, 164, 108, 0.56);
+  box-shadow: 0 0 0 3px rgba(209, 164, 108, 0.1);
 }
 
 .select-row {
@@ -1820,6 +1960,17 @@ p {
 
   .timeline-grid {
     grid-template-columns: 1fr;
+  }
+
+  .composer-actions,
+  .shortcut-editor {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .composer-submit,
+  .shortcut-editor button {
+    width: 100%;
   }
 }
 

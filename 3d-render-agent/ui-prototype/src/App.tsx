@@ -1,4 +1,4 @@
-import { type ChangeEvent, type FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Aperture,
   Box,
@@ -47,6 +47,12 @@ import type { ApiConfig, ChatMessage, Locale, ParameterKey, RenderHistoryItem, T
 import { compactLines, localized } from "./utils/text";
 
 const API_CONFIG_STORAGE_KEY = "render-director-api-config-v1";
+const CUSTOM_SHORTCUTS_STORAGE_KEY = "render-director-custom-shortcuts-v1";
+
+type CustomShortcutPhrase = {
+  id: string;
+  text: string;
+};
 
 function normalizeApiConfig(value: unknown): ApiConfig {
   if (!value || typeof value !== "object") {
@@ -83,7 +89,43 @@ function loadSavedApiConfig(): ApiConfig {
   }
 }
 
+function normalizeCustomShortcuts(value: unknown): CustomShortcutPhrase[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((item, index) => {
+      if (typeof item === "string") {
+        return { id: `legacy-${index}-${item}`, text: item.trim() };
+      }
+      if (!item || typeof item !== "object") {
+        return null;
+      }
+      const saved = item as Partial<CustomShortcutPhrase>;
+      const phrase = String(saved.text ?? "").trim();
+      if (!phrase) {
+        return null;
+      }
+      return { id: String(saved.id ?? `shortcut-${index}-${phrase}`), text: phrase };
+    })
+    .filter((item): item is CustomShortcutPhrase => Boolean(item))
+    .slice(0, 12);
+}
+
+function loadSavedCustomShortcuts(): CustomShortcutPhrase[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_SHORTCUTS_STORAGE_KEY);
+    return raw ? normalizeCustomShortcuts(JSON.parse(raw)) : [];
+  } catch {
+    return [];
+  }
+}
+
 const initialApiConfig = loadSavedApiConfig();
+const initialCustomShortcuts = loadSavedCustomShortcuts();
 
 function App() {
   const [locale, setLocale] = useState<Locale>("zh");
@@ -98,6 +140,8 @@ function App() {
     daylightBalance: 70
   });
   const [chatInput, setChatInput] = useState("");
+  const [customShortcutDraft, setCustomShortcutDraft] = useState("");
+  const [customShortcuts, setCustomShortcuts] = useState<CustomShortcutPhrase[]>(initialCustomShortcuts);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [directionDrafts, setDirectionDrafts] = useState<string[]>([]);
   const [floorPlanFiles, setFloorPlanFiles] = useState<File[]>([]);
@@ -126,6 +170,15 @@ function App() {
   const activePrompt = activeResult?.prompt || (chatInput.trim() || hasDirectionContent ? buildGenerationPrompt() : "");
   const hasWorkspaceContent = Boolean(chatInput.trim()) || hasDirectionContent || floorPlanFiles.length > 0 || Boolean(referenceFile) || messages.length > 0 || renderHistory.length > 0;
   const canGenerate = floorPlanFiles.length > 0 && (Boolean(chatInput.trim()) || hasDirectionContent);
+  const generationBlocker = floorPlanFiles.length === 0
+    ? locale === "zh"
+      ? "请先上传至少一张平面图"
+      : "Upload at least one floor plan first"
+    : !Boolean(chatInput.trim()) && !hasDirectionContent
+      ? locale === "zh"
+        ? "请填写设计需求，或在右侧添加设计指令"
+        : "Add a brief or a direction before generating"
+      : "";
   const latestResult = activeResult;
   const hasRunFailure = activeStep === "failed";
   const projectState = isRendering
@@ -153,15 +206,29 @@ function App() {
   }
 
   useEffect(() => {
-    if (!isPreviewExpanded) return;
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(CUSTOM_SHORTCUTS_STORAGE_KEY, JSON.stringify(customShortcuts));
+  }, [customShortcuts]);
+
+  useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
+      const target = event.target as HTMLElement | null;
+      const isEditableTarget = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
+      if (event.key === "Escape" && isPreviewExpanded) {
         setIsPreviewExpanded(false);
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        composerRef.current?.focus();
+        if (!isEditableTarget) {
+          showToast(locale === "zh" ? "已聚焦需求输入框" : "Composer focused");
+        }
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isPreviewExpanded]);
+  }, [isPreviewExpanded, locale]);
 
   function showToast(message: string) {
     setToast(message);
@@ -187,6 +254,49 @@ function App() {
       if (current.includes(nextText)) return current;
       return [...current, nextText].slice(0, 8);
     });
+  }
+
+  function insertComposerPhrase(text: string) {
+    const phrase = text.trim();
+    if (!phrase) return;
+    setChatInput((current) => {
+      const separator = current.trim() ? (current.endsWith("\n") ? "" : "\n") : "";
+      return `${current}${separator}${phrase}`;
+    });
+    window.setTimeout(() => composerRef.current?.focus(), 0);
+  }
+
+  function saveCustomShortcut() {
+    const phrase = customShortcutDraft.trim();
+    if (!phrase) return;
+    const isDuplicate = customShortcuts.some((item) => item.text.toLocaleLowerCase() === phrase.toLocaleLowerCase())
+      || directionItems.some((item) => item.zh === phrase || item.en.toLocaleLowerCase() === phrase.toLocaleLowerCase());
+    if (isDuplicate) {
+      showToast(locale === "zh" ? "这个快捷短语已经存在" : "This shortcut phrase already exists");
+      return;
+    }
+    setCustomShortcuts((current) => [{ id: `shortcut-${Date.now()}`, text: phrase }, ...current].slice(0, 12));
+    setCustomShortcutDraft("");
+    showToast(locale === "zh" ? "已保存自定义快捷短语" : "Custom shortcut saved");
+  }
+
+  function removeCustomShortcut(id: string) {
+    setCustomShortcuts((current) => current.filter((item) => item.id !== id));
+    showToast(locale === "zh" ? "已删除自定义快捷短语" : "Custom shortcut removed");
+  }
+
+  function handleShortcutDraftKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      saveCustomShortcut();
+    }
+  }
+
+  function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+      event.preventDefault();
+      runConversationFlow();
+    }
   }
 
   function handleToolActivate(toolKey: ToolKey) {
@@ -243,6 +353,7 @@ function App() {
   function handleResetWorkspace() {
     setMessages([]);
     setChatInput("");
+    setCustomShortcutDraft("");
     setDirectionDrafts([]);
     setRenderHistory([]);
     setActiveResultId(null);
@@ -582,7 +693,14 @@ function App() {
           <button type="button" className="icon-button" aria-label={locale === "zh" ? "重置工作台" : "Reset workspace"} onClick={handleResetWorkspace} title={locale === "zh" ? "重置工作台" : "Reset workspace"} disabled={!hasWorkspaceContent || isRendering}>
             <RotateCcw size={18} />
           </button>
-          <button type="button" className="primary-button" onClick={handleGenerate} disabled={isRendering || !canGenerate}>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={handleGenerate}
+            disabled={isRendering || !canGenerate}
+            aria-busy={isRendering}
+            title={generationBlocker || (locale === "zh" ? "开始生成（Ctrl/⌘ + Enter）" : "Generate (Ctrl/⌘ + Enter)")}
+          >
             <Play size={17} />
             {isRendering ? t.rendering : t.generate}
           </button>
@@ -625,10 +743,12 @@ function App() {
             <div className="toolbar-group">
               {tools.map((tool) => (
                 <button
+                  type="button"
                   className={`tool-button ${activeTool === tool.key ? "is-active" : ""}`}
                   key={tool.key}
                   onClick={() => handleToolActivate(tool.key)}
                   aria-label={tool.label[locale]}
+                  aria-pressed={activeTool === tool.key}
                   title={tool.label[locale]}
                 >
                   {tool.icon === "pointer" && <MousePointerIcon />}
@@ -767,9 +887,51 @@ function App() {
               ref={composerRef}
               value={chatInput}
               onChange={(event) => setChatInput(event.target.value)}
+              onKeyDown={handleComposerKeyDown}
               placeholder={t.composerPlaceholder}
               rows={4}
+              aria-label={t.composerPlaceholder}
             />
+            <div className="composer-meta-row">
+              <span>{locale === "zh" ? `已输入 ${chatInput.trim().length} 字` : `${chatInput.trim().length} characters`}</span>
+              <span>{locale === "zh" ? "Ctrl/⌘ + Enter 发送 · Ctrl/⌘ + K 聚焦输入" : "Ctrl/⌘ + Enter to send · Ctrl/⌘ + K to focus"}</span>
+            </div>
+            <div className="shortcut-toolbar" aria-label={locale === "zh" ? "快捷短语" : "Shortcut phrases"}>
+              <div className="shortcut-toolbar__head">
+                <span>{locale === "zh" ? "快捷短语" : "Shortcut phrases"}</span>
+                <em>{locale === "zh" ? "点击插入到当前需求，可自定义保存" : "Click to insert into the brief; custom phrases are saved locally"}</em>
+              </div>
+              <div className="shortcut-chip-row">
+                {directionItems.map((item) => (
+                  <button type="button" key={item.en} onClick={() => insertComposerPhrase(item[locale])} title={locale === "zh" ? "插入到需求输入框" : "Insert into brief"}>
+                    {item[locale]}
+                  </button>
+                ))}
+                {customShortcuts.map((item) => (
+                  <span className="shortcut-chip" key={item.id}>
+                    <button type="button" onClick={() => insertComposerPhrase(item.text)} title={locale === "zh" ? "插入自定义短语" : "Insert custom phrase"}>
+                      {item.text}
+                    </button>
+                    <button type="button" className="shortcut-chip__remove" onClick={() => removeCustomShortcut(item.id)} aria-label={locale === "zh" ? `删除快捷短语 ${item.text}` : `Remove shortcut ${item.text}`}>
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+              <div className="shortcut-editor">
+                <input
+                  value={customShortcutDraft}
+                  onChange={(event) => setCustomShortcutDraft(event.target.value)}
+                  onKeyDown={handleShortcutDraftKeyDown}
+                  placeholder={locale === "zh" ? "输入自定义快捷短语，回车保存" : "Type a custom phrase and press Enter"}
+                  aria-label={locale === "zh" ? "自定义快捷短语" : "Custom shortcut phrase"}
+                  maxLength={120}
+                />
+                <button type="button" onClick={saveCustomShortcut} disabled={!customShortcutDraft.trim()}>
+                  {locale === "zh" ? "保存短语" : "Save phrase"}
+                </button>
+              </div>
+            </div>
             <div className="composer-actions">
               <div className="composer-attachments">
                 <label>
@@ -800,7 +962,13 @@ function App() {
                   {locale === "zh" ? "清空附件" : "Clear files"}
                 </button>
               </div>
-              <button className="primary-button composer-submit" type="submit" disabled={isRendering || !canGenerate}>
+              <button
+                className="primary-button composer-submit"
+                type="submit"
+                disabled={isRendering || !canGenerate}
+                aria-busy={isRendering}
+                title={generationBlocker || (locale === "zh" ? "发送需求（Ctrl/⌘ + Enter）" : "Send prompt (Ctrl/⌘ + Enter)")}
+              >
                 <Send size={16} />
                 {isRendering ? t.rendering : canGenerate ? t.sendPrompt : (locale === "zh" ? "先补齐输入" : "Need brief")}
               </button>
@@ -882,6 +1050,16 @@ function App() {
                   <button type="button" key={item.en} onClick={() => appendDirection(item[locale])}>
                     {item[locale]}
                   </button>
+                ))}
+                {customShortcuts.map((item) => (
+                  <span className="shortcut-chip" key={item.id}>
+                    <button type="button" onClick={() => appendDirection(item.text)}>
+                      {item.text}
+                    </button>
+                    <button type="button" className="shortcut-chip__remove" onClick={() => removeCustomShortcut(item.id)} aria-label={locale === "zh" ? `删除快捷短语 ${item.text}` : `Remove shortcut ${item.text}`}>
+                      ×
+                    </button>
+                  </span>
                 ))}
               </div>
             </div>
