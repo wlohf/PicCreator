@@ -1,4 +1,5 @@
 import asyncio
+import json
 from io import BytesIO
 import os
 import sys
@@ -112,15 +113,7 @@ def _validate_adapter_config(name: str, cfg: AdapterConfig):
 
 def save_api_keys_to_env(analysis_api_key, img_api_key):
     env_path = ".env"
-    current = {}
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
-            for line in f:
-                raw = line.strip()
-                if not raw or raw.startswith("#") or "=" not in raw:
-                    continue
-                k, v = raw.split("=", 1)
-                current[k.strip()] = v.strip()
+    current = _read_env_values(env_path)
 
     llm_key = (analysis_api_key or "").strip()
     image_key = (img_api_key or "").strip()
@@ -136,9 +129,7 @@ def save_api_keys_to_env(analysis_api_key, img_api_key):
         current["IMAGE_API_KEY"] = image_key
         os.environ["IMAGE_API_KEY"] = image_key
 
-    with open(env_path, "w", encoding="utf-8") as f:
-        for k in sorted(current.keys()):
-            f.write(f"{k}={current[k]}\n")
+    _write_env_values(env_path, current)
 
     msg = []
     if llm_key:
@@ -146,6 +137,128 @@ def save_api_keys_to_env(analysis_api_key, img_api_key):
     if image_key:
         msg.append("Image")
     return f"已保存到 .env：{', '.join(msg)}"
+
+
+def _read_env_values(env_path: str = ".env") -> dict[str, str]:
+    current = {}
+    if os.path.exists(env_path):
+        with open(env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                raw = line.strip()
+                if not raw or raw.startswith("#") or "=" not in raw:
+                    continue
+                k, v = raw.split("=", 1)
+                current[k.strip()] = v.strip()
+    return current
+
+
+def _write_env_values(env_path: str, current: dict[str, str]):
+    with open(env_path, "w", encoding="utf-8") as f:
+        for k in sorted(current.keys()):
+            f.write(f"{k}={current[k]}\n")
+
+
+def _load_config_json(path: str = "config.json") -> dict:
+    source = path if os.path.exists(path) else "config.example.json"
+    with open(source, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_config_json(data: dict, path: str = "config.json"):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+
+
+def _update_adapter_json(
+    data: dict,
+    section_name: str,
+    *,
+    provider_name: str,
+    api_format: str,
+    base_url: str,
+    model: str,
+    api_key_env: str,
+):
+    section = dict(data.get(section_name) or {})
+    if provider_name.strip():
+        section["provider_name"] = provider_name.strip()
+    if api_format.strip():
+        section["api_format"] = normalize_api_format(api_format)
+    if base_url.strip():
+        section["base_url"] = base_url.strip()
+    if model.strip():
+        section["model"] = model.strip()
+    section["api_key_env"] = api_key_env
+    data[section_name] = section
+
+
+def save_model_config_to_files(
+    analysis_provider_name,
+    analysis_api_format,
+    analysis_base_url,
+    analysis_api_key,
+    analysis_model,
+    img_provider_name,
+    img_api_format,
+    img_base_url,
+    img_api_key,
+    img_model,
+    fallback_models_text="",
+    model_switch_after_failures=2,
+    stop_after_last_model_failures=2,
+):
+    data = _load_config_json("config.json")
+    _update_adapter_json(
+        data,
+        "llm",
+        provider_name=analysis_provider_name or "",
+        api_format=analysis_api_format or "",
+        base_url=analysis_base_url or "",
+        model=analysis_model or "",
+        api_key_env="LLM_API_KEY",
+    )
+    _update_adapter_json(
+        data,
+        "vision",
+        provider_name=analysis_provider_name or "",
+        api_format=analysis_api_format or "",
+        base_url=analysis_base_url or "",
+        model=analysis_model or "",
+        api_key_env="VISION_API_KEY",
+    )
+    _update_adapter_json(
+        data,
+        "image_gen",
+        provider_name=img_provider_name or "",
+        api_format=img_api_format or "",
+        base_url=img_base_url or "",
+        model=img_model or "",
+        api_key_env="IMAGE_API_KEY",
+    )
+
+    fallback_models = []
+    for item in str(fallback_models_text or "").replace("\r", "\n").replace(",", "\n").split("\n"):
+        model_name = item.strip()
+        if model_name:
+            fallback_models.append(model_name)
+    data["image_model_fallbacks"] = fallback_models
+    data["model_switch_after_failures"] = max(1, int(model_switch_after_failures or 2))
+    data["stop_after_last_model_failures"] = max(1, int(stop_after_last_model_failures or 2))
+
+    env_values = _read_env_values(".env")
+    if (analysis_api_key or "").strip():
+        env_values["LLM_API_KEY"] = analysis_api_key.strip()
+        env_values["VISION_API_KEY"] = analysis_api_key.strip()
+        os.environ["LLM_API_KEY"] = analysis_api_key.strip()
+        os.environ["VISION_API_KEY"] = analysis_api_key.strip()
+    if (img_api_key or "").strip():
+        env_values["IMAGE_API_KEY"] = img_api_key.strip()
+        os.environ["IMAGE_API_KEY"] = img_api_key.strip()
+
+    _save_config_json(data, "config.json")
+    _write_env_values(".env", env_values)
+    return "已保存到 config.json 和 .env"
 
 
 def _build_runtime_config(
@@ -418,6 +531,7 @@ def run_pipeline(
     floor_plan_paths,
     reference_image,
     user_requirement,
+    direction_stack_text,
     manual_prompt,
     max_iterations,
     analysis_provider_name,
@@ -437,6 +551,7 @@ def run_pipeline(
 ):
     progress = progress or _NoopProgress()
     user_requirement = user_requirement or ""
+    direction_stack_text = direction_stack_text or ""
     manual_prompt = manual_prompt or ""
     current_preview = None
     output_images = []
@@ -463,13 +578,13 @@ def run_pipeline(
     floor_plan_paths = _to_path_list(floor_plan_paths)
     reference_image_path = _extract_file_path(reference_image)
 
-    if generation_mode == GenerationMode.STANDARD and not reference_image_path and not manual_prompt.strip() and not user_requirement.strip():
+    if generation_mode == GenerationMode.STANDARD and not reference_image_path and not manual_prompt.strip() and not user_requirement.strip() and not direction_stack_text.strip():
         error = "执行失败：常规生图请至少提供设计需求、手动提示词或参考图"
         yield None, [], error, "", "", "", error
         return
 
-    if not user_requirement.strip() and not manual_prompt.strip() and not reference_image_path:
-        error = "执行失败：请输入设计需求或手动提示词"
+    if not user_requirement.strip() and not direction_stack_text.strip() and not manual_prompt.strip() and not reference_image_path:
+        error = "执行失败：请输入设计需求、设计指令栈或手动提示词"
         yield None, [], error, "", "", "", error
         return
 
@@ -550,6 +665,7 @@ def run_pipeline(
                         floor_plan_bytes,
                         ref_bytes,
                         user_requirement,
+                        direction_stack_text,
                         on_progress=on_progress,
                         on_event=on_event,
                         manual_prompt=manual_prompt.strip() or None,

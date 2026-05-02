@@ -3,6 +3,7 @@ import type { GenerateResponse, GenerationRequest } from "../types/domain";
 
 export async function requestGeneration({
   prompt,
+  directionStackText,
   maxIterations,
   apiConfig,
   selectedModel,
@@ -12,6 +13,7 @@ export async function requestGeneration({
   const formData = new FormData();
   formData.append("mode", "render3d");
   formData.append("requirement", prompt);
+  formData.append("direction_stack_text", directionStackText);
   formData.append("manual_prompt", "");
   formData.append("max_iterations", String(maxIterations));
   formData.append("analysis_provider_name", apiConfig.analysisProviderName);

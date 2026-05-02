@@ -1,4 +1,6 @@
 .ace-tool/
+.agent-night/
+.venv/
 .env
 config.json
 outputs/

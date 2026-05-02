@@ -95,6 +95,9 @@ class PromptGenerator:
         "办公桌",
         "班台",
         "电视",
+        "电视柜",
+        "壁画",
+        "墙画",
         "挂画",
         "衣柜",
         "柜",
@@ -117,6 +120,7 @@ class PromptGenerator:
         self,
         requirement: ParsedRequirement,
         user_requirement_text: str = "",
+        direction_stack_text: str = "",
         target_model: str = "dalle3",
         feedback: Optional[str] = None,
         floor_desc: str = "",
@@ -126,10 +130,12 @@ class PromptGenerator:
     ) -> PromptSet:
         strategy_version = prompt_strategy_version or self.strategy_version or DEFAULT_PROMPT_STRATEGY
         strategy_spec = get_prompt_strategy_spec(strategy_version)
+        direction_stack_text = (direction_stack_text or "").strip()
         if mode == GenerationMode.RENDER3D and floor_analysis:
             positive_prompt, positive_sections = self._compile_3d_prompt_cn(
                 requirement=requirement,
                 user_requirement_text=user_requirement_text,
+                direction_stack_text=direction_stack_text,
                 floor_analysis=floor_analysis,
                 feedback=feedback,
                 strategy_version=strategy_version,
@@ -138,6 +144,7 @@ class PromptGenerator:
                 requirement=requirement,
                 floor_analysis=floor_analysis,
                 user_requirement_text=user_requirement_text,
+                direction_stack_text=direction_stack_text,
                 feedback=feedback,
                 strategy_version=strategy_version,
             )
@@ -163,6 +170,8 @@ class PromptGenerator:
                 req_desc += f"\n\n结构化平面图约束（必须严格遵守）：\n{floor_analysis.to_prompt_context()}"
             elif floor_desc:
                 req_desc += f"\n\n平面图空间信息（必须严格遵守）：\n{floor_desc}"
+        if direction_stack_text:
+            req_desc += f"\n\n设计指令栈（独立约束，必须遵守）：\n{direction_stack_text}"
         if feedback:
             req_desc += f"\n\n上一轮评估反馈（请针对性修正）：{feedback}"
         if mode == GenerationMode.STANDARD:
@@ -328,8 +337,14 @@ class PromptGenerator:
 
     @staticmethod
     def _format_opening(opening) -> str:
+        type_label = {
+            "door": "门",
+            "window": "窗",
+            "opening": "开口",
+            "balcony_edge": "阳台边界",
+        }.get(str(opening.type or "").lower(), opening.type or "开口")
         parts = [
-            f"{opening.type or 'opening'}位于{opening.position or '原图对应位置'}",
+            f"{type_label}位于{opening.position or '原图对应位置'}",
         ]
         if opening.connects_to:
             parts.append(f"连接{opening.connects_to}")
@@ -350,6 +365,7 @@ class PromptGenerator:
 
     def _collect_priority_rules(self, floor_analysis: FloorPlanAnalysis) -> list[str]:
         door_rules = []
+        window_rules = []
         cabinet_rules = []
         relation_rules = []
         wall_feature_rules = []
@@ -359,13 +375,17 @@ class PromptGenerator:
             if self._is_stair_space(space):
                 stair_rules.extend(self._staircase_completion_lines())
             for opening in space.doors:
-                if getattr(opening, "swing_direction", "") or getattr(opening, "hinge_side", ""):
-                    door_rules.append(
-                        f"{space_name}的门位于{opening.position or '原图对应位置'}，"
-                        f"连接{opening.connects_to or '相邻空间'}"
-                        + (f"，开向{opening.swing_direction}" if getattr(opening, "swing_direction", "") else "")
-                        + (f"，合页侧{opening.hinge_side}" if getattr(opening, "hinge_side", "") else "")
-                    )
+                door_rules.append(
+                    f"{space_name}的门位于{opening.position or '原图对应位置'}，"
+                    f"连接{opening.connects_to or '相邻空间'}"
+                    + (f"，开向{opening.swing_direction}" if getattr(opening, "swing_direction", "") else "")
+                    + (f"，合页侧{opening.hinge_side}" if getattr(opening, "hinge_side", "") else "")
+                )
+            for opening in space.windows:
+                window_rules.append(
+                    f"{space_name}的窗位于{opening.position or '原图对应位置'}，"
+                    f"面向{opening.connects_to or '外部/采光面'}"
+                )
             for item in space.furniture + space.fixtures:
                 if getattr(item, "wall_relation", "") and ("柜" in (item.name or "") or "鱼缸" in (item.name or "") or "隔断" in (item.name or "")):
                     cabinet_rules.append(
@@ -383,7 +403,17 @@ class PromptGenerator:
 
         rules = []
         if door_rules:
-            rules.append("关键门规则：" + "；".join(self._take(self._dedupe_keep_order(door_rules), 6)) + "。")
+            rules.append(
+                "关键门规则："
+                + "；".join(self._take(self._dedupe_keep_order(door_rules), 10))
+                + "；除非平面分析明确写双开门，否则每个单门洞只生成一扇门板，不要把一个门洞画成双开门。"
+            )
+        if window_rules:
+            rules.append(
+                "关键窗规则："
+                + "；".join(self._take(self._dedupe_keep_order(window_rules), 10))
+                + "；门洞和窗洞必须区分，连接走道/房间的是门或开口，外墙采光面才是窗。"
+            )
         if cabinet_rules:
             rules.append("关键柜体规则：" + "；".join(self._take(self._dedupe_keep_order(cabinet_rules), 4)) + "。")
         if wall_feature_rules:
@@ -446,32 +476,45 @@ class PromptGenerator:
             return "P1"
         return "P2"
 
-    def _build_layered_space_entry(self, space, bucket: str, index: int) -> str:
-        header = f"{bucket}-{index}. {space.name or space.id or '未识别空间'}（位置：{space.position or '按原图'}；功能：{space.function or '按原图表现'}）"
-        lines = [header]
-        if space.adjacent_to:
-            lines.append("  - 相邻关系：" + "、".join(space.adjacent_to[:5]))
+    @staticmethod
+    def _format_item_compact(item) -> str:
+        detail = item.name or "未识别家具"
+        if item.quantity is not None:
+            detail += f"{item.quantity}个/组"
+        if item.position:
+            detail += f"，{item.position}"
+        if item.orientation:
+            detail += f"，朝向{item.orientation}"
+        if getattr(item, "relative_position", ""):
+            detail += f"，相对{item.relative_position}"
+        elif getattr(item, "wall_relation", ""):
+            detail += f"，{item.wall_relation}"
+        return detail
 
-        item_lines = []
-        for item in self._pick_key_items(space.furniture + space.fixtures, limit=6):
-            item_lines.append(self._format_item(item, "家具/设备"))
+    def _build_layered_space_entry(self, space, bucket: str, index: int) -> str:
+        name = space.name or space.id or "未识别空间"
+        parts = [
+            f"{bucket}-{index}. {name}：位于{space.position or '原图对应位置'}，功能为{space.function or '按原图表现'}",
+        ]
+        if space.adjacent_to:
+            parts.append("相邻" + "、".join(space.adjacent_to[:5]))
+
+        item_lines = [self._format_item_compact(item) for item in self._pick_key_items(space.furniture + space.fixtures, limit=5)]
         if item_lines:
-            lines.append("  - 必须保留的家具/设备：")
-            lines.extend([f"    * {line}" for line in item_lines])
+            parts.append("家具/设备必须按数量和朝向保留：" + "；".join(item_lines))
 
         opening_lines = [self._format_opening(opening) for opening in (space.doors + space.windows)[:4]]
         if opening_lines:
-            lines.append("  - 必须保留的门窗/开口：")
-            lines.extend([f"    * {line}" for line in opening_lines])
+            parts.append("门窗/开口必须区分：" + "；".join(opening_lines))
 
         hard_constraints = self._dedupe_keep_order((space.hard_constraints or []) + (space.wall_constraints or []))
         if hard_constraints:
-            lines.append("  - 硬约束：" + "；".join(hard_constraints[:4]))
+            parts.append("硬约束：" + "；".join(hard_constraints[:3]))
         if space.negative_constraints:
-            lines.append("  - 禁止项：" + "；".join(space.negative_constraints[:3]))
+            parts.append("禁止：" + "；".join(space.negative_constraints[:2]))
         if self._is_stair_space(space):
-            lines.append("  - 楼梯完整表现：" + "；".join(self._staircase_completion_lines()))
-        return "\n".join(lines)
+            parts.append("楼梯完整表现：" + "；".join(self._staircase_completion_lines()))
+        return "。".join(parts) + "。"
 
     def _build_layered_space_sections(self, floor_analysis: FloorPlanAnalysis) -> list[str]:
         grouped = {"P0": [], "P1": [], "P2": []}
@@ -488,14 +531,55 @@ class PromptGenerator:
                 sections.append(self._build_layered_space_entry(space, bucket, idx))
         return sections
 
+    @staticmethod
+    def _clean_analysis_text(text: str) -> str:
+        return " ".join(str(text or "").replace("\r", "\n").split())
+
+    def _build_readable_analysis_lines(self, floor_analysis: FloorPlanAnalysis) -> list[str]:
+        lines = []
+        readable_summary = self._clean_analysis_text(floor_analysis.readable_summary)
+        final_prompt = self._clean_analysis_text(floor_analysis.final_prompt)
+        if readable_summary:
+            lines.append("平面解析可读性总结（作为画图主体约束，必须直接遵守）：")
+            lines.append(readable_summary)
+        elif final_prompt:
+            lines.append("平面解析最终提示词（作为画图主体约束，必须直接遵守）：")
+            lines.append(final_prompt)
+        if final_prompt and final_prompt != readable_summary and len(readable_summary) < 500:
+            lines.append("平面解析补充提示词：")
+            lines.append(final_prompt)
+        return lines
+
+    def _build_prompt_body_from_analysis(self, floor_analysis: FloorPlanAnalysis) -> list[str]:
+        lines = self._build_readable_analysis_lines(floor_analysis)
+        if floor_analysis.spaces:
+            lines.extend(self._build_layered_space_sections(floor_analysis))
+        if not lines:
+            lines.append("未获得足够的逐空间解析结果，必须严格参考用户上传的平面图原图生成，不得自由发挥布局。")
+        return lines
+
     def _build_layered_execution_constraints(self, floor_analysis: FloorPlanAnalysis) -> list[str]:
         lines = [
             "整张图必须保持 roof removed、dollhouse cutaway、bird's-eye axonometric 的整体展示方式。",
             "不得额外增加楼层、房间、阳台、门窗、楼梯、电梯、柜体或走道。",
             "墙体边界、门洞、窗洞、固定结构必须优先正确，其次才是软装和氛围。",
-            "核心房间、卫生间设备、柜体、工位、茶桌、卧室家具必须尽可能完整可见。",
+            "最终提示词必须逐空间描述，每个房间至少说明位置、相邻关系、家具/设备数量、主要朝向、门窗/开口类型。",
+            "如果平面解析已经给出可读性总结或最终提示词，画图模型必须把那段文字当作主体提示词执行，不要再压缩成短摘要。",
+            "家具样貌不用反复展开，重点锁定数量、朝向、贴墙/独立关系、相对位置，尤其是椅子数量、桌椅围合关系、电视/挂画/壁画所在墙面。",
+            "门洞和窗洞必须区分：门连接房间或走道，窗位于外墙或采光界面；除非明确为双开门，单门洞只允许一扇门板。",
+            "核心房间、卫生间设备、柜体、工位、茶桌、卧室家具、墙上电视或挂画必须尽可能完整可见。",
             "楼梯必须完整表现为从当前楼层起步到上端平台的连续梯段，保留踏步、平台、梯井开口与扶手，不得只画半截。",
         ]
+        if floor_analysis.fixed_structures:
+            lines.append(
+                "固定结构："
+                + "；".join(
+                    [
+                        f"{item.name or '固定结构'}位于{item.position or '原图位置'}，{item.orientation or '按原图朝向'}"
+                        for item in floor_analysis.fixed_structures[:8]
+                    ]
+                )
+            )
         if floor_analysis.global_wall_constraints:
             lines.append("全局墙体约束：" + "；".join(floor_analysis.global_wall_constraints[:6]))
         if floor_analysis.global_window_constraints:
@@ -531,18 +615,20 @@ class PromptGenerator:
         self,
         requirement: ParsedRequirement,
         user_requirement_text: str,
+        direction_stack_text: str,
         floor_analysis: FloorPlanAnalysis,
         feedback: Optional[str] = None,
         strategy_version: str = DEFAULT_PROMPT_STRATEGY,
     ) -> tuple[str, list[str]]:
         if strategy_version == PROMPT_STRATEGY_BASELINE_V0:
-            return self._compile_3d_prompt_dense_v0(requirement, user_requirement_text, floor_analysis, feedback)
-        return self._compile_3d_prompt_layered_v1(requirement, user_requirement_text, floor_analysis, feedback)
+            return self._compile_3d_prompt_dense_v0(requirement, user_requirement_text, direction_stack_text, floor_analysis, feedback)
+        return self._compile_3d_prompt_layered_v1(requirement, user_requirement_text, direction_stack_text, floor_analysis, feedback)
 
     def _compile_3d_prompt_dense_v0(
         self,
         requirement: ParsedRequirement,
         user_requirement_text: str,
+        direction_stack_text: str,
         floor_analysis: FloorPlanAnalysis,
         feedback: Optional[str] = None,
     ) -> tuple[str, list[str]]:
@@ -565,6 +651,12 @@ class PromptGenerator:
             f"风格以{style if style_explicit else '真实克制的现代室内表达'}为主，色调以{color_tone}为主。 "
             + " ".join(self._build_style_lines(requirement, user_requirement_text)[2:])
         )
+        if direction_stack_text:
+            sections.append(
+                "设计指令栈是独立输入，不得丢失，必须作为强约束执行："
+                + direction_stack_text.replace("\n", "；")
+                + "。"
+            )
 
         if floor_analysis.circulation or floor_analysis.core_summary:
             sections.append(
@@ -622,6 +714,7 @@ class PromptGenerator:
         self,
         requirement: ParsedRequirement,
         user_requirement_text: str,
+        direction_stack_text: str,
         floor_analysis: FloorPlanAnalysis,
         feedback: Optional[str] = None,
     ) -> tuple[str, list[str]]:
@@ -645,12 +738,14 @@ class PromptGenerator:
                 "结果要求：整层空间必须同时可检视，不允许退化成普通室内平视图或平面贴图。",
             ],
         )
-        space_section = self._render_section(spec.positive_sections[2].title, self._build_layered_space_sections(floor_analysis))
+        space_section = self._render_section(spec.positive_sections[2].title, self._build_prompt_body_from_analysis(floor_analysis))
         relation_lines = self._collect_priority_rules(floor_analysis) or ["关键关系：门开向、柜体贴墙关系、多家具相对位置必须尽量保留。"]
         relation_section = self._render_section(spec.positive_sections[3].title, relation_lines)
         style_section = self._render_section(spec.positive_sections[4].title, self._build_style_lines(requirement, user_requirement_text))
 
         user_lines = self._build_user_priority_lines(requirement, user_requirement_text)
+        if direction_stack_text:
+            user_lines.append("设计指令栈（独立约束）：" + direction_stack_text.replace("\n", "；"))
         if feedback:
             user_lines.append("本轮重点修正：" + feedback)
         user_section = self._render_section(spec.positive_sections[5].title, user_lines)
@@ -673,18 +768,20 @@ class PromptGenerator:
         requirement: ParsedRequirement,
         floor_analysis: FloorPlanAnalysis,
         user_requirement_text: str = "",
+        direction_stack_text: str = "",
         feedback: Optional[str] = None,
         strategy_version: str = DEFAULT_PROMPT_STRATEGY,
     ) -> str:
         if strategy_version == PROMPT_STRATEGY_BASELINE_V0:
-            return self._compile_3d_negative_dense_v0(requirement, floor_analysis, user_requirement_text, feedback)
-        return self._compile_3d_negative_layered_v1(requirement, floor_analysis, user_requirement_text, feedback)
+            return self._compile_3d_negative_dense_v0(requirement, floor_analysis, user_requirement_text, direction_stack_text, feedback)
+        return self._compile_3d_negative_layered_v1(requirement, floor_analysis, user_requirement_text, direction_stack_text, feedback)
 
     def _compile_3d_negative_dense_v0(
         self,
         requirement: ParsedRequirement,
         floor_analysis: FloorPlanAnalysis,
         user_requirement_text: str = "",
+        direction_stack_text: str = "",
         feedback: Optional[str] = None,
     ) -> str:
         negatives = [
@@ -703,6 +800,8 @@ class PromptGenerator:
         for space in floor_analysis.spaces:
             negatives.extend((space.negative_constraints or [])[:2])
         negatives.extend(requirement.forbidden_elements or [])
+        if direction_stack_text:
+            negatives.append("禁止违背设计指令栈中的独立约束：" + direction_stack_text.replace("\n", "；"))
         if feedback:
             negatives.append("禁止重复上一轮反馈中指出的问题：" + feedback)
         deduped = self._dedupe_keep_order(negatives)
@@ -713,6 +812,7 @@ class PromptGenerator:
         requirement: ParsedRequirement,
         floor_analysis: FloorPlanAnalysis,
         user_requirement_text: str = "",
+        direction_stack_text: str = "",
         feedback: Optional[str] = None,
     ) -> str:
         _, style_profile, style_explicit = self._resolve_style_profile(requirement, user_requirement_text)
@@ -737,6 +837,8 @@ class PromptGenerator:
         for space in floor_analysis.spaces:
             p1.extend((space.negative_constraints or [])[:2])
         p2.extend(requirement.forbidden_elements or [])
+        if direction_stack_text:
+            p2.append("禁止违背设计指令栈中的独立约束：" + direction_stack_text.replace("\n", "；"))
         if feedback:
             p0.append("禁止重复上一轮结构问题：" + feedback)
         return (

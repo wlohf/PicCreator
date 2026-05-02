@@ -27,6 +27,7 @@ async def generate_render(form: GenerateForm):
             floor_plan_paths,
             reference_path,
             form.requirement,
+            form.direction_stack_text,
             form.manual_prompt,
             form.max_iterations,
             form.analysis_provider_name,

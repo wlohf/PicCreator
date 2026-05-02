@@ -15,3 +15,5 @@ __pycache__/
 .playwright-cli/
 test-results/
 output/
+.venv/
+.agent-night/

@@ -54,6 +54,7 @@ class BasePipeline:
         iteration: int,
         requirement,
         user_requirement_text: str,
+        direction_stack_text: str,
         target_model: str,
         feedback: Optional[str],
         floor_desc: str,
@@ -62,7 +63,7 @@ class BasePipeline:
         manual_prompt: Optional[str],
         progress: Callable[[str, str], None],
         floor_analysis: Optional[FloorPlanAnalysis] = None,
-    ) -> PromptSet:
+        ) -> PromptSet:
         if manual_prompt and iteration == 0:
             progress("生成图像（第1轮）", manual_prompt[:80])
             return PromptSet(
@@ -79,6 +80,7 @@ class BasePipeline:
         prompt_set = await self.prompt_gen.generate(
             requirement=requirement,
             user_requirement_text=user_requirement_text,
+            direction_stack_text=direction_stack_text,
             target_model=target_model,
             feedback=feedback,
             floor_desc=floor_desc,
@@ -267,6 +269,7 @@ class BasePipeline:
         floor_plan: Optional[bytes],
         reference_image: Optional[bytes],
         user_requirement: str,
+        direction_stack_text: str = "",
         on_progress=None,
         on_event=None,
         manual_prompt: Optional[str] = None,
@@ -274,6 +277,7 @@ class BasePipeline:
         record_output_dir: Optional[str] = None,
     ) -> PipelineResult:
         cfg = self.config
+        direction_stack_text = direction_stack_text or ""
 
         def progress(step, detail=""):
             if on_progress:
@@ -365,6 +369,7 @@ class BasePipeline:
                 iteration=actual_iterations,
                 requirement=requirement,
                 user_requirement_text=user_requirement,
+                direction_stack_text=direction_stack_text,
                 target_model=target_model,
                 feedback=feedback,
                 floor_desc=floor_desc,

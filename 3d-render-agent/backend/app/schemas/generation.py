@@ -7,6 +7,7 @@ from fastapi import UploadFile
 class GenerateForm:
     mode: str
     requirement: str
+    direction_stack_text: str
     manual_prompt: str
     max_iterations: int
     analysis_provider_name: str

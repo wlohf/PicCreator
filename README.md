@@ -2,13 +2,12 @@
 
 PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图项目。项目核心是 `3d-render-agent`：它可以读取设计需求、平面图和参考图，自动生成提示词，调用图像模型生成效果图，再用视觉模型对结果进行评估，并根据反馈继续迭代优化。
 
-当前版本已经完成一轮前后端分离与 UI 重构：后端保留 Gradio 本地工作台，同时新增分层 FastAPI 服务；前端 React 原型可以通过 API 与后端联动，便于后续做产品化交互和实际测试。
+当前版本已经切到前后端分离形态：后端是分层 FastAPI 服务，前端是 Vite + React 工作台。旧的 Gradio 本地工作台已从默认入口和依赖中移除，后续产品化交互都集中在 React 前端。
 
 ## 当前状态
 
-- Gradio 应用：适合本地快速调试、直接上传文件、查看运行日志和生成结果。
 - FastAPI 服务：提供 `/api` 接口，供前端或其他系统调用。
-- React 前端原型：位于 `3d-render-agent/ui-prototype`，已经接入后端生成接口和 API 配置验证接口。
+- React 前端工作台：位于 `3d-render-agent/ui-prototype`，已经接入生成、上传、API 配置保存/验证、结果库、预览、下载、复制摘要和工作台重置等交互。
 - 测试覆盖：包含核心 pipeline 策略、模型适配器、评估逻辑和后端 API 基础测试。
 
 ## 主要功能
@@ -20,11 +19,10 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
 - 自动评估与迭代：生成后用视觉模型按空间一致性、风格一致性、视觉质量、需求符合度和明显错误等维度评分。
 - 模型回退：主画图模型连续失败后，可切换到备用画图模型继续尝试。
 - 多 API 格式：支持 OpenAI、OpenAI Responses、Gemini、Anthropic、Azure OpenAI、Ollama、Custom OpenAI 等兼容接口。
-- Web 操作界面：内置 Gradio 界面，支持上传、预览、复制当前大图、查看提示词和评估报告。
 - HTTP API：提供 FastAPI 服务，便于前端或其他系统调用。
-- React 原型：`ui-prototype` 提供一个 Vite + React 的产品界面原型，通过 `/api/generate` 调用后端。
-- 前端 API 配置验证：React 原型可调用 `/api/config/verify-analysis` 和 `/api/config/verify-image` 检查模型配置。
-- 结果库体验：React 原型会在当前浏览器会话中保留最近生成结果，支持预览、下载图片和复制运行摘要。
+- React 工作台：`ui-prototype` 提供一个 Vite + React 的产品界面，通过 `/api/generate` 调用后端。
+- 前端 API 配置验证：React 工作台可调用 `/api/config/verify-analysis` 和 `/api/config/verify-image` 检查模型配置。
+- 结果库体验：React 工作台会在当前浏览器会话中保留最近生成结果，支持预览、下载图片和复制运行摘要。
 
 ## 项目结构
 
@@ -33,8 +31,7 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
 ├── README.md
 ├── start_3d_render_agent.bat
 └── 3d-render-agent/
-    ├── main.py                  # Gradio 主界面与运行入口
-    ├── app_runtime.py           # Gradio/FastAPI 共用的运行时、配置覆盖、API 验证和 pipeline 调用
+    ├── app_runtime.py           # FastAPI 共用的运行时、配置覆盖、API 验证和 pipeline 调用
     ├── api_server.py            # FastAPI 兼容启动入口
     ├── backend/                 # 分层 FastAPI 应用
     │   └── app/
@@ -53,7 +50,7 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
     ├── models/                  # Pydantic 数据结构
     ├── benchmarks/              # 基准样例
     ├── tests/                   # pytest 测试，含后端 API 测试
-    └── ui-prototype/            # React + Vite 前端原型
+    └── ui-prototype/            # React + Vite 前端工作台
         └── src/
             ├── api/             # 前端 API client、生成接口、配置验证接口
             ├── components/      # UI 组件
@@ -72,15 +69,14 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
 start_3d_render_agent.bat
 ```
 
-脚本会进入 `3d-render-agent` 目录，检查依赖，必要时执行 `pip install -r requirements.txt`，然后启动 Gradio 应用。默认地址：
+脚本会进入 `3d-render-agent` 目录，检查依赖，必要时执行 `pip install -r requirements.txt`，然后启动后端与前端。默认地址：
 
 ```text
-http://127.0.0.1:7860/
+API: http://127.0.0.1:8787/
+Web: http://127.0.0.1:5174/
 ```
 
-如果 7860 被占用，程序会尝试后续端口。
-
-### 方式二：手动启动 Gradio 应用
+脚本会自动打开后端和前端两个窗口。
 
 ```bash
 cd 3d-render-agent
@@ -89,7 +85,7 @@ python -m venv .venv
 pip install -r requirements.txt
 copy config.example.json config.json
 copy .env.example .env
-python main.py
+python api_server.py
 ```
 
 macOS / Linux 可将激活命令替换为：
@@ -98,7 +94,7 @@ macOS / Linux 可将激活命令替换为：
 source .venv/bin/activate
 cp config.example.json config.json
 cp .env.example .env
-python main.py
+python api_server.py
 ```
 
 ## 配置 API Key
@@ -147,17 +143,19 @@ new_api, cherryin
 
 ## 使用方式
 
-### Gradio 界面
+### React 工作台
 
-启动 `python main.py` 后，在浏览器打开 Gradio 地址。界面中可以：
+启动 FastAPI 后端和 React 前端后，在浏览器打开 `http://127.0.0.1:5174/`。界面中可以：
 
 - 选择“常规生图”或“3D效果图”。
 - 上传平面图，可多选。
 - 上传参考图，可选。
 - 输入设计需求，例如风格、视角、空间功能、材质、禁止项。
-- 直接填写手动提示词，跳过自动提示词生成。
+- 编辑设计需求，使用快捷方向和风格标签补全提示词。
 - 设置最大迭代次数、主模型、备用模型和失败切换策略。
-- 验证分析模型和画图模型是否可用。
+- 保存模型配置到本地 `config.json` / `.env`，并验证分析模型和画图模型是否可用。
+- 使用结果库预览、下载、复制摘要、载入历史提示词、移除记录和清空结果。
+- 放大生成图、复制当前提示词、清空附件和重置工作台。
 - 查看平面图解析结果、最终提示词、评估报告和执行日志。
 
 生成图片会保存到 `3d-render-agent/outputs/`，该目录已被 `.gitignore` 排除。
@@ -202,9 +200,9 @@ APP_HOST=0.0.0.0 APP_PORT=8787 APP_CORS_ORIGINS=http://127.0.0.1:5174 python api
 - `reference_image`：参考图文件，可选。
 - `analysis_*` / `img_*`：前端临时覆盖的模型配置，可选。
 
-### React 前端原型
+### React 前端工作台
 
-React 原型位于 `3d-render-agent/ui-prototype`。
+React 工作台位于 `3d-render-agent/ui-prototype`。
 
 先启动后端：
 
@@ -249,7 +247,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8787 npm run build
 
 - 本地测试：直接拉取源码运行，最方便排查 API Key、模型接口、依赖和生成质量问题。
 - 小范围自用/团队测试：部署到 VPS 更合适，可以统一配置模型 Key、统一保存 outputs，并通过浏览器访问。
-- EXE 打包：适合功能稳定之后再做。当前项目包含 Python、Gradio、FastAPI、React、模型配置、上传文件和输出目录，打包成单个 EXE 会增加依赖体积、路径处理、密钥配置和升级维护成本。
+- EXE 打包：适合功能稳定之后再做。当前项目包含 Python、FastAPI、React、模型配置、上传文件和输出目录，打包成单个 EXE 会增加依赖体积、路径处理、密钥配置和升级维护成本。
 
 ### 什么时候选择 EXE？
 
@@ -264,7 +262,7 @@ VITE_API_BASE_URL=http://127.0.0.1:8787 npm run build
 
 如果你希望自己或团队用浏览器访问，建议 VPS 部署：
 
-- 后端统一运行 FastAPI 或 Gradio。
+- 后端统一运行 FastAPI。
 - 前端 React 构建后通过 Nginx/Caddy 托管。
 - API Key 放在 VPS 的 `.env` 和 `config.json`，不需要每台电脑重复配置。
 - 后续可以更容易增加登录、任务队列、历史记录和对象存储。
@@ -288,35 +286,6 @@ git fetch origin
 git checkout refine-3d-render-agent-frontend-backend
 git pull
 ```
-
-### 本地测试 Gradio
-
-```bash
-cd 3d-render-agent
-python -m venv .venv
-```
-
-Windows：
-
-```bat
-.venv\Scripts\activate
-pip install -r requirements.txt
-copy config.example.json config.json
-copy .env.example .env
-python main.py
-```
-
-macOS / Linux：
-
-```bash
-source .venv/bin/activate
-pip install -r requirements.txt
-cp config.example.json config.json
-cp .env.example .env
-python main.py
-```
-
-然后编辑 `config.json` 和 `.env`，填入你的模型配置和 API Key。
 
 ### 本地测试前后端分离版本
 
@@ -378,7 +347,7 @@ pytest
 
 ```bash
 cd 3d-render-agent
-python -m py_compile api_server.py app_runtime.py main.py backend/app/main.py backend/app/routes/*.py backend/app/services/*.py backend/app/schemas/*.py
+python -m py_compile api_server.py app_runtime.py backend/app/main.py backend/app/routes/*.py backend/app/services/*.py backend/app/schemas/*.py
 ```
 
 运行前端依赖审计和构建检查：
@@ -396,19 +365,18 @@ npm run build
 - `npm audit --audit-level=moderate`：0 vulnerabilities。
 - `npm run build`：通过。
 - FastAPI smoke：`GET /api/health` 返回 200。
-- Gradio smoke：首页返回 200。
 
 ## 已完成的重构重点
 
 - 后端从单文件 API 入口拆分为 `backend.app` 分层结构。
 - `api_server.py` 保留为兼容启动入口，实际委托 `backend.app.main.app`。
-- `app_runtime.py` 统一承载 Gradio 与 FastAPI 共用的运行时逻辑，降低重复代码。
+- `app_runtime.py` 统一承载 FastAPI 调用 pipeline、配置覆盖和 API 验证逻辑。
 - FastAPI 路由拆分为 health、config、generate。
 - 上传文件处理和生成服务拆入 services。
 - 新增后端 API 测试，覆盖健康检查、非法生成模式、配置验证错误路径。
 - 前端拆出 API client、领域类型、静态数据、工具函数和基础组件。
-- React 原型支持生成请求、API Base URL 配置、模型配置验证和状态提示。
-- React 原型新增会话级结果库、图片打开/下载、运行摘要复制和操作 toast。
+- React 工作台支持生成请求、API Base URL 配置、模型配置验证和状态提示。
+- React 工作台新增会话级结果库、图片打开/下载、运行摘要复制和操作 toast。
 - Vite dev/preview 支持 `0.0.0.0`、`allowedHosts` 和可配置代理目标。
 
 ## 后续计划

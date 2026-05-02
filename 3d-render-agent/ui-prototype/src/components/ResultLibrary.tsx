@@ -1,4 +1,4 @@
-import { Download, ExternalLink } from "lucide-react";
+import { Clipboard, Download, ExternalLink, RotateCcw, Trash2 } from "lucide-react";
 
 import type { Locale, RenderHistoryItem } from "../types/domain";
 
@@ -8,7 +8,11 @@ export function ResultLibrary({
   activeId,
   onSelect,
   onDownload,
-  onOpen
+  onOpen,
+  onCopy,
+  onUsePrompt,
+  onRemove,
+  onClear
 }: {
   locale: Locale;
   items: RenderHistoryItem[];
@@ -16,6 +20,10 @@ export function ResultLibrary({
   onSelect: (id: string) => void;
   onDownload: (item: RenderHistoryItem) => void;
   onOpen: (item: RenderHistoryItem) => void;
+  onCopy: (item: RenderHistoryItem) => void;
+  onUsePrompt: (item: RenderHistoryItem) => void;
+  onRemove: (id: string) => void;
+  onClear: () => void;
 }) {
   if (items.length === 0) {
     return (
@@ -36,7 +44,10 @@ export function ResultLibrary({
           <p className="eyebrow">{locale === "zh" ? "结果库" : "Result Library"}</p>
           <strong>{locale === "zh" ? `最近 ${items.length} 次生成` : `Last ${items.length} generations`}</strong>
         </div>
-        <span>{locale === "zh" ? "本地会话临时保存" : "Session only"}</span>
+        <button className="result-library-clear" type="button" onClick={onClear}>
+          <Trash2 size={13} />
+          {locale === "zh" ? "清空" : "Clear"}
+        </button>
       </div>
       <div className="result-library-list">
         {items.map((item) => {
@@ -58,8 +69,17 @@ export function ResultLibrary({
                 <button type="button" onClick={() => onOpen(item)} disabled={!item.imageUrl} title={locale === "zh" ? "打开图片" : "Open image"}>
                   <ExternalLink size={14} />
                 </button>
+                <button type="button" onClick={() => onCopy(item)} title={locale === "zh" ? "复制摘要" : "Copy summary"}>
+                  <Clipboard size={14} />
+                </button>
+                <button type="button" onClick={() => onUsePrompt(item)} disabled={!item.prompt} title={locale === "zh" ? "载入提示词" : "Load prompt"}>
+                  <RotateCcw size={14} />
+                </button>
                 <button type="button" onClick={() => onDownload(item)} disabled={!item.imageUrl} title={locale === "zh" ? "下载图片" : "Download image"}>
                   <Download size={14} />
+                </button>
+                <button type="button" onClick={() => onRemove(item.id)} title={locale === "zh" ? "移除记录" : "Remove result"}>
+                  <Trash2 size={14} />
                 </button>
               </div>
             </article>

@@ -1,5 +1,3 @@
-import type { LucideIcon } from "lucide-react";
-
 export type Locale = "zh" | "en";
 export type Tone = "neutral" | "good" | "warn";
 export type ToolKey = "select" | "assets" | "material" | "lighting";
@@ -23,31 +21,6 @@ export type ApiConfig = {
 
 export type LocalizedText = Record<Locale, string>;
 
-export type RenderVersion = {
-  id: string;
-  name: LocalizedText;
-  score: string;
-  angle: LocalizedText;
-  status: "ready" | "review";
-  metrics: Record<ParameterKey | "composition", number>;
-};
-
-export type IterationRun = {
-  step: string;
-  title: LocalizedText;
-  model: string;
-  score: LocalizedText;
-  status: "accepted" | "refined" | "warning";
-  notes: Record<Locale, string[]>;
-};
-
-export type Metric = {
-  key: string;
-  label: LocalizedText;
-  value: number;
-  tone: Tone;
-};
-
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -56,18 +29,6 @@ export type ChatMessage = {
   bullets?: Record<Locale, string[]>;
   imageUrl?: string;
   imageLabel?: string;
-};
-
-export type ReferenceAsset = {
-  label: LocalizedText;
-  meta: LocalizedText;
-  icon: LucideIcon;
-};
-
-export type ToolDefinition = {
-  key: ToolKey;
-  label: LocalizedText;
-  icon: "pointer" | "camera" | "ruler" | "sun";
 };
 
 export type ApiImage = {
@@ -102,6 +63,7 @@ export type GenerateResponse = {
 
 export type GenerationRequest = {
   prompt: string;
+  directionStackText: string;
   maxIterations: number;
   apiConfig: ApiConfig;
   selectedModel: string;

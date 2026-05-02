@@ -13,6 +13,7 @@ router = APIRouter(prefix="/api", tags=["generation"])
 async def generate(
     mode: str = Form(GenerationMode.RENDER3D.value),
     requirement: str = Form(""),
+    direction_stack_text: str = Form(""),
     manual_prompt: str = Form(""),
     max_iterations: int = Form(3),
     analysis_provider_name: str = Form(""),
@@ -34,6 +35,7 @@ async def generate(
     form = GenerateForm(
         mode=mode,
         requirement=requirement,
+        direction_stack_text=direction_stack_text,
         manual_prompt=manual_prompt,
         max_iterations=max_iterations,
         analysis_provider_name=analysis_provider_name,
