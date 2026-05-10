@@ -1,6 +1,7 @@
 import pytest
 
 from agents.floor_analyzer import FloorPlanAnalyzer
+from agents import prompt_assets
 
 
 class TimeoutOnRetryVision:
@@ -52,6 +53,20 @@ def test_floor_analyzer_normalizes_string_fixtures_in_model_json():
     assert len(analysis.spaces) == 1
     assert analysis.spaces[0].fixtures[0].name == "墙面挂画"
     assert analysis.fixed_structures[0].name == "南侧主要入口门"
+
+
+def test_floor_analysis_prompt_demands_precise_p0_symbol_recognition():
+    prompt = prompt_assets.FLOOR_ANALYSIS_SYSTEM_PROMPT
+
+    assert "蹲厕" in prompt
+    assert "坐便器" in prompt
+    assert "不能统一写成坐便器" in prompt
+    assert "电视" in prompt
+    assert "资料室" in prompt
+    assert "不要凭空补椅子" in prompt
+    assert "阳台门" in prompt
+    assert "不是普通窗" in prompt
+    assert "两个木门重叠" in prompt
 
 
 @pytest.mark.asyncio

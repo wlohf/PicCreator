@@ -61,7 +61,7 @@ async def main():
     parser = argparse.ArgumentParser(description="Run prompt strategy benchmarks for fixed samples.")
     parser.add_argument("--config", default="config.json")
     parser.add_argument("--samples", default="benchmarks/samples.json")
-    parser.add_argument("--strategies", nargs="+", default=["layered_constraints_v1", "dense_legacy_v0"])
+    parser.add_argument("--strategies", nargs="+", default=["llm_prompt_v1"])
     parser.add_argument("--out-dir", default="")
     args = parser.parse_args()
 

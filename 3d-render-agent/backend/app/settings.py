@@ -1,5 +1,8 @@
 import os
 
+API_BUILD_ID = "sse-heartbeat-20260503"
+
+
 DEFAULT_CORS_ORIGINS = [
     "http://127.0.0.1:5174",
     "http://localhost:5174",
@@ -15,6 +18,10 @@ def get_cors_origins() -> list[str]:
     if raw.strip():
         return [origin.strip() for origin in raw.split(",") if origin.strip()]
     return DEFAULT_CORS_ORIGINS
+
+
+def get_cors_origin_regex() -> str:
+    return os.environ.get("CORS_ORIGIN_REGEX", r"https?://(localhost|127\.0\.0\.1)(:\d+)?")
 
 
 def get_server_host() -> str:

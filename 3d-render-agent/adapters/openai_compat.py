@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import json
 import re
@@ -10,6 +11,18 @@ from adapters.base import BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter
 
 class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
     """统一适配 OpenAI 兼容格式的 LLM / 生图 / 视觉接口（含中转站）。"""
+
+    RETRYABLE_STATUS_CODES = {408, 409, 429, 500, 502, 503, 504}
+    RETRYABLE_HTTPX_EXCEPTIONS = (
+        httpx.ConnectTimeout,
+        httpx.WriteTimeout,
+        httpx.PoolTimeout,
+        httpx.ReadError,
+        httpx.WriteError,
+        httpx.ConnectError,
+        httpx.RemoteProtocolError,
+    )
+    MAX_ATTEMPTS = 3
 
     def __init__(self, cfg: AdapterConfig):
         self.model = cfg.model
@@ -34,25 +47,81 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
             default_headers={"User-Agent": "python-httpx/0.25.0"},
         )
 
+    @classmethod
+    def _is_retryable_status_code(cls, status_code: int | None) -> bool:
+        return status_code in cls.RETRYABLE_STATUS_CODES
+
+    @staticmethod
+    def _extract_retry_after_seconds(headers) -> float | None:
+        if not headers:
+            return None
+        raw_value = headers.get("Retry-After")
+        if not raw_value:
+            return None
+        try:
+            seconds = float(str(raw_value).strip())
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, seconds)
+
+    @classmethod
+    def _retry_delay_seconds(cls, attempt: int, retry_after_seconds: float | None = None) -> float:
+        if retry_after_seconds is not None:
+            return min(max(retry_after_seconds, 0.5), 15.0)
+        base = 1.5 * (2 ** max(attempt - 1, 0))
+        return min(base, 8.0)
+
+    @classmethod
+    def _should_retry_exception(cls, exc: Exception) -> tuple[bool, float | None]:
+        if isinstance(exc, cls.RETRYABLE_HTTPX_EXCEPTIONS):
+            return True, None
+        status_code = getattr(exc, "status_code", None)
+        response = getattr(exc, "response", None)
+        if status_code is None and response is not None:
+            status_code = getattr(response, "status_code", None)
+        if cls._is_retryable_status_code(status_code):
+            headers = getattr(response, "headers", None)
+            return True, cls._extract_retry_after_seconds(headers)
+        return False, None
+
+    async def _run_with_retries(self, operation):
+        last_exc = None
+        for attempt in range(1, self.MAX_ATTEMPTS + 1):
+            try:
+                return await operation()
+            except Exception as exc:
+                last_exc = exc
+                should_retry, retry_after = self._should_retry_exception(exc)
+                if not should_retry or attempt >= self.MAX_ATTEMPTS:
+                    raise
+                await asyncio.sleep(self._retry_delay_seconds(attempt, retry_after))
+        raise last_exc
+
     async def _post(self, endpoint: str, payload: dict) -> dict:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                f"{self.base_url}{endpoint}",
-                headers=self._headers,
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json()
+        async def operation() -> dict:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(
+                    f"{self.base_url}{endpoint}",
+                    headers=self._headers,
+                    json=payload,
+                )
+                resp.raise_for_status()
+                return resp.json()
+
+        return await self._run_with_retries(operation)
 
     async def _post_text(self, endpoint: str, payload: dict) -> str:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.post(
-                f"{self.base_url}{endpoint}",
-                headers=self._headers,
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.text
+        async def operation() -> str:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.post(
+                    f"{self.base_url}{endpoint}",
+                    headers=self._headers,
+                    json=payload,
+                )
+                resp.raise_for_status()
+                return resp.text
+
+        return await self._run_with_retries(operation)
 
     @staticmethod
     def _guess_mime_type(image_bytes: bytes) -> str:
@@ -229,10 +298,13 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
         return ""
 
     async def _download_remote_image(self, url: str) -> bytes:
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
-            return resp.content
+        async def operation() -> bytes:
+            async with httpx.AsyncClient(timeout=self.timeout) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                return resp.content
+
+        return await self._run_with_retries(operation)
 
     async def _extract_image_from_chat_response(self, data: dict) -> bytes:
         msg = data.get("choices", [{}])[0].get("message", {})
@@ -278,6 +350,44 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
         combined = f"{positive}\n\n负向约束：{negative}"
         return combined, True, "embedded_text"
 
+    @staticmethod
+    def _prefers_images_endpoint(model: str) -> bool:
+        model_name = (model or "").strip().lower()
+        return model_name.startswith(("dall-e-2", "dall-e-3", "gpt-image-"))
+
+    async def _generate_with_images_endpoint(
+        self,
+        *,
+        model: str,
+        prompt_text: str,
+        prompt: PromptSet,
+        negative_applied: bool,
+        negative_mode: str,
+    ) -> NormalizedImage:
+        async def operation():
+            return await self.client.images.generate(
+                model=model,
+                prompt=prompt_text,
+                response_format="b64_json",
+                n=1,
+            )
+
+        resp = await self._run_with_retries(operation)
+        image_bytes = base64.b64decode(resp.data[0].b64_json)
+        return NormalizedImage(
+            image_bytes=image_bytes,
+            source_model=model,
+            generation_params={
+                "prompt": prompt.positive_prompt,
+                "negative_prompt": prompt.negative_prompt,
+                "negative_prompt_applied": negative_applied,
+                "negative_prompt_mode": negative_mode,
+                "has_floor_plan": False,
+                "has_reference_image": False,
+                "endpoint": "images.generate",
+            },
+        )
+
     async def generate(self, prompt: PromptSet) -> NormalizedImage:
         model = prompt.model_target or self.model
         prompt_text, negative_applied, negative_mode = self._compose_generation_text(prompt)
@@ -293,12 +403,24 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
         content_parts.append({"type": "text", "text": prompt_text})
         content = content_parts if len(content_parts) > 1 else prompt_text
 
+        if not (prompt.floor_plan or prompt.reference_image) and self._prefers_images_endpoint(model):
+            return await self._generate_with_images_endpoint(
+                model=model,
+                prompt_text=prompt_text,
+                prompt=prompt,
+                negative_applied=negative_applied,
+                negative_mode=negative_mode,
+            )
+
         # 画图模型走 SDK with_raw_response（需要读 images 字段）
         try:
-            raw = await self.client.chat.completions.with_raw_response.create(
-                model=model,
-                messages=[{"role": "user", "content": content}],
-            )
+            async def operation():
+                return await self.client.chat.completions.with_raw_response.create(
+                    model=model,
+                    messages=[{"role": "user", "content": content}],
+                )
+
+            raw = await self._run_with_retries(operation)
             data = json.loads(raw.text)
             image_bytes = await self._extract_image_from_chat_response(data)
             return NormalizedImage(
@@ -319,25 +441,12 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
             if prompt.floor_plan or prompt.reference_image:
                 raise
 
-        resp = await self.client.images.generate(
+        return await self._generate_with_images_endpoint(
             model=model,
-            prompt=prompt_text,
-            response_format="b64_json",
-            n=1,
-        )
-        image_bytes = base64.b64decode(resp.data[0].b64_json)
-        return NormalizedImage(
-            image_bytes=image_bytes,
-            source_model=model,
-            generation_params={
-                "prompt": prompt.positive_prompt,
-                "negative_prompt": prompt.negative_prompt,
-                "negative_prompt_applied": negative_applied,
-                "negative_prompt_mode": negative_mode,
-                "has_floor_plan": False,
-                "has_reference_image": False,
-                "endpoint": "images.generate",
-            },
+            prompt_text=prompt_text,
+            prompt=prompt,
+            negative_applied=negative_applied,
+            negative_mode=negative_mode,
         )
 
     async def analyze(self, image_bytes: bytes, prompt: str) -> str:

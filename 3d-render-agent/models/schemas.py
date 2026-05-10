@@ -84,6 +84,55 @@ class FloorPlanAnalysis(BaseModel):
     final_prompt: str = ""
     negative_prompt: str = ""
 
+    def to_display_summary(self) -> str:
+        lines: List[str] = ["【平面图分析】"]
+        if self.readable_summary:
+            lines.append(self.readable_summary.strip())
+        else:
+            if self.space_type or self.floor_label:
+                lines.append(f"空间类型：{self.space_type or '未知'}；楼层：{self.floor_label or '未知'}")
+            if self.overall_shape or self.dimensions:
+                lines.append(f"整体轮廓：{self.overall_shape or '未知'} {self.dimensions or ''}".strip())
+            if self.circulation:
+                lines.append(f"动线：{self.circulation}")
+            if self.core_summary:
+                lines.append(f"核心组织：{self.core_summary}")
+
+        if self.spaces:
+            lines.append("\n【识别到的空间】")
+            for space in self.spaces[:14]:
+                name = space.name or space.id or "未命名空间"
+                parts = [space.function, space.position]
+                if space.adjacent_to:
+                    parts.append("相邻：" + "、".join(space.adjacent_to[:4]))
+                furniture_names = [
+                    item.name for item in [*space.furniture, *space.fixtures]
+                    if item.name
+                ][:5]
+                if furniture_names:
+                    parts.append("家具/设备：" + "、".join(furniture_names))
+                line = "；".join(part for part in parts if part)
+                lines.append(f"- {name}" + (f"：{line}" if line else ""))
+            if len(self.spaces) > 14:
+                lines.append(f"- 另有 {len(self.spaces) - 14} 个空间已识别，已用于生成约束。")
+
+        if self.fixed_structures:
+            structures = "、".join(item.name for item in self.fixed_structures[:8] if item.name)
+            if structures:
+                lines.append(f"\n固定结构：{structures}")
+
+        key_constraints = [
+            *self.global_wall_constraints,
+            *self.global_window_constraints,
+            *self.global_door_constraints,
+            *self.hard_constraints,
+        ][:8]
+        if key_constraints:
+            lines.append("\n【关键约束】")
+            lines.extend(f"- {constraint}" for constraint in key_constraints)
+
+        return "\n".join(line for line in lines if line).strip()
+
     def to_prompt_context(self) -> str:
         lines = [
             "【结构化平面图分析】",
@@ -173,6 +222,7 @@ class FloorPlanAnalysis(BaseModel):
 class GenerationMode(str, Enum):
     STANDARD = "standard"
     RENDER3D = "render3d"
+    COLORED_FLOOR_PLAN = "colored_floor_plan"
 
 
 class PromptSet(BaseModel):
@@ -210,6 +260,7 @@ class EvaluationResult(BaseModel):
     dimensions: List[DimensionScore] = Field(default_factory=list)
     passed: bool
     failure_reason: Optional[str] = None
+    hard_failures: List[str] = Field(default_factory=list)
     issues: List[str] = Field(default_factory=list)
     image_description: str = ""
     prompt_alignment: str = ""

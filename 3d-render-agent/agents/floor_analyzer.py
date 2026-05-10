@@ -4,7 +4,7 @@ import re
 
 from adapters.base import BaseVisionAdapter
 from models.schemas import FloorPlanAnalysis
-from agents.prompt_assets import FLOOR_ANALYSIS_SYSTEM_PROMPT
+from agents import prompt_assets
 
 
 DETAIL_RETRY_SUFFIX = """
@@ -24,11 +24,12 @@ class FloorPlanAnalyzer:
         self.vision = vision
 
     async def analyze(self, image_bytes: bytes) -> FloorPlanAnalysis:
-        raw = await self.vision.analyze(image_bytes, FLOOR_ANALYSIS_SYSTEM_PROMPT)
+        system_prompt = prompt_assets.get_floor_analysis_system_prompt()
+        raw = await self.vision.analyze(image_bytes, system_prompt)
         result = self._build_analysis(raw)
-        if self._looks_too_sparse(result):
+        if self.is_sparse(result):
             try:
-                retry_raw = await self.vision.analyze(image_bytes, FLOOR_ANALYSIS_SYSTEM_PROMPT + DETAIL_RETRY_SUFFIX)
+                retry_raw = await self.vision.analyze(image_bytes, system_prompt + DETAIL_RETRY_SUFFIX)
                 retry_result = self._build_analysis(retry_raw)
                 if self._analysis_score(retry_result) >= self._analysis_score(result):
                     result = retry_result
@@ -145,6 +146,10 @@ class FloorPlanAnalyzer:
         if len((analysis.readable_summary or "").strip()) < 180:
             return True
         return False
+
+    @classmethod
+    def is_sparse(cls, analysis: FloorPlanAnalysis) -> bool:
+        return cls._looks_too_sparse(analysis)
 
     @staticmethod
     def _extract_json(raw: str) -> dict:

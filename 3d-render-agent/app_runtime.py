@@ -3,6 +3,7 @@ import json
 from io import BytesIO
 import os
 import sys
+from pathlib import Path
 from queue import Queue
 from threading import Thread
 import time
@@ -24,11 +25,31 @@ from config import (
     normalize_api_format,
     describe_adapter_capabilities,
     adapter_supports_image_inputs,
+    clone_adapter_config,
 )
 from adapters import build_adapter
+from agents import prompt_assets
+from backend.app.services.result_store import get_user_data_dir, normalize_user_id
 from pipeline import PipelineFactory
 from models.schemas import GenerationMode
 from models.schemas import PromptSet
+
+GENERATION_ANALYSIS_TIMEOUT_SECONDS = 180
+GENERATION_IMAGE_TIMEOUT_SECONDS = 600
+PROJECT_ROOT = Path(__file__).resolve().parent
+CONFIG_PATH = PROJECT_ROOT / "config.json"
+CONFIG_EXAMPLE_PATH = PROJECT_ROOT / "config.example.json"
+ENV_PATH = PROJECT_ROOT / ".env"
+DEFAULT_CONFIG_USER_ID = "default"
+
+
+def _ensure_min_timeout(cfg: AdapterConfig, minimum_seconds: int) -> AdapterConfig:
+    try:
+        current = int(cfg.timeout or 0)
+    except (TypeError, ValueError):
+        current = 0
+    cfg.timeout = max(current, minimum_seconds)
+    return cfg
 
 API_FORMAT_HELP = (
     "API格式是请求/响应协议，不是供应商名称。当前支持："
@@ -37,9 +58,54 @@ API_FORMAT_HELP = (
 )
 UI_API_FORMAT_CHOICES = (("使用 config.json", ""), *COMMON_API_FORMAT_CHOICES)
 
-def get_config() -> AppConfig:
+def _is_default_config_user(user_id: str | None) -> bool:
+    return normalize_user_id(user_id) == DEFAULT_CONFIG_USER_ID
+
+
+def _sanitize_user_config_data(data: dict[str, Any]) -> dict[str, Any]:
+    sanitized = json.loads(json.dumps(data))
+    for section_name in ("llm", "vision", "image_gen"):
+        section = sanitized.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        section["api_key"] = ""
+        section["api_key_env"] = ""
+    return sanitized
+
+
+def _user_config_dir(user_id: str) -> Path:
+    return get_user_data_dir(user_id) / "config"
+
+
+def _config_path_for_user(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> Path:
+    if _is_default_config_user(user_id):
+        return CONFIG_PATH
+    return _user_config_dir(normalize_user_id(user_id)) / "config.json"
+
+
+def _env_path_for_user(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> Path:
+    if _is_default_config_user(user_id):
+        return ENV_PATH
+    return _user_config_dir(normalize_user_id(user_id)) / ".env"
+
+
+def _ensure_user_config_file(user_id: str | None) -> Path:
+    target = _config_path_for_user(user_id)
+    if _is_default_config_user(user_id):
+        return target
+    if not target.exists():
+        data = _sanitize_user_config_data(_load_config_json(CONFIG_EXAMPLE_PATH))
+        _save_config_json(data, target)
+    return target
+
+
+def get_config(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> AppConfig:
+    if _is_default_config_user(user_id):
+        config_path = CONFIG_PATH if CONFIG_PATH.exists() else CONFIG_EXAMPLE_PATH
+    else:
+        config_path = _ensure_user_config_file(user_id)
     try:
-        return load_config("config.json")
+        return load_config(str(config_path))
     except Exception as e:
         raise RuntimeError(f"配置文件加载失败：{e}")
 
@@ -112,7 +178,7 @@ def _validate_adapter_config(name: str, cfg: AdapterConfig):
 
 
 def save_api_keys_to_env(analysis_api_key, img_api_key):
-    env_path = ".env"
+    env_path = ENV_PATH
     current = _read_env_values(env_path)
 
     llm_key = (analysis_api_key or "").strip()
@@ -139,10 +205,16 @@ def save_api_keys_to_env(analysis_api_key, img_api_key):
     return f"已保存到 .env：{', '.join(msg)}"
 
 
-def _read_env_values(env_path: str = ".env") -> dict[str, str]:
+def _resolve_project_path(path: str | os.PathLike[str]) -> Path:
+    resolved = Path(path).expanduser()
+    return resolved if resolved.is_absolute() else PROJECT_ROOT / resolved
+
+
+def _read_env_values(env_path: str | os.PathLike[str] = ENV_PATH) -> dict[str, str]:
     current = {}
-    if os.path.exists(env_path):
-        with open(env_path, "r", encoding="utf-8") as f:
+    path = _resolve_project_path(env_path)
+    if path.exists():
+        with path.open("r", encoding="utf-8") as f:
             for line in f:
                 raw = line.strip()
                 if not raw or raw.startswith("#") or "=" not in raw:
@@ -152,22 +224,51 @@ def _read_env_values(env_path: str = ".env") -> dict[str, str]:
     return current
 
 
-def _write_env_values(env_path: str, current: dict[str, str]):
-    with open(env_path, "w", encoding="utf-8") as f:
+def _write_env_values(env_path: str | os.PathLike[str], current: dict[str, str]):
+    path = _resolve_project_path(env_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
         for k in sorted(current.keys()):
             f.write(f"{k}={current[k]}\n")
 
 
-def _load_config_json(path: str = "config.json") -> dict:
-    source = path if os.path.exists(path) else "config.example.json"
-    with open(source, "r", encoding="utf-8") as f:
-        return json.load(f)
+def _load_config_json(path: str | os.PathLike[str] = CONFIG_PATH, user_id: str | None = None) -> dict:
+    requested = _config_path_for_user(user_id) if user_id is not None else _resolve_project_path(path)
+    if user_id is not None and not _is_default_config_user(user_id):
+        _ensure_user_config_file(user_id)
+    source = requested if requested.exists() else CONFIG_EXAMPLE_PATH
+    with source.open("r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"配置文件 {source} 格式错误：{exc}") from exc
 
 
-def _save_config_json(data: dict, path: str = "config.json"):
-    with open(path, "w", encoding="utf-8") as f:
+def _save_config_json(data: dict, path: str | os.PathLike[str] = CONFIG_PATH):
+    target = _resolve_project_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with target.open("w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
         f.write("\n")
+
+
+def _read_prompt_overrides_from_json(data: dict[str, Any]) -> dict[str, str]:
+    overrides = data.get("prompt_overrides") if isinstance(data.get("prompt_overrides"), dict) else {}
+    return {
+        "floorAnalysisSystemPrompt": str(overrides.get("floorAnalysisSystemPrompt") or prompt_assets.FLOOR_ANALYSIS_SYSTEM_PROMPT).strip(),
+        "promptGenSystem3dCn": str(overrides.get("promptGenSystem3dCn") or prompt_assets.PROMPT_GEN_SYSTEM_3D_CN).strip(),
+        "promptGenSystemStandardCn": str(overrides.get("promptGenSystemStandardCn") or prompt_assets.PROMPT_GEN_SYSTEM_STANDARD_CN).strip(),
+    }
+
+
+def _apply_prompt_overrides_from_json(data: dict[str, Any]) -> dict[str, str]:
+    overrides = _read_prompt_overrides_from_json(data)
+    prompt_assets.set_prompt_overrides(
+        floor_analysis_system_prompt=overrides["floorAnalysisSystemPrompt"],
+        prompt_gen_system_3d_cn=overrides["promptGenSystem3dCn"],
+        prompt_gen_system_standard_cn=overrides["promptGenSystemStandardCn"],
+    )
+    return overrides
 
 
 def _update_adapter_json(
@@ -179,6 +280,7 @@ def _update_adapter_json(
     base_url: str,
     model: str,
     api_key_env: str,
+    api_key: str | None = None,
 ):
     section = dict(data.get(section_name) or {})
     if provider_name.strip():
@@ -190,6 +292,8 @@ def _update_adapter_json(
     if model.strip():
         section["model"] = model.strip()
     section["api_key_env"] = api_key_env
+    if api_key is not None:
+        section["api_key"] = api_key.strip()
     data[section_name] = section
 
 
@@ -204,11 +308,17 @@ def save_model_config_to_files(
     img_base_url,
     img_api_key,
     img_model,
+    floor_analysis_system_prompt="",
+    prompt_gen_system_3d_cn="",
     fallback_models_text="",
     model_switch_after_failures=2,
     stop_after_last_model_failures=2,
+    user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ):
-    data = _load_config_json("config.json")
+    is_default_user = _is_default_config_user(user_id)
+    config_path = _config_path_for_user(user_id)
+    env_path = _env_path_for_user(user_id)
+    data = _load_config_json(user_id=user_id)
     _update_adapter_json(
         data,
         "llm",
@@ -216,7 +326,8 @@ def save_model_config_to_files(
         api_format=analysis_api_format or "",
         base_url=analysis_base_url or "",
         model=analysis_model or "",
-        api_key_env="LLM_API_KEY",
+        api_key_env="LLM_API_KEY" if is_default_user else "",
+        api_key=None if is_default_user else (analysis_api_key or ""),
     )
     _update_adapter_json(
         data,
@@ -225,7 +336,8 @@ def save_model_config_to_files(
         api_format=analysis_api_format or "",
         base_url=analysis_base_url or "",
         model=analysis_model or "",
-        api_key_env="VISION_API_KEY",
+        api_key_env="VISION_API_KEY" if is_default_user else "",
+        api_key=None if is_default_user else (analysis_api_key or ""),
     )
     _update_adapter_json(
         data,
@@ -234,7 +346,8 @@ def save_model_config_to_files(
         api_format=img_api_format or "",
         base_url=img_base_url or "",
         model=img_model or "",
-        api_key_env="IMAGE_API_KEY",
+        api_key_env="IMAGE_API_KEY" if is_default_user else "",
+        api_key=None if is_default_user else (img_api_key or ""),
     )
 
     fallback_models = []
@@ -245,20 +358,61 @@ def save_model_config_to_files(
     data["image_model_fallbacks"] = fallback_models
     data["model_switch_after_failures"] = max(1, int(model_switch_after_failures or 2))
     data["stop_after_last_model_failures"] = max(1, int(stop_after_last_model_failures or 2))
+    data["prompt_overrides"] = {
+        "floorAnalysisSystemPrompt": (floor_analysis_system_prompt or prompt_assets.FLOOR_ANALYSIS_SYSTEM_PROMPT).strip(),
+        "promptGenSystem3dCn": (prompt_gen_system_3d_cn or prompt_assets.PROMPT_GEN_SYSTEM_3D_CN).strip(),
+        "promptGenSystemStandardCn": prompt_assets.get_prompt_gen_system_standard_cn(),
+    }
 
-    env_values = _read_env_values(".env")
-    if (analysis_api_key or "").strip():
-        env_values["LLM_API_KEY"] = analysis_api_key.strip()
-        env_values["VISION_API_KEY"] = analysis_api_key.strip()
-        os.environ["LLM_API_KEY"] = analysis_api_key.strip()
-        os.environ["VISION_API_KEY"] = analysis_api_key.strip()
-    if (img_api_key or "").strip():
-        env_values["IMAGE_API_KEY"] = img_api_key.strip()
-        os.environ["IMAGE_API_KEY"] = img_api_key.strip()
+    if is_default_user:
+        env_values = _read_env_values(env_path)
+        if (analysis_api_key or "").strip():
+            env_values["LLM_API_KEY"] = analysis_api_key.strip()
+            env_values["VISION_API_KEY"] = analysis_api_key.strip()
+            os.environ["LLM_API_KEY"] = analysis_api_key.strip()
+            os.environ["VISION_API_KEY"] = analysis_api_key.strip()
+        if (img_api_key or "").strip():
+            env_values["IMAGE_API_KEY"] = img_api_key.strip()
+            os.environ["IMAGE_API_KEY"] = img_api_key.strip()
+        _write_env_values(env_path, env_values)
 
-    _save_config_json(data, "config.json")
-    _write_env_values(".env", env_values)
-    return "已保存到 config.json 和 .env"
+    _save_config_json(data, config_path)
+    _apply_prompt_overrides_from_json(data)
+    if is_default_user:
+        return "已保存到 config.json 和 .env"
+    return "已保存到当前临时空间的本地配置"
+
+
+def load_model_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> dict[str, Any]:
+    config_data = _load_config_json(user_id=user_id)
+    prompt_overrides = _apply_prompt_overrides_from_json(config_data)
+    cfg = get_config(user_id)
+    return {
+        "analysisProviderName": cfg.llm.provider_name or "",
+        "analysisApiFormat": _ui_api_format(cfg.llm.api_format or cfg.llm.provider),
+        "analysisBaseUrl": cfg.llm.base_url or "",
+        "analysisApiKey": cfg.llm.api_key or "",
+        "analysisModel": cfg.llm.model or "",
+        "imageProviderName": cfg.image_gen.provider_name or "",
+        "imageApiFormat": _ui_api_format(cfg.image_gen.api_format or cfg.image_gen.provider),
+        "imageBaseUrl": cfg.image_gen.base_url or "",
+        "imageApiKey": cfg.image_gen.api_key or "",
+        "imageModel": cfg.image_gen.model or "",
+        "fallbackModels": "\n".join(cfg.image_model_fallbacks or []),
+        "modelSwitchAfterFailures": cfg.model_switch_after_failures,
+        "stopAfterLastModelFailures": cfg.stop_after_last_model_failures,
+        "floorAnalysisSystemPrompt": prompt_overrides["floorAnalysisSystemPrompt"],
+        "promptGenSystem3dCn": prompt_overrides["promptGenSystem3dCn"],
+    }
+
+
+def _ui_api_format(api_format: str) -> str:
+    normalized = normalize_api_format(api_format)
+    if normalized in {"openai_chat", "openai_image"}:
+        return "openai"
+    if normalized in {"custom_openai_chat", "custom_openai_image"}:
+        return "custom"
+    return normalized
 
 
 def _build_runtime_config(
@@ -276,32 +430,42 @@ def _build_runtime_config(
     fallback_models_text="",
     model_switch_after_failures=2,
     stop_after_last_model_failures=2,
+    validate_analysis=True,
+    user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ) -> AppConfig:
-    cfg = get_config()
+    cfg = get_config(user_id)
+    _apply_prompt_overrides_from_json(_load_config_json(user_id=user_id))
     cfg.max_iterations = int(max_iterations)
 
-    analysis_cfg = _merge_adapter_override(
-        cfg.llm,
-        analysis_provider_name,
-        analysis_api_format,
-        analysis_base_url or "",
-        analysis_api_key or "",
-        analysis_model or "",
+    analysis_cfg = _ensure_min_timeout(
+        _merge_adapter_override(
+            cfg.llm,
+            analysis_provider_name,
+            analysis_api_format,
+            analysis_base_url or "",
+            analysis_api_key or "",
+            analysis_model or "",
+        ),
+        GENERATION_ANALYSIS_TIMEOUT_SECONDS,
     )
     cfg.llm = analysis_cfg
-    cfg.vision = analysis_cfg
+    cfg.vision = clone_adapter_config(analysis_cfg)
 
-    cfg.image_gen = _merge_adapter_override(
-        cfg.image_gen,
-        img_provider_name,
-        img_api_format,
-        img_base_url or "",
-        img_api_key or "",
-        img_model or "",
+    cfg.image_gen = _ensure_min_timeout(
+        _merge_adapter_override(
+            cfg.image_gen,
+            img_provider_name,
+            img_api_format,
+            img_base_url or "",
+            img_api_key or "",
+            img_model or "",
+        ),
+        GENERATION_IMAGE_TIMEOUT_SECONDS,
     )
 
-    _validate_adapter_config("分析/提示词模型", cfg.llm)
-    _validate_adapter_config("图像分析模型", cfg.vision)
+    if validate_analysis:
+        _validate_adapter_config("分析/提示词模型", cfg.llm)
+        _validate_adapter_config("图像分析模型", cfg.vision)
     _validate_adapter_config("画图模型", cfg.image_gen)
 
     fallback_models = []
@@ -350,8 +514,9 @@ def _build_analysis_adapter_config(
     analysis_base_url,
     analysis_api_key,
     analysis_model,
+    user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ) -> AdapterConfig:
-    cfg = get_config()
+    cfg = get_config(user_id)
     analysis_cfg = _merge_adapter_override(
         cfg.llm,
         analysis_provider_name,
@@ -370,8 +535,9 @@ def _build_image_adapter_config(
     img_base_url,
     img_api_key,
     img_model,
+    user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ) -> AdapterConfig:
-    cfg = get_config()
+    cfg = get_config(user_id)
     image_cfg = _merge_adapter_override(
         cfg.image_gen,
         img_provider_name,
@@ -384,12 +550,37 @@ def _build_image_adapter_config(
     return image_cfg
 
 
+def _make_vision_probe_image_bytes() -> bytes:
+    image = Image.new("RGB", (32, 32), "white")
+    for x in range(4, 28):
+        image.putpixel((x, 4), (0, 0, 0))
+        image.putpixel((x, 27), (0, 0, 0))
+    for y in range(4, 28):
+        image.putpixel((4, y), (0, 0, 0))
+        image.putpixel((27, y), (0, 0, 0))
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _verification_error(prefix: str, cfg: AdapterConfig, exc: Exception) -> RuntimeError:
+    return RuntimeError(
+        f"{prefix}\n"
+        f"供应商：{cfg.provider_name}\n"
+        f"格式：{_display_api_format(cfg.api_format)}\n"
+        f"模型：{cfg.model}\n"
+        f"Base URL：{cfg.base_url or '未设置'}\n"
+        f"错误：{type(exc).__name__}: {exc}"
+    )
+
+
 def verify_analysis_api(
     analysis_provider_name,
     analysis_api_format,
     analysis_base_url,
     analysis_api_key,
     analysis_model,
+    user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ):
     analysis_cfg = _build_analysis_adapter_config(
         analysis_provider_name,
@@ -397,6 +588,7 @@ def verify_analysis_api(
         analysis_base_url,
         analysis_api_key,
         analysis_model,
+        user_id=user_id,
     )
 
     async def _verify():
@@ -412,21 +604,32 @@ def verify_analysis_api(
             ok_text = (llm_resp or "").strip()[:80]
             if not ok_text:
                 raise RuntimeError("接口返回为空，请检查 API 格式是否应选择 OpenAI-Response，或检查模型是否支持 chat/completions。")
-            return (
-                f"分析模型可用\n"
-                f"供应商：{analysis_cfg.provider_name}\n"
-                f"格式：{_display_api_format(analysis_cfg.api_format)}\n"
-                f"模型：{analysis_cfg.model}\n"
-                f"响应：{ok_text}"
+        except Exception as exc:
+            raise _verification_error("分析文本调用失败", analysis_cfg, exc) from exc
+
+        try:
+            vision = build_adapter(analysis_cfg, "vision")
+            vision_resp = await asyncio.wait_for(
+                vision.analyze(
+                    _make_vision_probe_image_bytes(),
+                    "请用一句中文简短描述这张测试图。只回复一句话。",
+                ),
+                timeout=min(int(analysis_cfg.timeout or 60), 45),
             )
-        except Exception as e:
-            return (
-                f"分析模型不可用\n"
-                f"供应商：{analysis_cfg.provider_name}\n"
-                f"格式：{_display_api_format(analysis_cfg.api_format)}\n"
-                f"模型：{analysis_cfg.model}\n"
-                f"错误：{e}"
-            )
+            vision_text = (vision_resp or "").strip()[:80]
+            if not vision_text:
+                raise RuntimeError("视觉接口返回为空，真实平面图分析也无法继续。")
+        except Exception as exc:
+            raise _verification_error("平面图视觉分析调用失败", analysis_cfg, exc) from exc
+
+        return (
+            f"分析模型可用\n"
+            f"供应商：{analysis_cfg.provider_name}\n"
+            f"格式：{_display_api_format(analysis_cfg.api_format)}\n"
+            f"模型：{analysis_cfg.model}\n"
+            f"文本响应：{ok_text}\n"
+            f"视觉响应：{vision_text}"
+        )
 
     return _run_async(_verify())
 
@@ -437,6 +640,7 @@ def verify_image_api(
     img_base_url,
     img_api_key,
     img_model,
+    user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ):
     image_cfg = _build_image_adapter_config(
         img_provider_name,
@@ -444,6 +648,7 @@ def verify_image_api(
         img_base_url,
         img_api_key,
         img_model,
+        user_id=user_id,
     )
     capabilities = describe_adapter_capabilities(image_cfg, image_cfg.model)
     test_prompt = (
@@ -474,17 +679,8 @@ def verify_image_api(
                 f"负向提示词处理：{generated.generation_params.get('negative_prompt_mode', 'unknown')}\n"
                 f"返回图片字节：{len(generated.image_bytes)}"
             )
-        except Exception as e:
-            return (
-                f"画图模型不可用\n"
-                f"供应商：{image_cfg.provider_name}\n"
-                f"格式：{_display_api_format(image_cfg.api_format)}\n"
-                f"模型：{image_cfg.model}\n"
-                f"支持平面图/参考图输入：{'是' if capabilities['supports_image_inputs'] else '否'}\n"
-                f"支持原生负向提示词：{'是' if capabilities['supports_negative_prompt'] else '否'}\n"
-                f"测试提示词：{test_prompt}\n"
-                f"错误：{e}"
-            )
+        except Exception as exc:
+            raise _verification_error("画图模型调用失败", image_cfg, exc) from exc
 
     return _run_async(_verify())
 
@@ -518,6 +714,8 @@ def _format_evaluation_report(ev) -> str:
 def _format_stop_reason(stop_reason: str) -> str:
     return {
         "passed_quality_threshold": "达到质量阈值",
+        "quality_evaluation_disabled": "质量评估未启用",
+        "standard_passthrough": "默认模式直通生成",
         "last_model_failure_limit": "最后一个模型连续失败达到上限",
         "router_terminate": "路由策略终止",
         "max_iterations_reached": "达到最大迭代次数",
@@ -547,6 +745,10 @@ def run_pipeline(
     fallback_models_text="",
     model_switch_after_failures=2,
     stop_after_last_model_failures=2,
+    enable_quality_evaluation=True,
+    project_id="default",
+    user_id: str | None = DEFAULT_CONFIG_USER_ID,
+    learned_preferences_text="",
     progress=None,
 ):
     progress = progress or _NoopProgress()
@@ -578,12 +780,19 @@ def run_pipeline(
     floor_plan_paths = _to_path_list(floor_plan_paths)
     reference_image_path = _extract_file_path(reference_image)
 
-    if generation_mode == GenerationMode.STANDARD and not reference_image_path and not manual_prompt.strip() and not user_requirement.strip() and not direction_stack_text.strip():
-        error = "执行失败：常规生图请至少提供设计需求、手动提示词或参考图"
+    has_prompt_text = bool(manual_prompt.strip() or user_requirement.strip() or direction_stack_text.strip())
+    if generation_mode == GenerationMode.STANDARD and not has_prompt_text:
+        error = "执行失败：默认模式请至少提供要直通发送给画图模型的提示词"
         yield None, [], error, "", "", "", error
         return
 
-    if not user_requirement.strip() and not direction_stack_text.strip() and not manual_prompt.strip() and not reference_image_path:
+    if generation_mode in {GenerationMode.RENDER3D, GenerationMode.COLORED_FLOOR_PLAN} and not floor_plan_paths:
+        mode_label = "3D 效果图模式" if generation_mode == GenerationMode.RENDER3D else "彩色平面图模式"
+        error = f"执行失败：{mode_label}请至少上传一张平面图"
+        yield None, [], error, "", "", "", error
+        return
+
+    if not has_prompt_text and not reference_image_path and not floor_plan_paths:
         error = "执行失败：请输入设计需求、设计指令栈或手动提示词"
         yield None, [], error, "", "", "", error
         return
@@ -604,28 +813,27 @@ def run_pipeline(
             fallback_models_text,
             model_switch_after_failures,
             stop_after_last_model_failures,
+            validate_analysis=generation_mode != GenerationMode.STANDARD,
+            user_id=user_id,
         )
+        cfg.enable_quality_evaluation = bool(enable_quality_evaluation)
     except Exception as e:
         error = f"执行失败：{type(e).__name__}: {e}"
         yield None, [], error, "", "", "", error
         return
 
     model_queue = [cfg.image_gen.model] + list(cfg.image_model_fallbacks or [])
-    requires_image_inputs = bool(reference_image_path or floor_plan_paths)
+    requires_image_inputs = bool(reference_image_path)
     if requires_image_inputs:
         compatible_models = [model_name for model_name in model_queue if adapter_supports_image_inputs(cfg.image_gen, model_name)]
         if not compatible_models:
             error = (
                 "执行失败：画图阶段没有兼容当前输入约束的模型。"
                 f"当前模型链：{', '.join(model_queue)}；"
-                "当前输入包含平面图或参考图，但这些模型不支持多模态约束。"
+                "当前输入包含图片，但这些模型不支持多模态约束。"
             )
             yield None, [], error, "", "", "", error
             return
-
-    if generation_mode == GenerationMode.RENDER3D and not floor_plan_paths:
-        append_log("[提示] 3D 模式未上传平面图，将按需求进行3D生成（无法执行平面一致性约束）。")
-        yield snapshot()
 
     try:
         ref_bytes = None
@@ -642,7 +850,7 @@ def run_pipeline(
 
     def worker():
         try:
-            run_paths = (floor_plan_paths or [None]) if generation_mode == GenerationMode.RENDER3D else [None]
+            run_paths = floor_plan_paths or [None]
             for idx, path in enumerate(run_paths):
                 event_queue.put(("log", f"=== 第{idx + 1}张图 ===" if path else "=== 无平面图模式 ==="))
                 floor_plan_bytes = None
@@ -669,6 +877,8 @@ def run_pipeline(
                         on_progress=on_progress,
                         on_event=on_event,
                         manual_prompt=manual_prompt.strip() or None,
+                        learned_preferences_text=learned_preferences_text if generation_mode != GenerationMode.STANDARD else "",
+                        project_id=project_id,
                     )
                 )
                 event_queue.put(("result", {"path_index": idx + 1, "result": result}))
@@ -688,7 +898,7 @@ def run_pipeline(
             yield snapshot()
             continue
         if event_type == "floor_desc":
-            floor_text = payload.get("text") or "常规模式未启用平面图解析"
+            floor_text = payload.get("display_text") or payload.get("text") or "常规模式未启用平面图解析"
             label = f"【图{payload['path_index']}】\n{floor_text}"
             while len(floor_descs) < payload["path_index"]:
                 floor_descs.append("")
@@ -710,7 +920,10 @@ def run_pipeline(
                 current_preview = Image.open(BytesIO(payload.get("image_bytes", b""))).copy()
             except Exception:
                 current_preview = None
-            append_log(f"[图片已生成] 第{payload.get('iteration', 1)}轮图片已生成，等待评估。")
+            if getattr(cfg, "enable_quality_evaluation", True):
+                append_log(f"[图片已生成] 第{payload.get('iteration', 1)}轮图片已生成，等待评估。")
+            else:
+                append_log(f"[图片已生成] 第{payload.get('iteration', 1)}轮图片已生成，质量评估已关闭，正在整理结果。")
             yield snapshot()
             continue
         if event_type == "evaluation":
@@ -722,8 +935,13 @@ def run_pipeline(
             continue
         if event_type == "result":
             result = payload["result"]
-            for iter_idx, (image_path, score) in enumerate(zip(result.iteration_image_paths, result.all_scores)):
-                label = f"{result.mode} 图{payload['path_index']} 第{iter_idx + 1}轮 {score:.1f}分"
+            for iter_idx, image_path in enumerate(result.iteration_image_paths):
+                score = result.all_scores[iter_idx] if iter_idx < len(result.all_scores) else None
+                label = (
+                    f"{result.mode} 图{payload['path_index']} 第{iter_idx + 1}轮 {score:.1f}分"
+                    if score is not None
+                    else f"{result.mode} 图{payload['path_index']} 第{iter_idx + 1}轮"
+                )
                 output_images.append((image_path, label))
             status = {
                 "success": "生成成功",
@@ -752,4 +970,3 @@ def run_pipeline(
             return
 
     yield snapshot()
-

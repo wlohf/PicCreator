@@ -4,7 +4,8 @@ import os
 import json
 from pathlib import Path
 
-from prompt_strategies import DEFAULT_PROMPT_STRATEGY
+
+DEFAULT_PROMPT_ENGINE_VERSION = "llm_prompt_v1"
 
 
 @dataclass
@@ -66,7 +67,8 @@ class AppConfig:
     vision: AdapterConfig       # 图像评估
     max_iterations: int = 3
     quality_threshold: float = 6.5
-    prompt_strategy_version: str = DEFAULT_PROMPT_STRATEGY
+    enable_quality_evaluation: bool = True
+    prompt_strategy_version: str = DEFAULT_PROMPT_ENGINE_VERSION
     image_model_fallbacks: list[str] = field(default_factory=list)
     model_switch_after_failures: int = 2
     stop_after_last_model_failures: int = 2
@@ -74,9 +76,10 @@ class AppConfig:
 
 def load_config(path: str = "config.json") -> AppConfig:
     """从 JSON 文件加载配置，环境变量可覆盖 api_key。"""
-    _load_env_file(".env")
+    config_path = Path(path)
+    _load_env_file(str(config_path.with_name(".env")))
 
-    with open(path, "r", encoding="utf-8") as f:
+    with config_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
     def build(d: dict) -> AdapterConfig:
@@ -102,7 +105,7 @@ def load_config(path: str = "config.json") -> AppConfig:
         vision=build(data["vision"]),
         max_iterations=data.get("max_iterations", 3),
         quality_threshold=data.get("quality_threshold", 6.5),
-        prompt_strategy_version=data.get("prompt_strategy_version", DEFAULT_PROMPT_STRATEGY),
+        prompt_strategy_version=data.get("prompt_strategy_version", DEFAULT_PROMPT_ENGINE_VERSION),
         image_model_fallbacks=data.get("image_model_fallbacks", []),
         model_switch_after_failures=max(1, int(data.get("model_switch_after_failures", 2))),
         stop_after_last_model_failures=max(1, int(data.get("stop_after_last_model_failures", 2))),

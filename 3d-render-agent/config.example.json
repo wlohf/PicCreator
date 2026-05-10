@@ -25,7 +25,12 @@
   },
   "max_iterations": 3,
   "quality_threshold": 6.5,
-  "prompt_strategy_version": "layered_constraints_v1",
+  "prompt_strategy_version": "llm_prompt_v1",
+  "prompt_overrides": {
+    "floorAnalysisSystemPrompt": "",
+    "promptGenSystem3dCn": "",
+    "promptGenSystemStandardCn": ""
+  },
   "image_model_fallbacks": [
     "dall-e-3"
   ],

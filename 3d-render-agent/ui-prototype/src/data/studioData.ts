@@ -21,10 +21,10 @@ export const copy = {
     projectName: "空项目",
     replaceFloorPlan: "替换平面图",
     designRequest: "设计需求",
-    renderControls: "渲染控制",
-    directionStack: "设计指令栈",
-    creativeDirection: "创意方向",
-    renderParameters: "渲染参数",
+    renderControls: "生成设置",
+    directionStack: "快捷短语",
+    creativeDirection: "快捷短语",
+    renderParameters: "生成设置",
     cameraHeight: "相机高度",
     materialDetail: "材质细节",
     daylightBalance: "日光平衡",
@@ -44,7 +44,6 @@ export const copy = {
     aiLabel: "设计总监 AI",
     composerPlaceholder: "描述空间、风格、镜头、材质或你希望调整的画面细节...",
     attachFloorPlan: "平面图",
-    attachReference: "参考图",
     attachedFiles: "已选择文件",
     sendPrompt: "发送需求",
     analysisCard: "空间分析",
@@ -73,10 +72,10 @@ export const copy = {
     projectName: "Empty Project",
     replaceFloorPlan: "Replace floor plan",
     designRequest: "Design Request",
-    renderControls: "Render Controls",
-    directionStack: "Direction Stack",
-    creativeDirection: "Creative Direction",
-    renderParameters: "Render Parameters",
+    renderControls: "Generation Settings",
+    directionStack: "Shortcut Phrases",
+    creativeDirection: "Shortcut Phrases",
+    renderParameters: "Generation Settings",
     cameraHeight: "Camera Height",
     materialDetail: "Material Detail",
     daylightBalance: "Daylight Balance",
@@ -96,7 +95,6 @@ export const copy = {
     aiLabel: "Design Director AI",
     composerPlaceholder: "Describe the space, style, camera, materials, or visual details you want to adjust...",
     attachFloorPlan: "Floor plan",
-    attachReference: "Reference",
     attachedFiles: "Selected files",
     sendPrompt: "Send prompt",
     analysisCard: "Spatial Analysis",
@@ -115,11 +113,8 @@ export const directionItems: LocalizedText[] = [
   { zh: "建筑摄影镜头，24mm，西南 45 度", en: "Architectural lens, 24mm, southwest 45-degree view" }
 ];
 
-export const tools: Array<{ key: ToolKey; label: LocalizedText; icon: "pointer" | "camera" | "ruler" | "sun" }> = [
-  { key: "select", label: { zh: "需求", en: "Brief" }, icon: "pointer" },
-  { key: "assets", label: { zh: "上传", en: "Upload" }, icon: "camera" },
-  { key: "material", label: { zh: "指令", en: "Directions" }, icon: "ruler" },
-  { key: "lighting", label: { zh: "参数", en: "Parameters" }, icon: "sun" }
+export const tools: Array<{ key: ToolKey; label: LocalizedText; icon: "pointer" | "camera" }> = [
+  { key: "select", label: { zh: "需求", en: "Brief" }, icon: "pointer" }
 ];
 
 export const modelOptions = ["gpt-image-2", "dall-e-3", "imagen-preview"];
@@ -146,8 +141,9 @@ export const defaultApiConfig: ApiConfig = {
   imageBaseUrl: "",
   imageApiKey: "",
   imageModel: "gpt-image-2",
+  floorAnalysisSystemPrompt: "",
+  promptGenSystem3dCn: "",
   fallbackModels: "",
   modelSwitchAfterFailures: 2,
   stopAfterLastModelFailures: 2
 };
-

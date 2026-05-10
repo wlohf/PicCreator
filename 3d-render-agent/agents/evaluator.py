@@ -66,6 +66,16 @@ CONSISTENCY_TEMPLATE = """你是室内设计一致性审查专家。请先客观
 4. 是否遗漏小空间、固定结构、走道、楼梯、电梯、阳台、卫生间设备。
 5. 生成图中实际看到的内容与最终提示词相比，具体偏差在哪里。
 
+硬失败规则（P0）：以下问题必须单独写入 hard_failures；只要存在任一硬失败，就不能判通过，平面一致性最高 7 分：
+- 房间边界、房间数量、相邻关系明显错误，例如办公室和资料室合并、走道比例/位置错误、裁切区域被擅自补全。
+- 家具数量、类型、摆放位置或朝向明显错误，例如资料室没有凳子却多出凳子、床铺位置错误、靠墙电视/鱼缸/固定柜体遗漏。
+- 洁具类型错误必须分开说明，例如蹲厕画成马桶、马桶画成蹲厕、淋浴区和台盆混淆。
+- 门洞和门扇错误，例如门开向/合页侧明显不符、两个木门异常重叠、双开门/单开门类型错误、门被画成窗户。
+- 阳台与室内之间的门窗界面错误，例如财务室到阳台、品茶区到阳台的门被画成普通窗户。
+- 结构硬对象遗漏或移动，例如电梯、楼梯、两间卫生间、双阳台、结构柱。
+
+评分必须严格：结构保真比视觉质量重要。即使画面好看，只要 hard_failures 非空，总分最高 7.0，并且 passed 必须为 false。
+
 请严格输出 JSON：
 {{
   "image_description": "先客观描述图中实际生成了什么，按空间和家具展开",
@@ -77,6 +87,9 @@ CONSISTENCY_TEMPLATE = """你是室内设计一致性审查专家。请先客观
     {{"name": "视觉质量", "score": 0-10, "comment": "清晰度、光影、材质表现"}},
     {{"name": "需求符合度", "score": 0-10, "comment": "色调和元素是否满足"}},
     {{"name": "无明显错误", "score": 0-10, "comment": "是否有明显AI瑕疵"}}
+  ],
+  "hard_failures": [
+    "列出P0硬失败；必须逐条分开，例如：左上卫生间应为蹲厕但被画成马桶；资料室不应有凳子但多出2把；财务室到阳台的门被画成窗户；多处木门重叠"
   ],
   "issues": [
     "列出具体问题，必须尽量引用空间名、位置、门开向、柜体贴墙关系、家具相对位置等细节，例如：左上角卫生间门应向内开但被画成向外开；办公室右侧打印柜应贴北墙但被画成离墙悬空；三张工位应沿东墙并排但被散乱摆放"
@@ -109,13 +122,18 @@ class ImageEvaluator:
         floor_desc: str = "",
         floor_analysis: FloorPlanAnalysis | None = None,
         prompt_text: str = "",
+        learned_preferences_text: str = "",
     ) -> EvaluationResult:
         req = self._build_requirement_text(requirement)
-        if mode == GenerationMode.RENDER3D:
+        if mode in {GenerationMode.RENDER3D, GenerationMode.COLORED_FLOOR_PLAN}:
             floor_context = floor_analysis.to_prompt_context() if floor_analysis else (floor_desc or "无")
             prompt = CONSISTENCY_TEMPLATE.format(prompt_text=prompt_text or "无", floor_context=floor_context, **req)
+            if learned_preferences_text:
+                prompt += f"\n\n已学习偏好与评判基线：\n{learned_preferences_text}"
         else:
             prompt = EVAL_PROMPT_TEMPLATE.format(**req)
+            if learned_preferences_text:
+                prompt += f"\n\n已学习偏好与评判基线：\n{learned_preferences_text}"
         raw = await self.vision.analyze(image.image_bytes, prompt)
 
         try:
@@ -126,15 +144,19 @@ class ImageEvaluator:
 
         dims = [DimensionScore(**d) for d in data.get("dimensions", [])]
         weights = WEIGHTS[: len(dims)]
+        hard_failures = [str(item) for item in data.get("hard_failures", []) if str(item or "").strip()]
         total = sum(d.score * w for d, w in zip(dims, weights)) if dims else 0.0
+        if hard_failures:
+            total = min(total, 7.0)
         threshold = self.quality_threshold
-        passed = total >= threshold
+        passed = total >= threshold and not hard_failures
 
         return EvaluationResult(
             total_score=round(total, 2),
             dimensions=dims,
             passed=passed,
             failure_reason=data.get("failure_reason") if not passed else None,
+            hard_failures=hard_failures,
             issues=data.get("issues", []),
             image_description=str(data.get("image_description", "") or ""),
             prompt_alignment=str(data.get("prompt_alignment", "") or ""),

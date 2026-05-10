@@ -28,7 +28,7 @@ export function TimelinePanel({
       step: "submitted",
       title: { zh: "已提交", en: "Submitted" },
       model: { zh: "前端请求", en: "Frontend request" },
-      notes: { zh: ["需求、平面图和指令栈已发送"], en: ["Brief, floor plan, and stack sent"] }
+      notes: { zh: ["需求和平面图已发送"], en: ["Brief and floor plan sent"] }
     },
     {
       step: "analysis",
@@ -41,6 +41,12 @@ export function TimelinePanel({
       title: { zh: "图片生成", en: "Image generation" },
       model: { zh: "画图模型", en: "Image model" },
       notes: { zh: ["等待真实图片返回"], en: ["Waiting for real image output"] }
+    },
+    {
+      step: "evaluating",
+      title: { zh: "图像评估", en: "Image evaluation" },
+      model: { zh: "视觉模型", en: "Vision model" },
+      notes: { zh: ["图片返回后进行质量评估"], en: ["Review image quality after output returns"] }
     },
     {
       step: "completed",
@@ -78,8 +84,8 @@ export function TimelinePanel({
         {steps.map((run) => {
           const runIndex = stepOrder.indexOf(run.step);
           const isDone = activeStep === "completed" || (activeIndex >= 0 && runIndex <= activeIndex);
-          const isStopped = isFailed && runIndex > 0;
-          const isCurrentFailure = isFailed && run.step === "analysis";
+          const isStopped = isFailed && runIndex > Math.max(activeIndex, 1);
+          const isCurrentFailure = isFailed && run.step === (activeIndex >= 0 ? activeStep : "analysis");
           return (
           <button
             className={`timeline-card ${isDone ? "timeline-card--accepted" : ""} ${activeStep === run.step || isCurrentFailure ? "timeline-card--active" : ""} ${isCurrentFailure ? "timeline-card--warning" : ""}`}

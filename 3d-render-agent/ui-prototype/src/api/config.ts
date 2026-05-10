@@ -1,4 +1,4 @@
-import { buildApiUrl, parseApiJson } from "./client";
+import { apiFetch, parseApiJson } from "./client";
 import type { ApiConfig } from "../types/domain";
 
 export type ConfigVerifyResponse = {
@@ -9,6 +9,12 @@ export type ConfigVerifyResponse = {
 };
 
 export type ConfigSaveResponse = ConfigVerifyResponse;
+export type ConfigLoadResponse = {
+  ok: boolean;
+  config?: ApiConfig;
+  error?: string;
+  stage?: string;
+};
 
 type ConfigRole = "analysis" | "image";
 
@@ -28,10 +34,19 @@ function appendConfig(formData: FormData, apiConfig: ApiConfig, role: ConfigRole
   formData.append("model", apiConfig.imageModel);
 }
 
+export async function loadConfig(): Promise<ApiConfig> {
+  const response = await apiFetch("/api/config");
+  const data = await parseApiJson<ConfigLoadResponse>(response);
+  if (!response.ok || !data.ok || !data.config) {
+    throw new Error(data.error || response.statusText);
+  }
+  return data.config;
+}
+
 export async function verifyConfig(role: ConfigRole, apiConfig: ApiConfig): Promise<ConfigVerifyResponse> {
   const formData = new FormData();
   appendConfig(formData, apiConfig, role);
-  const response = await fetch(buildApiUrl(`/api/config/verify-${role}`), {
+  const response = await apiFetch(`/api/config/verify-${role}`, {
     method: "POST",
     body: formData
   });
@@ -54,11 +69,13 @@ export async function saveConfig(apiConfig: ApiConfig): Promise<ConfigSaveRespon
   formData.append("img_base_url", apiConfig.imageBaseUrl);
   formData.append("img_api_key", apiConfig.imageApiKey);
   formData.append("img_model", apiConfig.imageModel);
+  formData.append("floor_analysis_system_prompt", apiConfig.floorAnalysisSystemPrompt);
+  formData.append("prompt_gen_system_3d_cn", apiConfig.promptGenSystem3dCn);
   formData.append("fallback_models_text", apiConfig.fallbackModels);
   formData.append("model_switch_after_failures", String(apiConfig.modelSwitchAfterFailures));
   formData.append("stop_after_last_model_failures", String(apiConfig.stopAfterLastModelFailures));
 
-  const response = await fetch(buildApiUrl("/api/config/save"), {
+  const response = await apiFetch("/api/config/save", {
     method: "POST",
     body: formData
   });
