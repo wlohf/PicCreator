@@ -89,15 +89,20 @@ runConversationFlow(undefined, "colored_floor_plan");
 
 ---
 
-## Scenario: Temporary Token Namespace Isolation
+## Scenario: Account And Legacy Token Namespace Isolation
 
 ### 1. Scope / Trigger
 - Trigger: unauthenticated workspace isolation crosses frontend session state, API client headers, FastAPI user resolution, preferences, generation writes, result listing, and result asset URLs.
-- Applies when maintaining backward-compatible non-session callers, tests, or legacy local namespace behavior.
-- This is a legacy namespace contract, not the primary frontend identity contract.
+- Applies when maintaining account sessions, backward-compatible non-session callers, tests, or legacy local namespace behavior.
+- Account sessions are the primary frontend identity contract. Token namespaces are compatibility aliases for older/local callers.
 
 ### 2. Signatures
-- Legacy or non-session API requests may send `X-Render-Agent-User-Token: <custom-token>`.
+- The primary browser session cookie is `attuno_session`.
+- `render_agent_session` is accepted only as a legacy cookie alias during the Attuno rename transition.
+- Non-session compatibility API requests should send `X-Attuno-User-Token: <custom-token>`.
+- `X-Render-Agent-User-Token: <custom-token>` is accepted only as a legacy header alias.
+- Persistent data should use `ATTUNO_STUDIO_DATA_DIR` when an override is needed.
+- `RENDER_AGENT_DATA_DIR` is accepted only as a legacy environment-variable alias when `ATTUNO_STUDIO_DATA_DIR` is absent.
 - APIs that expose stored result assets may accept `user_id=<custom-token>` in the query string only for legacy/default namespace compatibility.
 - `GET /api/preferences/shortcuts` returns shortcut phrases for the resolved namespace.
 - `PUT /api/preferences/shortcuts` stores shortcut phrases for the resolved namespace.
@@ -107,8 +112,8 @@ runConversationFlow(undefined, "colored_floor_plan");
 
 ### 3. Contracts
 - Real account session cookies are the primary identity for the frontend app.
-- `get_current_or_default_user(request)` must resolve an authenticated session before considering `X-Render-Agent-User-Token`.
-- The frontend app must not send `X-Render-Agent-User-Token` for normal logged-in flows.
+- `get_current_or_default_user(request)` must resolve an authenticated `attuno_session` before considering `X-Attuno-User-Token` or the legacy `X-Render-Agent-User-Token`.
+- The frontend app must not send `X-Attuno-User-Token` or `X-Render-Agent-User-Token` for normal logged-in flows.
 - Logged-in result asset URLs should rely on the session cookie and should not append `user_id=<current-user>`.
 - Query `user_id` is allowed for browser-loaded assets and compatibility with existing default/legacy namespace URLs.
 - If neither header nor query user id is present, the namespace resolves to `default`.
@@ -119,7 +124,8 @@ runConversationFlow(undefined, "colored_floor_plan");
 - Registration must reject blank usernames and normalized `default`, because `default` is reserved for the local workspace and may keep special config/key behavior.
 
 ### 4. Validation & Error Matrix
-- Logged-in request with both session cookie and `X-Render-Agent-User-Token` -> session user wins.
+- Logged-in request with both session cookie and `X-Attuno-User-Token` -> session user wins.
+- Logged-in request with both session cookie and legacy `X-Render-Agent-User-Token` -> session user wins.
 - Missing header/query on API request -> use `default` namespace for backward compatibility.
 - Header and query both present -> resolve consistently with the backend namespace resolver; do not manually fork behavior per route.
 - Asset request for a result id outside the active namespace -> return not found.
@@ -130,7 +136,8 @@ runConversationFlow(undefined, "colored_floor_plan");
 - Good: logged-in user `alice` saves API keys and generates results; asset URLs open through cookie-authenticated `/api/results/<id>/image` without a `user_id` query.
 - Good: legacy token `alpha` saves a shortcut, generates an image, reloads through a compatibility caller, and sees only `alpha` shortcuts and results.
 - Base: no token is supplied by legacy callers, and APIs continue to use `default`.
-- Bad: a logged-in request can be switched to another namespace by adding `X-Render-Agent-User-Token`.
+- Bad: a logged-in request can be switched to another namespace by adding `X-Attuno-User-Token`.
+- Bad: new code or tests use legacy `X-Render-Agent-User-Token`, `render_agent_session`, or `RENDER_AGENT_DATA_DIR` as the default path instead of covering them explicitly as compatibility aliases.
 - Bad: token `beta` can list or fetch token `alpha` results by id.
 - Bad: the frontend reintroduces the temporary access-token modal as the default identity flow.
 
@@ -179,6 +186,22 @@ except HTTPException:
     namespace_user = get_request_namespace_user(request)
     return namespace_user or get_default_local_user()
 return {**user, "authenticated": True}
+```
+
+#### Wrong
+
+```python
+# New tests and runtime defaults should not keep the old product name primary.
+monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
+headers = {"X-Render-Agent-User-Token": "alpha-token"}
+```
+
+#### Correct
+
+```python
+# Use Attuno names as the primary path; cover old names only in legacy tests.
+monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+headers = {"X-Attuno-User-Token": "alpha-token"}
 ```
 
 ---

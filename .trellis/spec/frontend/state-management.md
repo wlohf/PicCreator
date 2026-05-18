@@ -68,11 +68,13 @@ Chat-derived memory candidates should be manually confirmed before persistence.
 
 The main frontend identity model is the authenticated account session, not a temporary access token.
 
-- On startup, call `/api/auth/me`. If authenticated, set the current user id from the returned account and bootstrap config, results, shortcuts, preferences, and chat history for that account.
+- On startup, call `/api/auth/me`. If authenticated through `attuno_session`, set the current user id from the returned account and bootstrap config, results, shortcuts, preferences, and chat history for that account.
 - If unauthenticated, show the login/register dialog. Do not ask for a custom access token in the main UI.
-- `apiFetch` should rely on `credentials: "include"` for the session cookie. Do not attach `X-Render-Agent-User-Token` from the main frontend.
+- `apiFetch` should rely on `credentials: "include"` for the session cookie. Do not attach `X-Attuno-User-Token` or legacy `X-Render-Agent-User-Token` from the main frontend.
 - On logout, clear visible conversation state, results, learned profile, API config cache for the active view, and auth draft/error state before showing the login dialog.
 - Browser-local chat history can still be keyed by account `user_id`, but it must not be visible when no account is authenticated.
+- Browser-local storage keys should use Attuno-branded primary keys such as `attuno-chat-history-v1`, `attuno-shortcut-phrases-v1`, `attuno-sidebar-width-v1`, `attuno-drawer-width-v1`, and `attuno-api-config-v1`.
+- During the rename transition, the frontend may read legacy `render-director-*` localStorage keys, migrate the value into the matching Attuno key, and then save future writes only to the Attuno key.
 
 ### Result Asset URLs
 

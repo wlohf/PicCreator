@@ -1,6 +1,6 @@
-# PicCreator
+# Attuno
 
-PicCreator 是一个面向室内设计场景的 AI 对话与图像辅助项目。当前主产品形态是 `PicCreator Chat`：默认从聊天开始，需要出图时再切到图像工作区，通过平面图分析、快捷短语、提示词覆盖、严格复核和结果续改，把自然语言需求整理成更稳定的室内效果图流程。
+Attuno 是一个面向室内设计场景的 AI 对话与图像辅助项目。当前主产品形态是 `Attuno`：默认从聊天开始，需要出图时再切到图像工作区，通过平面图分析、快捷短语、提示词覆盖、严格复核和结果续改，把自然语言需求整理成更稳定的室内效果图流程。
 
 当前版本已经完成前后端分离：
 
@@ -34,11 +34,11 @@ PicCreator 是一个面向室内设计场景的 AI 对话与图像辅助项目�
 .
 ├── README.md
 ├── AGENTS.md
-├── start_3d_render_agent.bat
+├── start_attuno_studio.bat
 ├── .agents/                  # 项目级 Trellis skills
 ├── .codex/                   # 项目级 Codex agents / hooks 配置
 ├── .trellis/                 # 工作流、脚本、规范与任务记录
-└── 3d-render-agent/
+└── attuno-studio/
     ├── api_server.py         # FastAPI 启动入口
     ├── app_runtime.py        # 运行时配置、API 验证和 pipeline 调用
     ├── config.py             # 配置加载与能力判断
@@ -71,14 +71,14 @@ PicCreator 是一个面向室内设计场景的 AI 对话与图像辅助项目�
 在仓库根目录运行：
 
 ```bat
-start_3d_render_agent.bat
+start_attuno_studio.bat
 ```
 
-脚本会进入 `3d-render-agent`，检查依赖并启动后端与前端。默认端口：
+脚本会进入 `attuno-studio`，检查依赖并启动后端与前端。默认端口：
 
 ```text
 API: http://127.0.0.1:8787
-Web: http://127.0.0.1:5174
+Web: http://127.0.0.1:42958
 ```
 
 ### 手动启动
@@ -86,7 +86,7 @@ Web: http://127.0.0.1:5174
 后端：
 
 ```bash
-cd 3d-render-agent
+cd attuno-studio
 python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements.txt
@@ -98,7 +98,7 @@ python api_server.py
 macOS / Linux：
 
 ```bash
-cd 3d-render-agent
+cd attuno-studio
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
@@ -110,7 +110,7 @@ python api_server.py
 前端：
 
 ```bash
-cd 3d-render-agent/ui-prototype
+cd attuno-studio/ui-prototype
 npm install
 npm run dev
 ```
@@ -123,7 +123,7 @@ VITE_API_TARGET=http://127.0.0.1:8787 npm run dev
 
 ## 首次配置
 
-项目不会提交真实密钥。先在 `3d-render-agent/` 目录准备：
+项目不会提交真实密钥。先在 `attuno-studio/` 目录准备：
 
 ```bash
 copy config.example.json config.json
@@ -213,14 +213,14 @@ IMAGE_API_KEY=你的画图模型Key
 后端测试：
 
 ```bash
-cd 3d-render-agent
+cd attuno-studio
 python -m pytest tests/test_backend_api.py tests/test_app_runtime.py -q
 ```
 
 前端构建：
 
 ```bash
-cd 3d-render-agent/ui-prototype
+cd attuno-studio/ui-prototype
 npm run build
 ```
 

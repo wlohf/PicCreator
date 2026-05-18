@@ -1,0 +1,26 @@
+[
+  {
+    "sample_id": "office_floorplan_modern_cn",
+    "mode": "render3d",
+    "floor_plan_path": "outputs/floorplan_test.jpg",
+    "reference_image_path": "",
+    "user_requirement": "现代简约办公空间，西南45度鸟瞰，必须完整保留办公室、资料室、品茶区、卫生间和楼梯关系。",
+    "expected_style": "现代简约",
+    "expected_spaces": ["办公室", "资料室", "品茶区", "卫生间", "楼梯间"],
+    "critical_constraints": ["不能漏掉卫生间与资料室", "门洞位置必须正确", "楼梯形式不能改动"],
+    "expected_view": "southwest 45-degree axonometric dollhouse cutaway, roof removed",
+    "notes": "办公空间基线样本，用于验证结构完整性与现代风格表达。"
+  },
+  {
+    "sample_id": "office_floorplan_industrial_cn",
+    "mode": "render3d",
+    "floor_plan_path": "outputs/floorplan_test.jpg",
+    "reference_image_path": "",
+    "user_requirement": "工业风办公空间，整层 cutaway 鸟瞰展示，保留工位、茶区、卫生间、楼梯和走道，不要新增房间。",
+    "expected_style": "工业风",
+    "expected_spaces": ["办公室", "品茶区", "卫生间", "楼梯间", "走道"],
+    "critical_constraints": ["不能新增房间", "工位与走道关系要清晰", "卫生间不能丢失"],
+    "expected_view": "southwest 45-degree axonometric dollhouse cutaway, roof removed",
+    "notes": "同一平面图的风格变体样本，用于验证 prompt 风格约束的稳定性。"
+  }
+]
