@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from collections.abc import Mapping
 from typing import Optional
 import os
 import json
@@ -82,9 +83,17 @@ def load_config(path: str = "config.json") -> AppConfig:
     with config_path.open("r", encoding="utf-8") as f:
         data = json.load(f)
 
+    return build_config_from_dict(data, os.environ)
+
+
+def build_config_from_dict(data: dict, env_values: Mapping[str, str] | None = None) -> AppConfig:
+    """Build an AppConfig from already-loaded JSON plus resolved env values."""
+    env = os.environ if env_values is None else env_values
+
     def build(d: dict) -> AdapterConfig:
         # 支持从环境变量读取 api_key
-        key = os.environ.get(d.get("api_key_env", ""), d.get("api_key", ""))
+        env_name = str(d.get("api_key_env", "") or "").strip()
+        key = env.get(env_name, d.get("api_key", "")) if env_name else d.get("api_key", "")
         legacy_provider = d.get("provider", "openai_compat")
         api_format = d.get("api_format") or _legacy_provider_to_api_format(legacy_provider)
         return AdapterConfig(

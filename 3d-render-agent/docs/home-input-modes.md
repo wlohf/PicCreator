@@ -1,16 +1,23 @@
 # Home Input Modes
 
-The home workspace supports three generation modes:
+The home workspace exposes two primary generation modes:
 
 - `standard`: strict pass-through. Composer text is sent directly to the image model. Uploaded or pasted images are forwarded as image inputs when the selected model supports image input. Requirement parsing, floor-plan analysis, prompt compilation, and quality-evaluation prompts are skipped unless the user explicitly enables image-model capabilities outside this mode.
-- `render3d`: floor-plan-aware 3D rendering. Uploaded, pasted, or dropped images are treated as floor plans and routed through floor-plan analysis, prompt generation, image generation, and optional evaluation.
-- `colored_floor_plan`: floor-plan colorization. Requires at least one floor-plan image, preserves the original layout, and asks the image model for an orthographic colored plan rather than a 3D render.
+- `render3d`: floor-plan-aware 3D rendering. Uploaded, pasted, or dropped images are treated as floor plans and routed through floor-plan analysis, prompt generation, image generation, and optional strict review.
+
+`colored_floor_plan` remains a supported backend mode, but the home UI presents it as an explicit floor-plan tool action after a floor-plan image is attached. It preserves the original layout and asks the image model for an orthographic colored plan rather than a 3D render.
 
 Reference-image upload is intentionally not part of the home generation flow. The only image attachment slot is the floor-plan attachment list.
 
+## Settings And Review
+
+Model/API provider setup and prompt overrides are separate settings destinations. Prompt overrides must not be buried inside provider/API setup.
+
+Strict review is optional and defaults off. When disabled, the first returned image is saved directly. When enabled, the vision evaluator can request additional passes up to the selected iteration count, but this is an advisory review loop rather than a guaranteed quality improvement.
+
 ## Comparison Behavior
 
-- `render3d` and `colored_floor_plan` results can compare the persisted floor plan against the generated image.
+- `render3d` results and colored-floor-plan tool results can compare the persisted floor plan against the generated image.
 - `standard` results are not bound to a floor plan. Their comparison modal lets the user pick two generated history images.
 
 ## Notes And Annotations
