@@ -4,6 +4,23 @@ PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图�
 
 当前版本已经切到前后端分离形态：后端是分层 FastAPI 服务，前端是 Vite + React 工作台。旧的 Gradio 本地工作台已从默认入口和依赖中移除，后续产品化交互都集中在 React 前端。
 
+## 仓库辅助目录
+
+为了让项目在 GitHub 上保持可复现，同时不混入本地运行痕迹，仓库中的 AI / 工作流目录按下面的原则整理：
+
+- `.trellis/`
+  项目级任务、规范、脚本和工作流定义。这里的 `spec/`、`tasks/`、`workflow.md`、`scripts/` 属于项目知识和开发流程，会随仓库保留。
+- `.agents/`
+  项目级 Trellis skills，供支持该流程的代理工具复用。
+- `.codex/`
+  项目级 Codex agent / hook 配置。
+
+下面这些属于本地运行或临时产物，不建议提交：
+
+- `.claude/`、`.downloads/`、`.ace-tool/`、`.vscode/`
+- `.trellis/.runtime/`、`.trellis/workspace/`、`.trellis/.backup-*`、`.trellis/.developer`
+- `.tmp-*.png`、`__pycache__/`、`.pytest_cache/`
+
 ## 当前状态
 
 - FastAPI 服务：提供 `/api` 接口，供前端或其他系统调用。

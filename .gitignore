@@ -24,3 +24,13 @@ test-results/
 output/
 .venv/
 .agent-night/
+.tmp-*.png
+
+# Trellis local runtime state
+.trellis/.developer
+.trellis/.runtime/
+.trellis/workspace/
+.trellis/.backup-*/
+.trellis/.template-hashes.json
+.trellis/**/__pycache__/
+.trellis/**/*.pyc
