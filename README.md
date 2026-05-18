@@ -1,99 +1,89 @@
 # PicCreator
 
-PicCreator 是一个面向室内设计与 3D 效果图生成的自动化生图项目。项目核心是 `3d-render-agent`：它可以读取设计需求、平面图和参考图，自动生成提示词，调用图像模型生成效果图，再用视觉模型对结果进行评估，并根据反馈继续迭代优化。
+PicCreator 是一个面向室内设计场景的 AI 对话与图像辅助项目。当前主产品形态是 `PicCreator Chat`：默认从聊天开始，需要出图时再切到图像工作区，通过平面图分析、快捷短语、提示词覆盖、严格复核和结果续改，把自然语言需求整理成更稳定的室内效果图流程。
 
-当前版本已经切到前后端分离形态：后端是分层 FastAPI 服务，前端是 Vite + React 工作台。旧的 Gradio 本地工作台已从默认入口和依赖中移除，后续产品化交互都集中在 React 前端。
+当前版本已经完成前后端分离：
 
-## 仓库辅助目录
+- 后端：FastAPI，提供认证、配置、生成、结果、偏好与记忆相关 API
+- 前端：Vite + React，提供聊天优先的工作台界面
+- 旧的 Gradio 本地工作台不再是默认入口
 
-为了让项目在 GitHub 上保持可复现，同时不混入本地运行痕迹，仓库中的 AI / 工作流目录按下面的原则整理：
+## 当前产品形态
 
-- `.trellis/`
-  项目级任务、规范、脚本和工作流定义。这里的 `spec/`、`tasks/`、`workflow.md`、`scripts/` 属于项目知识和开发流程，会随仓库保留。
-- `.agents/`
-  项目级 Trellis skills，供支持该流程的代理工具复用。
-- `.codex/`
-  项目级 Codex agent / hook 配置。
+- 聊天优先：默认进入日常对话工作区，普通聊天不会隐式触发出图
+- 图像辅助：需要出图时切到图像工作区，支持 `standard` 和 `render3d` 两个主模式
+- 彩色平面图：`colored_floor_plan` 仍受后端支持，但前端作为显式工具动作出现，不作为主模式
+- 账号隔离：聊天历史、结果库、API Key、快捷短语、偏好和记忆按登录账号隔离
+- 手动记忆：聊天中识别出的偏好不会自动写入，只有用户点击“记住”后才会持久化
+- 结果续改：支持查看结果、记笔记、继续编辑、标注续改和比较分析
 
-下面这些属于本地运行或临时产物，不建议提交：
+## 核心能力
 
-- `.claude/`、`.downloads/`、`.ace-tool/`、`.vscode/`
-- `.trellis/.runtime/`、`.trellis/workspace/`、`.trellis/.backup-*`、`.trellis/.developer`
-- `.tmp-*.png`、`__pycache__/`、`.pytest_cache/`
-
-## 当前状态
-
-- FastAPI 服务：提供 `/api` 接口，供前端或其他系统调用。
-- React 前端工作台：位于 `3d-render-agent/ui-prototype`，已经接入生成、上传、API 配置保存/验证、结果库、预览、下载、复制摘要和工作台重置等交互。
-- 测试覆盖：包含核心 pipeline 策略、模型适配器、评估逻辑和后端 API 基础测试。
-
-## 主要功能
-
-- 常规生图：根据自然语言需求或手动提示词生成室内效果图。
-- 3D 效果图生成：上传一张或多张平面图，自动解析空间结构、门窗、家具、动线和硬约束，再生成 3D/鸟瞰/轴测效果图。
-- 参考图输入：支持上传参考图进行图生图约束。
-- 自动提示词生成：把用户需求、平面图分析和上一轮反馈编译成适合图像模型的正向/负向提示词。
-- 自动评估与迭代：生成后用视觉模型按空间一致性、风格一致性、视觉质量、需求符合度和明显错误等维度评分。
-- 模型回退：主画图模型连续失败后，可切换到备用画图模型继续尝试。
-- 多 API 格式：支持 OpenAI、OpenAI Responses、Gemini、Anthropic、Azure OpenAI、Ollama、Custom OpenAI 等兼容接口。
-- HTTP API：提供 FastAPI 服务，便于前端或其他系统调用。
-- React 工作台：`ui-prototype` 提供一个 Vite + React 的产品界面，通过 `/api/generate` 调用后端。
-- 前端 API 配置验证：React 工作台可调用 `/api/config/verify-analysis` 和 `/api/config/verify-image` 检查模型配置。
-- 结果库体验：React 工作台会在当前浏览器会话中保留最近生成结果，支持预览、下载图片和复制运行摘要。
+- 常规生图：根据自然语言需求直接生成室内效果图
+- 平面图转 3D：上传平面图后自动解析结构、空间关系和硬约束，再生成 3D 效果图
+- 彩色平面图工具：保持原始布局生成正交彩平图
+- 提示词编译：把需求、平面图解析和已有偏好整理成适合图像模型的输入
+- 可选严格复核：默认关闭；开启后，视觉模型可在首轮出图后建议追加迭代
+- 多模型兼容：支持 OpenAI / Responses / Gemini / Anthropic / Azure OpenAI / Ollama / Custom 等兼容接口
+- 结果资产管理：预览、下载、复制摘要、查看笔记、比较分析
+- 偏好与记忆：区分日常聊天记忆、生图长期偏好、避免项、项目偏好和评判标准
 
 ## 项目结构
 
 ```text
 .
 ├── README.md
+├── AGENTS.md
 ├── start_3d_render_agent.bat
+├── .agents/                  # 项目级 Trellis skills
+├── .codex/                   # 项目级 Codex agents / hooks 配置
+├── .trellis/                 # 工作流、脚本、规范与任务记录
 └── 3d-render-agent/
-    ├── app_runtime.py           # FastAPI 共用的运行时、配置覆盖、API 验证和 pipeline 调用
-    ├── api_server.py            # FastAPI 兼容启动入口
-    ├── backend/                 # 分层 FastAPI 应用
+    ├── api_server.py         # FastAPI 启动入口
+    ├── app_runtime.py        # 运行时配置、API 验证和 pipeline 调用
+    ├── config.py             # 配置加载与能力判断
+    ├── config.example.json
+    ├── .env.example
+    ├── pipeline.py
+    ├── adapters/             # 模型适配器
+    ├── agents/               # 分析、提示词、评估、路由策略
+    ├── backend/
     │   └── app/
-    │       ├── main.py          # create_app 与路由装配
-    │       ├── settings.py      # 服务端口、host、CORS 配置
-    │       ├── routes/          # health/config/generate 路由
-    │       ├── services/        # 生成服务、上传文件处理
-    │       └── schemas/         # API 表单/领域数据结构
-    ├── pipeline.py              # 生图、评估、迭代与模型切换流程
-    ├── config.py                # 配置加载、API 格式与能力判断
-    ├── config.example.json      # 配置样例
-    ├── .env.example             # 环境变量样例
-    ├── requirements.txt         # Python 依赖
-    ├── adapters/                # LLM / Vision / Image 模型适配器
-    ├── agents/                  # 平面图分析、提示词生成、评估、路由策略
-    ├── models/                  # Pydantic 数据结构
-    ├── benchmarks/              # 基准样例
-    ├── tests/                   # pytest 测试，含后端 API 测试
-    └── ui-prototype/            # React + Vite 前端工作台
+    │       ├── main.py
+    │       ├── settings.py
+    │       ├── routes/
+    │       ├── services/
+    │       └── schemas/
+    ├── tests/
+    └── ui-prototype/         # React 前端工作台
         └── src/
-            ├── api/             # 前端 API client、生成接口、配置验证接口
-            ├── components/      # UI 组件
-            ├── data/            # 静态文案和演示数据
-            ├── types/           # 前端领域类型
-            └── utils/           # 文案和数据处理工具
+            ├── api/
+            ├── components/
+            ├── data/
+            ├── types/
+            └── utils/
 ```
 
 ## 快速启动
 
-### 方式一：Windows 一键启动
+### Windows 一键启动
 
-在项目根目录双击或运行：
+在仓库根目录运行：
 
 ```bat
 start_3d_render_agent.bat
 ```
 
-脚本会进入 `3d-render-agent` 目录，检查依赖，必要时执行 `pip install -r requirements.txt`，然后启动后端与前端。默认地址：
+脚本会进入 `3d-render-agent`，检查依赖并启动后端与前端。默认端口：
 
 ```text
-API: http://127.0.0.1:8787/
-Web: http://127.0.0.1:5174/
+API: http://127.0.0.1:8787
+Web: http://127.0.0.1:5174
 ```
 
-脚本会自动打开后端和前端两个窗口。
+### 手动启动
+
+后端：
 
 ```bash
 cd 3d-render-agent
@@ -105,30 +95,39 @@ copy .env.example .env
 python api_server.py
 ```
 
-macOS / Linux 可将激活命令替换为：
+macOS / Linux：
 
 ```bash
+cd 3d-render-agent
+python -m venv .venv
 source .venv/bin/activate
+pip install -r requirements.txt
 cp config.example.json config.json
 cp .env.example .env
 python api_server.py
 ```
 
-## 配置 API Key
-
-项目不会提交真实密钥。请在本地创建下面两个文件：
+前端：
 
 ```bash
-cd 3d-render-agent
-copy config.example.json config.json
-copy .env.example .env
+cd 3d-render-agent/ui-prototype
+npm install
+npm run dev
 ```
 
-macOS / Linux：
+如果前端代理地址需要显式指定：
 
 ```bash
-cp config.example.json config.json
-cp .env.example .env
+VITE_API_TARGET=http://127.0.0.1:8787 npm run dev
+```
+
+## 首次配置
+
+项目不会提交真实密钥。先在 `3d-render-agent/` 目录准备：
+
+```bash
+copy config.example.json config.json
+copy .env.example .env
 ```
 
 然后编辑 `.env`：
@@ -139,275 +138,126 @@ VISION_API_KEY=你的视觉模型Key
 IMAGE_API_KEY=你的画图模型Key
 ```
 
-再编辑 `config.json`，填写模型供应商、API 格式、Base URL 和模型名称。核心配置项包括：
+再编辑 `config.json`，填写模型供应商、API 格式、Base URL 和模型名。
 
-- `llm`：需求解析与提示词生成模型。
-- `vision`：平面图解析和生成图评估模型。
-- `image_gen`：实际生成图片的模型。
-- `max_iterations`：最大迭代次数。
-- `quality_threshold`：质量通过阈值，默认 6.5。
-- `image_model_fallbacks`：备用画图模型列表。
-- `model_switch_after_failures`：连续失败几轮后切换模型。
-- `stop_after_last_model_failures`：最后一个模型连续失败几轮后停止。
+需要注意：
 
-支持的 API 格式包括：
-
-```text
-openai_chat, openai_responses, gemini, openai_image, anthropic,
-azure_openai, custom_openai_chat, custom_openai_image, ollama,
-new_api, cherryin
-```
+- `default` 工作区仍保留兼容逻辑
+- 登录用户不会自动继承默认工作区的 API Key
+- 登录后应在前端“模型与 API”设置中为当前账号保存自己的 key
 
 ## 使用方式
 
-### React 工作台
+### 账号与工作区
 
-启动 FastAPI 后端和 React 前端后，在浏览器打开 `http://127.0.0.1:5174/`。界面中可以：
+- 打开前端后，默认先登录或注册
+- 登录成功后，当前账号的聊天历史、结果、快捷短语、偏好和记忆会自动恢复
+- 登出后，界面会清空当前账号可见状态，重新回到登录入口
 
-- 选择“常规生图”或“3D效果图”。
-- 上传平面图，可多选。
-- 上传参考图，可选。
-- 输入设计需求，例如风格、视角、空间功能、材质、禁止项。
-- 编辑设计需求，使用快捷方向和风格标签补全提示词。
-- 设置最大迭代次数、主模型、备用模型和失败切换策略。
-- 保存模型配置到本地 `config.json` / `.env`，并验证分析模型和画图模型是否可用。
-- 使用结果库预览、下载、复制摘要、载入历史提示词、移除记录和清空结果。
-- 放大生成图、复制当前提示词、清空附件和重置工作台。
-- 查看平面图解析结果、最终提示词、评估报告和执行日志。
+### 聊天工作区
 
-生成图片会保存到 `3d-render-agent/outputs/`，该目录已被 `.gitignore` 排除。
+- 用于日常对话、需求整理、草稿生成
+- 聊天不会直接出图
+- 如果聊天内容适合转图像工作区，系统会给出可一键带入的图像草稿
 
-### FastAPI 服务
+### 图像工作区
 
-启动 API：
+- `standard`：文本直通图片模型
+- `render3d`：平面图感知的 3D 效果图流程
+- `colored_floor_plan`：作为工具动作触发，不作为主模式显示
 
-```bash
-cd 3d-render-agent
-python api_server.py
-```
+### 记忆与偏好
 
-默认地址：
+- 只有用户手动点击“记住”后，聊天提取出的偏好才会保存
+- 前端记忆面板支持查看、编辑和删除
+- 记忆分组包括：
+  - 日常聊天记忆
+  - 生图长期偏好
+  - 避免项
+  - 项目偏好
+  - 评判标准
+  - 最近常见修改
 
-```text
-http://127.0.0.1:8787
-```
+## API 概览
 
-可通过环境变量调整 host、端口和 CORS：
+常用接口：
 
-```bash
-APP_HOST=0.0.0.0 APP_PORT=8787 APP_CORS_ORIGINS=http://127.0.0.1:5174 python api_server.py
-```
-
-兼容旧变量名：`API_HOST`、`API_PORT`。
-
-可用接口：
-
-- `GET /api/health`：健康检查。
-- `POST /api/config/verify-analysis`：验证分析/视觉模型。
-- `POST /api/config/verify-image`：验证画图模型。
-- `POST /api/generate`：提交需求、平面图和参考图并生成结果。
+- `GET /api/health`
+- `GET /api/auth/me`
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/config`
+- `POST /api/config/save`
+- `POST /api/config/verify-analysis`
+- `POST /api/config/verify-image`
+- `POST /api/generate`
+- `GET /api/results`
+- `POST /api/chat`
+- `POST /api/chat/memory`
+- `GET /api/preferences/memory`
 
 `/api/generate` 使用 `multipart/form-data`，常用字段包括：
 
-- `mode`：`normal` 或 `render3d`。
-- `requirement`：设计需求文本。
-- `manual_prompt`：手动提示词，可选。
-- `max_iterations`：最大迭代次数。
-- `floor_plans`：平面图文件，可多选。
-- `reference_image`：参考图文件，可选。
-- `analysis_*` / `img_*`：前端临时覆盖的模型配置，可选。
-
-### React 前端工作台
-
-React 工作台位于 `3d-render-agent/ui-prototype`。
-
-先启动后端：
-
-```bash
-cd 3d-render-agent
-python api_server.py
-```
-
-再启动前端：
-
-```bash
-cd 3d-render-agent/ui-prototype
-npm install
-npm run dev
-```
-
-默认前端地址：
-
-```text
-http://127.0.0.1:5174/
-```
-
-前端 API 配置方式：
-
-- `VITE_API_TARGET`：Vite 开发代理目标，默认 `http://127.0.0.1:8787`。
-- `VITE_API_BASE_URL`：前端直接请求的 API Base URL。为空时使用同源 `/api`，适合走 Vite 代理；部署到静态站点时可设为后端完整地址。
-- `VITE_PORT`：前端开发服务端口。
-
-示例：
-
-```bash
-VITE_API_TARGET=http://127.0.0.1:8787 npm run dev
-# 或部署/预览时直接指定 API Base URL
-VITE_API_BASE_URL=http://127.0.0.1:8787 npm run build
-```
-
-## 部署方式建议：EXE 还是 VPS？
-
-当前阶段更建议先用“本地源码运行”或“VPS 部署”测试，不建议立刻打包成 EXE。
-
-### 推荐结论
-
-- 本地测试：直接拉取源码运行，最方便排查 API Key、模型接口、依赖和生成质量问题。
-- 小范围自用/团队测试：部署到 VPS 更合适，可以统一配置模型 Key、统一保存 outputs，并通过浏览器访问。
-- EXE 打包：适合功能稳定之后再做。当前项目包含 Python、FastAPI、React、模型配置、上传文件和输出目录，打包成单个 EXE 会增加依赖体积、路径处理、密钥配置和升级维护成本。
-
-### 什么时候选择 EXE？
-
-如果目标用户是完全不懂命令行的 Windows 用户，并且希望双击运行、离线配置、单机使用，可以后续用 PyInstaller/Nuitka 做 EXE 包。但建议等下面这些能力稳定后再做：
-
-- 配置向导和 API Key 本地加密保存。
-- 输出目录、日志目录和缓存目录可配置。
-- 前后端静态资源打包流程稳定。
-- 模型接口和错误提示已充分测试。
-
-### 什么时候选择 VPS？
-
-如果你希望自己或团队用浏览器访问，建议 VPS 部署：
-
-- 后端统一运行 FastAPI。
-- 前端 React 构建后通过 Nginx/Caddy 托管。
-- API Key 放在 VPS 的 `.env` 和 `config.json`，不需要每台电脑重复配置。
-- 后续可以更容易增加登录、任务队列、历史记录和对象存储。
-
-## 本地拉取测试
-
-如果你要测试当前 PR 分支：
-
-```bash
-git clone https://github.com/wlohf/PicCreator.git
-cd PicCreator
-git fetch origin
-git checkout refine-3d-render-agent-frontend-backend
-```
-
-如果你已经 clone 过仓库：
-
-```bash
-cd PicCreator
-git fetch origin
-git checkout refine-3d-render-agent-frontend-backend
-git pull
-```
-
-### 本地测试前后端分离版本
-
-启动后端：
-
-```bash
-cd 3d-render-agent
-python api_server.py
-```
-
-启动前端：
-
-```bash
-cd 3d-render-agent/ui-prototype
-npm install
-npm run dev
-```
-
-浏览器打开：
-
-```text
-http://127.0.0.1:5174/
-```
-
-如需指定 API 地址：
-
-```bash
-VITE_API_TARGET=http://127.0.0.1:8787 npm run dev
-```
-
-## 生成流程
-
-```text
-用户需求 / 平面图 / 参考图
-        ↓
-需求解析与平面图结构化分析
-        ↓
-生成正向提示词与负向提示词
-        ↓
-调用画图模型生成图片
-        ↓
-调用视觉模型评估生成结果
-        ↓
-通过阈值则结束；未通过则根据反馈优化提示词或切换模型
-        ↓
-输出最优图片、提示词、评分、报告和运行记录
-```
+- `mode`
+- `requirement`
+- `manual_prompt`
+- `max_iterations`
+- `floor_plans`
+- `reference_image`
+- `analysis_*`
+- `img_*`
 
 ## 测试与验证
 
-运行 Python 测试：
+后端测试：
 
 ```bash
 cd 3d-render-agent
-pytest
+python -m pytest tests/test_backend_api.py tests/test_app_runtime.py -q
 ```
 
-运行 Python 编译检查：
-
-```bash
-cd 3d-render-agent
-python -m py_compile api_server.py app_runtime.py backend/app/main.py backend/app/routes/*.py backend/app/services/*.py backend/app/schemas/*.py
-```
-
-运行前端依赖审计和构建检查：
+前端构建：
 
 ```bash
 cd 3d-render-agent/ui-prototype
-npm install
-npm audit --audit-level=moderate
 npm run build
 ```
 
-本轮重构验证结果：
+前端当前有若干独立测试脚本，例如：
 
-- `python -m pytest -q`：20 passed。
-- `npm audit --audit-level=moderate`：0 vulnerabilities。
-- `npm run build`：通过。
-- FastAPI smoke：`GET /api/health` 返回 200。
+```bash
+npm run test:chat-sessions
+npm run test:result-asset-urls
+npm run test:composer-layout
+```
 
-## 已完成的重构重点
+## 仓库辅助目录
 
-- 后端从单文件 API 入口拆分为 `backend.app` 分层结构。
-- `api_server.py` 保留为兼容启动入口，实际委托 `backend.app.main.app`。
-- `app_runtime.py` 统一承载 FastAPI 调用 pipeline、配置覆盖和 API 验证逻辑。
-- FastAPI 路由拆分为 health、config、generate。
-- 上传文件处理和生成服务拆入 services。
-- 新增后端 API 测试，覆盖健康检查、非法生成模式、配置验证错误路径。
-- 前端拆出 API client、领域类型、静态数据、工具函数和基础组件。
-- React 工作台支持生成请求、API Base URL 配置、模型配置验证和状态提示。
-- React 工作台新增会话级结果库、图片打开/下载、运行摘要复制和操作 toast。
-- Vite dev/preview 支持 `0.0.0.0`、`allowedHosts` 和可配置代理目标。
+为了让仓库在 GitHub 上保持可复现，同时避免混入本地运行痕迹，目录按下面原则处理：
 
-## 后续计划
+- 保留：
+  - `.trellis/` 中的 `workflow.md`、`scripts/`、`spec/`、当前需要的 `tasks/`
+  - `.agents/`
+  - `.codex/`
 
-- 继续拆分 React 页面中的中大型区域组件，例如 `ChatWorkspace`、`RenderControlPanel`、`ModelConfigPanel`、`QualityReviewPanel`。
-- 增强前端实际运行态：更细粒度生成进度、错误恢复、持久化历史记录和批量导出。
-- 为 `/api/generate` 增加更多 mock pipeline 测试，覆盖成功返回、上传文件、多图输入和模型配置覆盖。
-- 增加前后端联调测试或端到端 smoke 测试。
-- 进一步规范 API 响应结构，便于前端统一展示错误、日志、图片和评估结果。
-- 根据实际模型测试结果优化提示词模板、质量阈值和失败切换策略。
+- 不提交本地运行态：
+  - `.claude/`
+  - `.downloads/`
+  - `.ace-tool/`
+  - `.vscode/`
+  - `.trellis/.runtime/`
+  - `.trellis/workspace/`
+  - `.trellis/.backup-*`
+  - `.tmp-*.png`
+  - `__pycache__/`
+  - `.pytest_cache/`
 
-## 注意事项
+## 部署建议
 
-- 不要提交 `.env`、`config.json`、`outputs/`、`node_modules/`、缓存目录和本地测试结果。
-- `config.example.json` 和 `.env.example` 用于说明配置格式，不应包含真实密钥。
-- 如果画图模型不支持图像输入，上传平面图或参考图时可能会被跳过或报错。
-- 3D 模式对视觉模型能力依赖较强，平面图解析质量会直接影响最终效果。
+现阶段更适合两种方式：
+
+- 本地源码运行：最方便调试模型、API Key 和提示词行为
+- VPS 部署：更适合团队共用浏览器访问
+
+如果后续再做面向非技术用户的单机交付，再考虑 EXE 打包会更稳。
