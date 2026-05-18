@@ -33,6 +33,16 @@ def _auth_client(username: str = "tester", password: str = "password123"):
     return client
 
 
+def test_register_rejects_reserved_default_user(tmp_path, monkeypatch):
+    monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
+    client = TestClient(create_app())
+
+    response = client.post("/api/auth/register", json={"username": "default", "password": "password123"})
+
+    assert response.status_code == 400
+    assert "不可用" in response.json()["detail"]
+
+
 def test_health_endpoint_reports_api_status():
     client = TestClient(create_app())
 
@@ -114,6 +124,49 @@ def test_chat_memory_endpoint_saves_extracted_memory(tmp_path, monkeypatch):
     assert any("结构" in item for item in payload["preferences"]["preference_summary"]["evaluation_standards"])
 
 
+def test_memory_items_can_be_viewed_edited_and_deleted(tmp_path, monkeypatch):
+    monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("memory-crud-user")
+
+    chat = client.post(
+        "/api/chat",
+        json={"message": "记住我喜欢轻盈温馨，避免红金，以后结构还原第一", "project_id": "p-chat"},
+    ).json()
+    save_response = client.post("/api/chat/memory", json={"project_id": "p-chat", "memory_candidate": chat["memory_candidate"]})
+    memory_response = client.get("/api/preferences/memory?project_id=p-chat")
+
+    assert save_response.status_code == 200
+    assert memory_response.status_code == 200
+    memory = memory_response.json()["memory"]
+    sections = {section["id"]: section for section in memory["sections"]}
+    assert sections["daily_memories"]["items"]
+    assert sections["long_term_preferences"]["items"]
+    assert sections["avoid_items"]["items"]
+    assert sections["evaluation_standards"]["items"]
+
+    preference_item = sections["long_term_preferences"]["items"][0]
+    update_response = client.patch(
+        f"/api/preferences/memory/{preference_item['id']}",
+        json={"project_id": "p-chat", "text": "轻盈温馨但不要过度装饰"},
+    )
+    assert update_response.status_code == 200
+    updated_texts = [
+        item["text"]
+        for section in update_response.json()["memory"]["sections"]
+        for item in section["items"]
+    ]
+    assert "轻盈温馨但不要过度装饰" in updated_texts
+
+    delete_response = client.delete(f"/api/preferences/memory/{preference_item['id']}?project_id=p-chat")
+    assert delete_response.status_code == 200
+    deleted_texts = [
+        item["text"]
+        for section in delete_response.json()["memory"]["sections"]
+        for item in section["items"]
+    ]
+    assert "轻盈温馨但不要过度装饰" not in deleted_texts
+
+
 def test_preference_event_endpoint_updates_behavior_summary(tmp_path, monkeypatch):
     monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
     client = _auth_client("config-load-user")
@@ -154,10 +207,10 @@ def test_config_verify_analysis_returns_validation_error_for_unsupported_format(
     assert "暂未实现" in payload["error"]
 
 
-def test_config_save_persists_analysis_image_config_and_env(tmp_path, monkeypatch):
+def test_default_workspace_config_save_persists_analysis_image_config_and_env(tmp_path, monkeypatch):
     _patch_runtime_files(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
-    client = _auth_client("generate-user")
+    client = TestClient(create_app())
 
     response = client.post(
         "/api/config/save",
@@ -208,6 +261,36 @@ def test_config_load_returns_saved_project_config(tmp_path, monkeypatch):
     assert payload["ok"] is True
     assert payload["config"]["imageModel"] == "gpt-image-2"
     assert "analysisApiFormat" in payload["config"]
+
+
+def test_fresh_token_namespace_load_inherits_default_config_without_exposing_keys(tmp_path, monkeypatch):
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    config_data = json.loads(Path("config.json").read_text(encoding="utf-8"))
+    config_data["llm"]["provider_name"] = "Workspace Analysis"
+    config_data["llm"]["base_url"] = "https://analysis.workspace/v1"
+    config_data["llm"]["model"] = "workspace-analysis-model"
+    config_data["image_gen"]["provider_name"] = "Workspace Image"
+    config_data["image_gen"]["base_url"] = "https://image.workspace/v1"
+    config_data["image_gen"]["model"] = "workspace-image-model"
+    Path("config.json").write_text(json.dumps(config_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    Path(".env").write_text("LLM_API_KEY=workspace-analysis-key\nVISION_API_KEY=workspace-vision-key\nIMAGE_API_KEY=workspace-image-key\n", encoding="utf-8")
+    monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
+    client = TestClient(create_app())
+
+    response = client.get("/api/config", headers={"X-Render-Agent-User-Token": "fresh-token"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["config"]["analysisProviderName"] == "Workspace Analysis"
+    assert payload["config"]["analysisBaseUrl"] == "https://analysis.workspace/v1"
+    assert payload["config"]["analysisModel"] == "workspace-analysis-model"
+    assert payload["config"]["analysisApiKey"] == ""
+    assert payload["config"]["imageProviderName"] == "Workspace Image"
+    assert payload["config"]["imageBaseUrl"] == "https://image.workspace/v1"
+    assert payload["config"]["imageModel"] == "workspace-image-model"
+    assert payload["config"]["imageApiKey"] == ""
 
 
 def test_token_namespace_config_save_and_load_are_isolated(tmp_path, monkeypatch):
@@ -280,6 +363,146 @@ def test_token_namespace_config_save_and_load_are_isolated(tmp_path, monkeypatch
     )
     assert cfg.image_gen.api_key == "alpha-image-key"
     assert cfg.image_gen.model == "alpha-image-model"
+
+
+def test_authenticated_user_config_save_and_load_are_isolated(tmp_path, monkeypatch):
+    import app_runtime
+    from backend.app.services.result_store import get_user_data_dir
+
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
+    alice_client = _auth_client("alice-user")
+    bob_client = _auth_client("bob-user")
+
+    response = alice_client.post(
+        "/api/config/save",
+        data={
+            "analysis_provider_name": "Alice Analysis",
+            "analysis_api_format": "openai_chat",
+            "analysis_base_url": "https://alice-analysis.example/v1",
+            "analysis_api_key": "alice-analysis-key",
+            "analysis_model": "alice-analysis-model",
+            "img_provider_name": "Alice Image",
+            "img_api_format": "openai_chat",
+            "img_base_url": "https://alice-image.example/v1",
+            "img_api_key": "alice-image-key",
+            "img_model": "alice-image-model",
+            "fallback_models_text": "alice-fallback",
+        },
+    )
+    alice_load = alice_client.get("/api/config")
+    bob_load = bob_client.get("/api/config")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert alice_load.status_code == 200
+    assert alice_load.json()["config"]["analysisApiKey"] == "alice-analysis-key"
+    assert alice_load.json()["config"]["imageApiKey"] == "alice-image-key"
+    assert bob_load.status_code == 200
+    assert bob_load.json()["config"]["analysisApiKey"] == ""
+    assert bob_load.json()["config"]["imageApiKey"] == ""
+
+    legacy_config = json.loads(Path("config.json").read_text(encoding="utf-8"))
+    assert legacy_config["llm"].get("api_key") != "alice-analysis-key"
+    assert legacy_config["image_gen"].get("api_key") != "alice-image-key"
+    assert not Path(".env").exists()
+
+    saved_path = get_user_data_dir("alice-user") / "config" / "config.json"
+    saved = json.loads(saved_path.read_text(encoding="utf-8"))
+    assert saved["llm"]["api_key"] == "alice-analysis-key"
+    assert saved["llm"]["api_key_env"] == ""
+    assert saved["image_gen"]["api_key"] == "alice-image-key"
+    assert saved["image_gen"]["api_key_env"] == ""
+
+    cfg = app_runtime._build_runtime_config(
+        1,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        2,
+        2,
+        validate_analysis=False,
+        user_id="alice-user",
+    )
+    assert cfg.llm.api_key == "alice-analysis-key"
+    assert cfg.llm.model == "alice-analysis-model"
+    assert cfg.image_gen.api_key == "alice-image-key"
+    assert cfg.image_gen.model == "alice-image-model"
+
+
+def test_fresh_non_default_user_cannot_fallback_to_workspace_keys_at_runtime(tmp_path, monkeypatch):
+    import app_runtime
+
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
+    config_data = json.loads(Path("config.json").read_text(encoding="utf-8"))
+    config_data["llm"]["provider_name"] = "Workspace Analysis"
+    config_data["llm"]["base_url"] = "https://analysis.workspace/v1"
+    config_data["llm"]["model"] = "workspace-analysis-model"
+    config_data["image_gen"]["provider_name"] = "Workspace Image"
+    config_data["image_gen"]["base_url"] = "https://image.workspace/v1"
+    config_data["image_gen"]["model"] = "workspace-image-model"
+    Path("config.json").write_text(json.dumps(config_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    Path(".env").write_text(
+        "LLM_API_KEY=workspace-analysis-key\nVISION_API_KEY=workspace-vision-key\nIMAGE_API_KEY=workspace-image-key\n",
+        encoding="utf-8",
+    )
+    client = TestClient(create_app())
+
+    config_response = client.get("/api/config", headers={"X-Render-Agent-User-Token": "fresh-token"})
+    assert config_response.status_code == 200
+    config_payload = config_response.json()
+    assert config_payload["config"]["analysisProviderName"] == "Workspace Analysis"
+    assert config_payload["config"]["analysisModel"] == "workspace-analysis-model"
+    assert config_payload["config"]["analysisApiKey"] == ""
+    assert config_payload["config"]["imageProviderName"] == "Workspace Image"
+    assert config_payload["config"]["imageModel"] == "workspace-image-model"
+    assert config_payload["config"]["imageApiKey"] == ""
+
+    cfg = app_runtime.get_config("fresh-token")
+    assert cfg.llm.provider_name == "Workspace Analysis"
+    assert cfg.llm.model == "workspace-analysis-model"
+    assert cfg.llm.api_key == ""
+    assert cfg.vision.api_key == ""
+    assert cfg.image_gen.provider_name == "Workspace Image"
+    assert cfg.image_gen.model == "workspace-image-model"
+    assert cfg.image_gen.api_key == ""
+
+    verify_response = client.post(
+        "/api/config/verify-image",
+        headers={"X-Render-Agent-User-Token": "fresh-token"},
+    )
+
+    assert verify_response.status_code == 400
+    verify_payload = verify_response.json()
+    assert verify_payload["ok"] is False
+    assert verify_payload["stage"] == "verify-image"
+    assert "请先为当前用户保存自己的 API Key" in verify_payload["error"]
+    assert ".env" not in verify_payload["error"]
+
+    response = client.post(
+        "/api/generate",
+        data={"mode": "standard", "requirement": "make a room"},
+        headers={"X-Render-Agent-User-Token": "fresh-token"},
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["stage"] == "generation"
+    assert "画图模型 配置缺少 API Key" in payload["error"]
+    assert "请先为当前用户保存自己的 API Key" in payload["error"]
+    assert ".env" not in payload["error"]
 
 
 def _write_test_png(path: Path):
@@ -563,6 +786,25 @@ def test_token_namespace_isolates_shortcuts_and_generated_results(tmp_path, monk
     assert captured["user_id"] == "alpha-token"
     assert [item["id"] for item in alpha_results.json()["results"]] == [generated["id"]]
     assert beta_results.json()["results"] == []
+
+
+def test_authenticated_session_takes_priority_over_namespace_header(tmp_path, monkeypatch):
+    monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("session-priority-user")
+    namespace_headers = {"X-Render-Agent-User-Token": "spoofed-token"}
+    shortcuts = [{"id": "session-shortcut", "zh": "账号内短语", "en": "account phrase"}]
+
+    save_response = client.put("/api/preferences/shortcuts", json={"shortcuts": shortcuts}, headers=namespace_headers)
+    session_response = client.get("/api/preferences/shortcuts")
+    anonymous_namespace_response = TestClient(create_app()).get("/api/preferences/shortcuts", headers=namespace_headers)
+    me_response = client.get("/api/auth/me", headers=namespace_headers)
+
+    assert save_response.status_code == 200
+    assert session_response.json()["shortcuts"] == shortcuts
+    assert anonymous_namespace_response.json()["shortcuts"] == []
+    assert me_response.status_code == 200
+    assert me_response.json()["authenticated"] is True
+    assert me_response.json()["user"]["user_id"] == "session-priority-user"
 
 
 def test_generate_endpoint_passes_colored_floor_plan_mode_to_runtime(tmp_path, monkeypatch):

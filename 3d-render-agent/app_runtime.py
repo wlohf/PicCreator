@@ -17,6 +17,7 @@ if os.name == "nt":
 
 from config import (
     load_config,
+    build_config_from_dict,
     AppConfig,
     AdapterConfig,
     COMMON_API_FORMAT_CHOICES,
@@ -62,17 +63,6 @@ def _is_default_config_user(user_id: str | None) -> bool:
     return normalize_user_id(user_id) == DEFAULT_CONFIG_USER_ID
 
 
-def _sanitize_user_config_data(data: dict[str, Any]) -> dict[str, Any]:
-    sanitized = json.loads(json.dumps(data))
-    for section_name in ("llm", "vision", "image_gen"):
-        section = sanitized.get(section_name)
-        if not isinstance(section, dict):
-            continue
-        section["api_key"] = ""
-        section["api_key_env"] = ""
-    return sanitized
-
-
 def _user_config_dir(user_id: str) -> Path:
     return get_user_data_dir(user_id) / "config"
 
@@ -89,23 +79,131 @@ def _env_path_for_user(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> Path:
     return _user_config_dir(normalize_user_id(user_id)) / ".env"
 
 
-def _ensure_user_config_file(user_id: str | None) -> Path:
-    target = _config_path_for_user(user_id)
+def _default_config_source_path() -> Path:
+    return CONFIG_PATH if CONFIG_PATH.exists() else CONFIG_EXAMPLE_PATH
+
+
+def _load_json_file(path: str | os.PathLike[str]) -> dict[str, Any]:
+    source = _resolve_project_path(path)
+    with source.open("r", encoding="utf-8") as f:
+        try:
+            return json.load(f)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(f"配置文件 {source} 格式错误：{exc}") from exc
+
+
+def _load_default_config_json() -> dict[str, Any]:
+    return _load_json_file(_default_config_source_path())
+
+
+def _load_namespace_override_json(user_id: str | None) -> dict[str, Any]:
     if _is_default_config_user(user_id):
-        return target
+        return _load_default_config_json()
+    target = _config_path_for_user(user_id)
     if not target.exists():
-        data = _sanitize_user_config_data(_load_config_json(CONFIG_EXAMPLE_PATH))
-        _save_config_json(data, target)
-    return target
+        return {}
+    return _load_json_file(target)
+
+
+def _merge_adapter_section(base_section: Any, override_section: Any) -> dict[str, Any]:
+    merged = dict(base_section or {})
+    if not isinstance(override_section, dict):
+        return merged
+    has_explicit_api_key = bool(str(override_section.get("api_key") or "").strip())
+    for key, value in override_section.items():
+        if value is None:
+            continue
+        if key == "api_key_env":
+            if has_explicit_api_key:
+                merged[key] = str(value or "").strip()
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+        if key in {"api_key", "provider", "provider_name", "api_format", "base_url", "model"}:
+            if isinstance(value, str) and not value.strip():
+                continue
+        merged[key] = value
+    return merged
+
+
+def _strip_sensitive_default_key_refs(config_json: dict[str, Any], user_id: str | None) -> dict[str, Any]:
+    if _is_default_config_user(user_id):
+        return config_json
+
+    sanitized = json.loads(json.dumps(config_json))
+    for section_name in ("llm", "vision", "image_gen"):
+        section = sanitized.get(section_name)
+        if not isinstance(section, dict):
+            continue
+        has_explicit_key = bool(str(section.get("api_key") or "").strip())
+        if has_explicit_key:
+            section["api_key_env"] = str(section.get("api_key_env") or "").strip()
+            continue
+        section["api_key"] = ""
+        section["api_key_env"] = ""
+    return sanitized
+
+
+def _merge_prompt_overrides(base_overrides: Any, override_overrides: Any) -> dict[str, Any]:
+    merged = dict(base_overrides or {})
+    if not isinstance(override_overrides, dict):
+        return merged
+    for key, value in override_overrides.items():
+        text = str(value or "").strip()
+        if text:
+            merged[key] = text
+    return merged
+
+
+def _load_effective_config_json(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> dict[str, Any]:
+    base = _load_default_config_json()
+    if _is_default_config_user(user_id):
+        return base
+
+    override = _load_namespace_override_json(user_id)
+    if not override:
+        return _strip_sensitive_default_key_refs(base, user_id)
+
+    merged = json.loads(json.dumps(base))
+    for section_name in ("llm", "vision", "image_gen"):
+        merged[section_name] = _merge_adapter_section(base.get(section_name), override.get(section_name))
+    merged["prompt_overrides"] = _merge_prompt_overrides(base.get("prompt_overrides"), override.get("prompt_overrides"))
+    for key, value in override.items():
+        if key in {"llm", "vision", "image_gen", "prompt_overrides"}:
+            continue
+        merged[key] = value
+    return _strip_sensitive_default_key_refs(merged, user_id)
+
+
+def _effective_env_values(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> dict[str, str]:
+    if _is_default_config_user(user_id):
+        values: dict[str, str] = {}
+        values.update(_read_env_values(ENV_PATH))
+        values.update(os.environ)
+        return values
+
+    values = _read_env_values(_env_path_for_user(user_id))
+    # Non-default users must not inherit workspace API keys from the default .env or process env.
+    return values
+
+
+def _namespace_has_explicit_api_key(user_id: str | None, section_name: str) -> bool:
+    if _is_default_config_user(user_id):
+        return True
+    override = _load_namespace_override_json(user_id)
+    section = override.get(section_name)
+    return isinstance(section, dict) and bool(str(section.get("api_key") or "").strip())
 
 
 def get_config(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> AppConfig:
     if _is_default_config_user(user_id):
         config_path = CONFIG_PATH if CONFIG_PATH.exists() else CONFIG_EXAMPLE_PATH
-    else:
-        config_path = _ensure_user_config_file(user_id)
-    try:
         return load_config(str(config_path))
+    try:
+        return build_config_from_dict(
+            _load_effective_config_json(user_id),
+            _effective_env_values(user_id),
+        )
     except Exception as e:
         raise RuntimeError(f"配置文件加载失败：{e}")
 
@@ -161,7 +259,7 @@ def _display_api_format(api_format: str) -> str:
     return API_FORMAT_LABELS.get(normalized, api_format or "Unknown")
 
 
-def _validate_adapter_config(name: str, cfg: AdapterConfig):
+def _validate_adapter_config(name: str, cfg: AdapterConfig, *, allow_env_fallback: bool = True):
     api_format = normalize_api_format(getattr(cfg, "api_format", "") or cfg.provider or "")
     if not api_format:
         raise RuntimeError(f"{name} 配置缺少 API 格式")
@@ -174,7 +272,11 @@ def _validate_adapter_config(name: str, cfg: AdapterConfig):
     if not (cfg.model or "").strip():
         raise RuntimeError(f"{name} 配置缺少 model")
     if not (cfg.api_key or "").strip():
-        raise RuntimeError(f"{name} 配置缺少 API Key。请在 UI 中填写，或在 .env 中设置对应变量。")
+        if allow_env_fallback:
+            raise RuntimeError(f"{name} 配置缺少 API Key。请在 UI 中填写，或在 .env 中设置对应变量。")
+        raise RuntimeError(
+            f"{name} 配置缺少 API Key。请先为当前用户保存自己的 API Key，默认工作区 Key 不会自动继承。"
+        )
 
 
 def save_api_keys_to_env(analysis_api_key, img_api_key):
@@ -234,14 +336,8 @@ def _write_env_values(env_path: str | os.PathLike[str], current: dict[str, str])
 
 def _load_config_json(path: str | os.PathLike[str] = CONFIG_PATH, user_id: str | None = None) -> dict:
     requested = _config_path_for_user(user_id) if user_id is not None else _resolve_project_path(path)
-    if user_id is not None and not _is_default_config_user(user_id):
-        _ensure_user_config_file(user_id)
-    source = requested if requested.exists() else CONFIG_EXAMPLE_PATH
-    with source.open("r", encoding="utf-8") as f:
-        try:
-            return json.load(f)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"配置文件 {source} 格式错误：{exc}") from exc
+    source = requested if requested.exists() else _default_config_source_path()
+    return _load_json_file(source)
 
 
 def _save_config_json(data: dict, path: str | os.PathLike[str] = CONFIG_PATH):
@@ -318,7 +414,7 @@ def save_model_config_to_files(
     is_default_user = _is_default_config_user(user_id)
     config_path = _config_path_for_user(user_id)
     env_path = _env_path_for_user(user_id)
-    data = _load_config_json(user_id=user_id)
+    data = _load_effective_config_json(user_id)
     _update_adapter_json(
         data,
         "llm",
@@ -380,23 +476,23 @@ def save_model_config_to_files(
     _apply_prompt_overrides_from_json(data)
     if is_default_user:
         return "已保存到 config.json 和 .env"
-    return "已保存到当前临时空间的本地配置"
+    return "已保存到当前用户的本地配置"
 
 
 def load_model_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> dict[str, Any]:
-    config_data = _load_config_json(user_id=user_id)
+    config_data = _load_effective_config_json(user_id)
     prompt_overrides = _apply_prompt_overrides_from_json(config_data)
     cfg = get_config(user_id)
     return {
         "analysisProviderName": cfg.llm.provider_name or "",
         "analysisApiFormat": _ui_api_format(cfg.llm.api_format or cfg.llm.provider),
         "analysisBaseUrl": cfg.llm.base_url or "",
-        "analysisApiKey": cfg.llm.api_key or "",
+        "analysisApiKey": cfg.llm.api_key if _namespace_has_explicit_api_key(user_id, "llm") else "",
         "analysisModel": cfg.llm.model or "",
         "imageProviderName": cfg.image_gen.provider_name or "",
         "imageApiFormat": _ui_api_format(cfg.image_gen.api_format or cfg.image_gen.provider),
         "imageBaseUrl": cfg.image_gen.base_url or "",
-        "imageApiKey": cfg.image_gen.api_key or "",
+        "imageApiKey": cfg.image_gen.api_key if _namespace_has_explicit_api_key(user_id, "image_gen") else "",
         "imageModel": cfg.image_gen.model or "",
         "fallbackModels": "\n".join(cfg.image_model_fallbacks or []),
         "modelSwitchAfterFailures": cfg.model_switch_after_failures,
@@ -434,8 +530,9 @@ def _build_runtime_config(
     user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ) -> AppConfig:
     cfg = get_config(user_id)
-    _apply_prompt_overrides_from_json(_load_config_json(user_id=user_id))
+    _apply_prompt_overrides_from_json(_load_effective_config_json(user_id))
     cfg.max_iterations = int(max_iterations)
+    allow_env_fallback = _is_default_config_user(user_id)
 
     analysis_cfg = _ensure_min_timeout(
         _merge_adapter_override(
@@ -464,9 +561,9 @@ def _build_runtime_config(
     )
 
     if validate_analysis:
-        _validate_adapter_config("分析/提示词模型", cfg.llm)
-        _validate_adapter_config("图像分析模型", cfg.vision)
-    _validate_adapter_config("画图模型", cfg.image_gen)
+        _validate_adapter_config("分析/提示词模型", cfg.llm, allow_env_fallback=allow_env_fallback)
+        _validate_adapter_config("图像分析模型", cfg.vision, allow_env_fallback=allow_env_fallback)
+    _validate_adapter_config("画图模型", cfg.image_gen, allow_env_fallback=allow_env_fallback)
 
     fallback_models = []
     for item in str(fallback_models_text or "").replace("\r", "\n").replace(",", "\n").split("\n"):
@@ -525,7 +622,11 @@ def _build_analysis_adapter_config(
         analysis_api_key or "",
         analysis_model or "",
     )
-    _validate_adapter_config("分析/提示词模型", analysis_cfg)
+    _validate_adapter_config(
+        "分析/提示词模型",
+        analysis_cfg,
+        allow_env_fallback=_is_default_config_user(user_id),
+    )
     return analysis_cfg
 
 
@@ -546,7 +647,11 @@ def _build_image_adapter_config(
         img_api_key or "",
         img_model or "",
     )
-    _validate_adapter_config("画图模型", image_cfg)
+    _validate_adapter_config(
+        "画图模型",
+        image_cfg,
+        allow_env_fallback=_is_default_config_user(user_id),
+    )
     return image_cfg
 
 

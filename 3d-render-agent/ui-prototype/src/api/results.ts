@@ -1,5 +1,6 @@
 import { apiFetch, buildApiUrl, parseApiJson } from "./client";
 import type { ApiResult, RenderHistoryItem } from "../types/domain";
+import { resolveResultAssetUrl, shouldIncludeResultNamespaceQuery } from "../utils/resultAssetUrls";
 
 export type ResultsResponse = {
   ok: boolean;
@@ -13,24 +14,17 @@ type ResultMutationResponse = {
   detail?: string;
 };
 
-function resolveAssetUrl(value?: string | null, userId?: string | null) {
-  if (!value) return undefined;
-  if (value.startsWith("data:") || value.startsWith("http://") || value.startsWith("https://")) {
-    return value;
-  }
-  return buildApiUrl(value, userId ? { user_id: userId } : undefined);
-}
-
-export function normalizeApiResult(item: ApiResult): RenderHistoryItem {
+export function normalizeApiResult(item: ApiResult, options: { includeNamespaceQuery?: boolean } | number = {}): RenderHistoryItem {
   const userId = item.user_id || "default";
+  const includeNamespaceQuery = typeof options === "number" ? false : options.includeNamespaceQuery ?? false;
   return {
     id: item.id,
     title: item.title || item.image_label || "Render result",
     status: item.status,
-    imageUrl: resolveAssetUrl(item.image_url, userId),
-    downloadUrl: resolveAssetUrl(item.download_url, userId),
-    annotationUrl: resolveAssetUrl(item.annotation_url, userId),
-    floorPlanUrl: resolveAssetUrl(item.floor_plan_url, userId),
+    imageUrl: resolveResultAssetUrl(item.image_url, userId, includeNamespaceQuery, buildApiUrl),
+    downloadUrl: resolveResultAssetUrl(item.download_url, userId, includeNamespaceQuery, buildApiUrl),
+    annotationUrl: resolveResultAssetUrl(item.annotation_url, userId, includeNamespaceQuery, buildApiUrl),
+    floorPlanUrl: resolveResultAssetUrl(item.floor_plan_url, userId, includeNamespaceQuery, buildApiUrl),
     floorPlanName: item.floor_plan_name,
     imageLabel: item.image_label,
     prompt: item.prompt,
@@ -62,16 +56,17 @@ function httpError(response: Response, data?: { error?: string }): Error {
 }
 
 export async function listResults(userId = "default"): Promise<RenderHistoryItem[]> {
-  const response = await apiFetch(`/api/results?user_id=${encodeURIComponent(userId)}`);
+  const includeNamespaceQuery = shouldIncludeResultNamespaceQuery(userId);
+  const response = await apiFetch(includeNamespaceQuery ? `/api/results?user_id=${encodeURIComponent(userId)}` : "/api/results");
   const data = await parseApiJson<ResultsResponse>(response);
   if (!response.ok || !data.ok) {
     throw httpError(response, data as { error?: string });
   }
-  return data.results.map(normalizeApiResult);
+  return data.results.map((item) => normalizeApiResult(item, { includeNamespaceQuery }));
 }
 
 export async function deleteResult(id: string, userId = "default"): Promise<void> {
-  const response = await apiFetch(`/api/results/${id}?user_id=${encodeURIComponent(userId)}`, { method: "DELETE" });
+  const response = await apiFetch(userId === "default" ? `/api/results/${id}?user_id=${encodeURIComponent(userId)}` : `/api/results/${id}`, { method: "DELETE" });
   if (!response.ok) {
     const data = await parseApiJson<{ error?: string }>(response).catch(() => ({}));
     throw httpError(response, data);
@@ -79,7 +74,7 @@ export async function deleteResult(id: string, userId = "default"): Promise<void
 }
 
 export async function clearResults(userId = "default"): Promise<void> {
-  const response = await apiFetch(`/api/results?user_id=${encodeURIComponent(userId)}`, { method: "DELETE" });
+  const response = await apiFetch(userId === "default" ? `/api/results?user_id=${encodeURIComponent(userId)}` : "/api/results", { method: "DELETE" });
   if (!response.ok) {
     const data = await parseApiJson<{ error?: string }>(response).catch(() => ({}));
     throw httpError(response, data);
@@ -87,7 +82,7 @@ export async function clearResults(userId = "default"): Promise<void> {
 }
 
 export async function saveResultNotes(id: string, notes: string, userId = "default"): Promise<RenderHistoryItem> {
-  const response = await apiFetch(`/api/results/${id}/notes?user_id=${encodeURIComponent(userId)}`, {
+  const response = await apiFetch(userId === "default" ? `/api/results/${id}/notes?user_id=${encodeURIComponent(userId)}` : `/api/results/${id}/notes`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ notes }),
@@ -96,5 +91,5 @@ export async function saveResultNotes(id: string, notes: string, userId = "defau
   if (!response.ok || !data.ok || !data.result) {
     throw new Error(data.error || data.detail || `HTTP ${response.status}`);
   }
-  return normalizeApiResult(data.result);
+  return normalizeApiResult(data.result, { includeNamespaceQuery: shouldIncludeResultNamespaceQuery(userId) });
 }

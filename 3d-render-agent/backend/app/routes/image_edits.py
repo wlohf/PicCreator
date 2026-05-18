@@ -1,15 +1,11 @@
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
-from backend.app.services.auth_service import get_current_or_default_user
+from backend.app.services.auth_service import get_current_or_default_user, resolve_config_user_id
 from backend.app.schemas.generation import AnnotatedEditImageForm, EditImageForm
 from backend.app.services.image_edit_service import annotated_edit_render, edit_render
 from backend.app.services.preferences_store import load_style_profile
 
 router = APIRouter(prefix="/api/results", tags=["image-edits"])
-
-
-def _config_user_id(user: dict) -> str:
-    return user["user_id"] if user.get("auth_scheme") == "token_namespace" else "default"
 
 
 @router.post("/{result_id}/edit")
@@ -37,7 +33,7 @@ async def edit_result(
     form = EditImageForm(
         source_result_id=result_id,
         user_id=user["user_id"],
-        config_user_id=_config_user_id(user),
+        config_user_id=resolve_config_user_id(user),
         edit_instruction=edit_instruction,
         project_id=project_id,
         max_iterations=max_iterations,
@@ -85,7 +81,7 @@ async def annotated_edit_result(
     form = AnnotatedEditImageForm(
         source_result_id=result_id,
         user_id=user["user_id"],
-        config_user_id=_config_user_id(user),
+        config_user_id=resolve_config_user_id(user),
         edit_instruction=edit_instruction,
         project_id=project_id,
         max_iterations=max_iterations,

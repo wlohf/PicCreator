@@ -43,6 +43,7 @@ export type ChatMessage = {
   promptText?: string;
   imageUrl?: string;
   imageLabel?: string;
+  sourceResultId?: string;
   draftInstruction?: string;
   memoryCandidate?: ChatMemoryCandidate;
 };

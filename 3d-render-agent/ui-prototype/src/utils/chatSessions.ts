@@ -46,6 +46,42 @@ export function hasDurableConversationContent(messages: ChatMessage[]) {
   });
 }
 
+type SessionSnapshotLike = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: readonly unknown[];
+  chatInput: string;
+  workspaceMode: string;
+  generationMode: string;
+  composerMode: string;
+  activeResultId: string | null;
+};
+
+function sameSessionContent<T extends SessionSnapshotLike>(left: T, right: T) {
+  return (
+    left.title === right.title &&
+    left.messages === right.messages &&
+    left.chatInput === right.chatInput &&
+    left.workspaceMode === right.workspaceMode &&
+    left.generationMode === right.generationMode &&
+    left.composerMode === right.composerMode &&
+    left.activeResultId === right.activeResultId
+  );
+}
+
+export function upsertSessionSnapshot<T extends SessionSnapshotLike>(list: T[], nextSession: T) {
+  const existingIndex = list.findIndex((session) => session.id === nextSession.id);
+  if (existingIndex === 0 && sameSessionContent(list[0], nextSession)) {
+    return list;
+  }
+  return [
+    nextSession,
+    ...list.filter((session) => session.id !== nextSession.id),
+  ].slice(0, 20);
+}
+
 export type ConversationRunGuard = {
   userId: string;
   epoch: number;

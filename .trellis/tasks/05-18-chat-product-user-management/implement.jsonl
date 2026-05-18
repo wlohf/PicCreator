@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "backend API, auth, config, memory route conventions"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "generation modes, namespace isolation, results, preferences contracts"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "frontend guideline index for UI/session changes"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "chat/image workspace, conversation state, manual memory writes"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "generation mode and result metadata type alignment"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "auth, identity, memory, and config changes cross backend/frontend boundaries"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "reuse existing auth, config, preference, and session helpers before adding new ones"}

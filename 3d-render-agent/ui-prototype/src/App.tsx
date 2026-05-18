@@ -1,4 +1,4 @@
-import { type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   Aperture,
   Box,
@@ -11,12 +11,13 @@ import {
   Edit3,
   Eye,
   FileText,
+  Settings2,
   ImagePlus,
   KeyRound,
+  LogOut,
   Maximize2,
   MessageCircle,
   MousePointer,
-  PanelRight,
   PlugZap,
   Play,
   Plus,
@@ -27,12 +28,12 @@ import {
   X
 } from "lucide-react";
 
+import { loadAuthMe, login, logout, register, type AuthUser } from "./api/auth";
 import { loadConfig, saveConfig, verifyConfig } from "./api/config";
 import { applyChatMemory, sendDesignChat } from "./api/chat";
-import { setApiUserNamespace } from "./api/client";
 import { requestGenerationStream } from "./api/generation";
 import { requestAnnotatedImageEdit, requestImageEdit } from "./api/imageEdits";
-import { loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, saveShortcutPreferences, type StyleProfile } from "./api/preferences";
+import { deleteMemoryItem, loadMemoryView, loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, saveShortcutPreferences, updateMemoryItem, type MemoryItem, type MemorySection, type MemoryView, type StyleProfile } from "./api/preferences";
 import { clearResults, deleteResult, listResults, normalizeApiResult, saveResultNotes } from "./api/results";
 import { ConfigStatus, type ConfigStatusState } from "./components/ConfigStatus";
 import { AnnotationEditor } from "./components/AnnotationEditor";
@@ -46,17 +47,23 @@ import {
   modelOptions
 } from "./data/studioData";
 import type { ApiConfig, ChatMemoryCandidate, ChatMessage, FilePreview, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
-import { countGenerationRecords, hasConversationContent, hasDurableConversationContent, isCurrentConversationRun, type ConversationRunGuard } from "./utils/chatSessions";
+import { countGenerationRecords, hasConversationContent, hasDurableConversationContent, isCurrentConversationRun, upsertSessionSnapshot, type ConversationRunGuard } from "./utils/chatSessions";
 import { apiConfigStorageKey } from "./utils/apiConfigStorage";
 import { filesFromList, imageFilesFromFiles, mergeFloorPlanFiles } from "./utils/fileAttachments";
 import { compactLines, localized } from "./utils/text";
 
 const CHAT_HISTORY_STORAGE_KEY = "render-director-chat-history-v1";
 const SHORTCUT_PHRASES_STORAGE_KEY = "render-director-shortcut-phrases-v1";
-const USER_TOKEN_STORAGE_KEY = "render-director-user-token-v1";
+const LAYOUT_SIDEBAR_WIDTH_STORAGE_KEY = "render-director-sidebar-width-v1";
+const LAYOUT_DRAWER_WIDTH_STORAGE_KEY = "render-director-drawer-width-v1";
 const GENERATION_SLOW_NOTICE_MS = 5 * 60 * 1000;
 const MAX_ITERATIONS_UPPER_BOUND = 50;
 const COMPOSER_MAX_VISIBLE_HEIGHT = 232;
+const SIDEBAR_WIDTH_MIN = 240;
+const SIDEBAR_WIDTH_MAX = 420;
+const DRAWER_WIDTH_MIN = 320;
+const DRAWER_WIDTH_MAX = 560;
+const DESKTOP_DRAWER_BREAKPOINT = 1100;
 
 
 type ShortcutPhrase = {
@@ -74,7 +81,10 @@ type PreviewImage = {
 
 type ComposerMode = "new-generation" | "edit-selected-result";
 type WorkspaceMode = "chat" | "image";
-type UtilityPanel = "results" | "analysis" | "shortcuts" | "settings";
+type UtilityPanel = "results" | "analysis" | "shortcuts" | "preferences" | "generation" | "setup" | "prompts";
+type ResizablePanel = "sidebar" | "drawer";
+
+const DEFAULT_WORKSPACE_MODE: WorkspaceMode = "chat";
 
 type ChatSessionRecord = {
   id: string;
@@ -163,10 +173,15 @@ type ComparisonImage =
       rightResultId: string;
     };
 
-const generationModeOptions: { value: GenerationMode; zh: string; en: string }[] = [
+const generationModeLabels: Record<GenerationMode, { zh: string; en: string }> = {
+  standard: { zh: "默认模式", en: "Default" },
+  render3d: { zh: "3D 效果图", en: "3D render" },
+  colored_floor_plan: { zh: "彩色平面图", en: "Colored plan" }
+};
+
+const generationModeOptions: { value: "standard" | "render3d"; zh: string; en: string }[] = [
   { value: "standard", zh: "默认模式", en: "Default" },
   { value: "render3d", zh: "3D 效果图", en: "3D render" },
-  { value: "colored_floor_plan", zh: "彩色平面图", en: "Colored plan" }
 ];
 
 function normalizeApiConfig(value: unknown): ApiConfig {
@@ -267,7 +282,7 @@ function createEmptySession(): ChatSessionRecord {
     updatedAt: timestamp,
     messages: [],
     chatInput: "",
-    workspaceMode: "image",
+    workspaceMode: DEFAULT_WORKSPACE_MODE,
     generationMode: "standard",
     composerMode: "new-generation",
     activeResultId: null,
@@ -280,7 +295,7 @@ function normalizeStoredSession(value: unknown): ChatSessionRecord | null {
   const id = String(session.id || "").trim();
   if (!id) return null;
   const messages = Array.isArray(session.messages) ? session.messages as ChatMessage[] : [];
-  const generationMode = session.generationMode === "render3d" || session.generationMode === "colored_floor_plan" || session.generationMode === "standard"
+  const generationMode = session.generationMode === "render3d" || session.generationMode === "standard"
     ? session.generationMode
     : "standard";
   const workspaceMode = session.workspaceMode === "chat" || session.workspaceMode === "image"
@@ -323,18 +338,22 @@ function loadStoredSessions(userId: string) {
   }
 }
 
-function normalizeUserIdInput(value: string) {
-  return value.trim().replace(/\s+/g, "-").slice(0, 48);
+function clampPanelWidth(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) {
+    return min;
+  }
+  return Math.min(max, Math.max(min, Math.round(value)));
 }
 
-function loadStoredUserToken() {
+function loadStoredPanelWidth(key: string, fallback: number, min: number, max: number) {
   if (typeof window === "undefined") {
-    return "";
+    return fallback;
   }
   try {
-    return normalizeUserIdInput(window.localStorage.getItem(USER_TOKEN_STORAGE_KEY) || "");
+    const raw = Number(window.localStorage.getItem(key));
+    return Number.isFinite(raw) ? clampPanelWidth(raw, min, max) : fallback;
   } catch {
-    return "";
+    return fallback;
   }
 }
 
@@ -383,8 +402,7 @@ function loadStoredShortcutPhrases(userId: string): ShortcutPhrase[] {
 }
 
 const DEFAULT_PROJECT_ID = "default";
-const initialUserToken = loadStoredUserToken();
-const initialApiConfig = loadSavedApiConfig(initialUserToken);
+const initialApiConfig = loadSavedApiConfig("");
 function App() {
   const [locale, setLocale] = useState<Locale>("zh");
   const [isRendering, setIsRendering] = useState(false);
@@ -392,7 +410,7 @@ function App() {
   const [selectedModel, setSelectedModel] = useState(initialApiConfig.imageModel || modelOptions[0]);
   const [maxIterationsInput, setMaxIterationsInput] = useState("5");
   const [enableQualityEvaluation, setEnableQualityEvaluation] = useState(false);
-  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("image");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(DEFAULT_WORKSPACE_MODE);
   const [generationMode, setGenerationMode] = useState<GenerationMode>("standard");
   const [chatInput, setChatInput] = useState("");
   const [composerMode, setComposerMode] = useState<ComposerMode>("new-generation");
@@ -400,7 +418,7 @@ function App() {
   const [floorPlanFiles, setFloorPlanFiles] = useState<File[]>([]);
   const [liveGeneration, setLiveGeneration] = useState<LiveGenerationState | null>(null);
 
-  const [showApiConfig, setShowApiConfig] = useState(false);
+  const [showApiConfig, setShowApiConfig] = useState(true);
   const [previewImage, setPreviewImage] = useState<PreviewImage | null>(null);
   const [comparisonImage, setComparisonImage] = useState<ComparisonImage | null>(null);
   const [annotationTarget, setAnnotationTarget] = useState<RenderHistoryItem | null>(null);
@@ -409,20 +427,29 @@ function App() {
   const [configStatus, setConfigStatus] = useState<ConfigStatusState | null>(null);
   const [configAction, setConfigAction] = useState<"save" | "analysis" | "image" | null>(null);
   const [learnedProfile, setLearnedProfile] = useState<StyleProfile | null>(null);
+  const [memoryView, setMemoryView] = useState<MemoryView | null>(null);
+  const [editingMemoryItemId, setEditingMemoryItemId] = useState<string | null>(null);
+  const [memoryDraftText, setMemoryDraftText] = useState("");
+  const [memoryActionId, setMemoryActionId] = useState<string | null>(null);
   const [renderHistory, setRenderHistory] = useState<RenderHistoryItem[]>([]);
   const [activeResultId, setActiveResultId] = useState<string | null>(null);
-  const [currentUserId, setCurrentUserId] = useState(initialUserToken);
+  const [currentUserId, setCurrentUserId] = useState("");
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authError, setAuthError] = useState("");
-  const [userDraftId, setUserDraftId] = useState(initialUserToken);
-  const [showUserDialog, setShowUserDialog] = useState(!initialUserToken);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [authDraft, setAuthDraft] = useState({ username: "", password: "" });
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
+  const [isAuthSubmitting, setIsAuthSubmitting] = useState(false);
+  const [showUserDialog, setShowUserDialog] = useState(true);
   const [chatSessions, setChatSessions] = useState<ChatSessionRecord[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState("");
   const [activeUtilityPanel, setActiveUtilityPanel] = useState<UtilityPanel | null>(null);
+  const [isSettingsMenuOpen, setIsSettingsMenuOpen] = useState(false);
   const [shortcutPhrases, setShortcutPhrases] = useState<ShortcutPhrase[]>(() => cloneDefaultShortcutPhrases());
   const [editingShortcutId, setEditingShortcutId] = useState<string | null>(null);
   const [shortcutDraft, setShortcutDraft] = useState({ zh: "", en: "" });
   const [isComparisonOpen, setIsComparisonOpen] = useState(false);
-  const [showPromptConfig, setShowPromptConfig] = useState(false);
+  const [showPromptConfig, setShowPromptConfig] = useState(true);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(null);
   const [generationElapsedMs, setGenerationElapsedMs] = useState(0);
@@ -431,17 +458,22 @@ function App() {
   const [isChatResponding, setIsChatResponding] = useState(false);
   const [rememberingMessageId, setRememberingMessageId] = useState<string | null>(null);
   const [isSubmittingAnnotation, setIsSubmittingAnnotation] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(() => loadStoredPanelWidth(LAYOUT_SIDEBAR_WIDTH_STORAGE_KEY, 280, SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX));
+  const [drawerWidth, setDrawerWidth] = useState(() => loadStoredPanelWidth(LAYOUT_DRAWER_WIDTH_STORAGE_KEY, 380, DRAWER_WIDTH_MIN, DRAWER_WIDTH_MAX));
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
+  const settingsMenuRef = useRef<HTMLDivElement | null>(null);
   const dragDepthRef = useRef(0);
+  const activeResizeRef = useRef<{ panel: ResizablePanel; startX: number; startWidth: number } | null>(null);
   const previousGenerationModeRef = useRef<GenerationMode>("standard");
   const currentUserIdRef = useRef(currentUserId);
   const conversationEpochRef = useRef(0);
+  const isBootstrappingSessionRef = useRef(false);
 
   const t = copy[locale];
   const isImageWorkspace = workspaceMode === "image";
   const isChatWorkspace = workspaceMode === "chat";
-  const currentGenerationModeOption = generationModeOptions.find((option) => option.value === generationMode) ?? generationModeOptions[0];
+  const currentGenerationModeOption = generationModeLabels[generationMode] ?? generationModeLabels.standard;
   const currentGenerationModeLabel = locale === "zh" ? currentGenerationModeOption.zh : currentGenerationModeOption.en;
   const currentWorkspaceLabel = isChatWorkspace
     ? locale === "zh" ? "日常对话" : "Daily chat"
@@ -493,8 +525,48 @@ function App() {
     results: locale === "zh" ? "结果库" : "Result library",
     analysis: locale === "zh" ? "运行状态" : "Run status",
     shortcuts: locale === "zh" ? "管理快捷短语" : "Manage quick phrases",
-    settings: locale === "zh" ? "生成设置" : "Generation settings"
+    preferences: locale === "zh" ? "记忆与偏好" : "Memory & preferences",
+    generation: locale === "zh" ? "生成控制" : "Generation controls",
+    setup: locale === "zh" ? "模型与 API 设置" : "Model & API setup",
+    prompts: locale === "zh" ? "提示词设置" : "Prompt settings"
   };
+  const sidebarSettingPanels = [
+    {
+      panel: "preferences" as const,
+      icon: CheckCircle2,
+      title: locale === "zh" ? "记忆与偏好" : "Memory",
+      description: locale === "zh" ? "查看、编辑或删除聊天记忆和生图偏好" : "Review, edit, or delete chat memory and image preferences"
+    },
+    {
+      panel: "generation" as const,
+      icon: Box,
+      title: locale === "zh" ? "生成控制" : "Generation",
+      description: locale === "zh" ? "切换模型、轮数与可选严格复核" : "Switch model, pass count, and optional strict review"
+    },
+    {
+      panel: "setup" as const,
+      icon: PlugZap,
+      title: locale === "zh" ? "模型与 API" : "Model & API",
+      description: locale === "zh" ? "供应商、地址、密钥与默认模型" : "Providers, endpoints, keys, and default models"
+    },
+    {
+      panel: "prompts" as const,
+      icon: FileText,
+      title: locale === "zh" ? "提示词设置" : "Prompt settings",
+      description: locale === "zh" ? "分析提示词与 3D 提示词覆盖" : "Analysis and 3D prompt overrides"
+    }
+  ];
+
+  function openSettingsPanel(panel: Extract<UtilityPanel, "preferences" | "generation" | "setup" | "prompts">) {
+    if (panel === "setup") {
+      setShowApiConfig(true);
+    }
+    if (panel === "prompts") {
+      setShowPromptConfig(true);
+    }
+    setActiveUtilityPanel(panel);
+    setIsSettingsMenuOpen(false);
+  }
 
   function syncComposerHeight(textarea: HTMLTextAreaElement | null) {
     if (!textarea) return;
@@ -523,6 +595,7 @@ function App() {
     setIsComparisonOpen(false);
     setAnnotationTarget(null);
     setActiveUtilityPanel(null);
+    setIsSettingsMenuOpen(false);
     setActiveStep(session.messages.length > 0 ? "completed" : "idle");
     setGenerationStartedAt(null);
     setGenerationElapsedMs(0);
@@ -532,7 +605,7 @@ function App() {
   function resetVisibleConversationState() {
     setMessages([]);
     setChatInput("");
-    setWorkspaceMode("image");
+    setWorkspaceMode(DEFAULT_WORKSPACE_MODE);
     setGenerationMode("standard");
     setComposerMode("new-generation");
     setFloorPlanFiles([]);
@@ -558,8 +631,37 @@ function App() {
     setChatSessions([]);
     setRenderHistory([]);
     setLearnedProfile(null);
+    setMemoryView(null);
+    setEditingMemoryItemId(null);
+    setMemoryDraftText("");
+    setMemoryActionId(null);
     setActiveResultId(null);
     resetVisibleConversationState();
+  }
+
+  function applyAuthenticatedUser(user: AuthUser) {
+    beginNamespaceSwitch(user.user_id);
+    setAuthUser(user);
+    setCurrentUserId(user.user_id);
+    setAuthDraft({ username: user.username || user.user_id, password: "" });
+    setAuthError("");
+    setShowUserDialog(false);
+  }
+
+  function clearAuthenticatedUserState(showDialog = true) {
+    beginNamespaceSwitch("");
+    setAuthUser(null);
+    setCurrentUserId("");
+    setAuthDraft({ username: "", password: "" });
+    setAuthError("");
+    setApiConfig(defaultApiConfig);
+    setSelectedModel(defaultApiConfig.imageModel || modelOptions[0]);
+    setConfigStatus(null);
+    setConfigAction(null);
+    setShortcutPhrases(cloneDefaultShortcutPhrases());
+    setEditingShortcutId(null);
+    setShortcutDraft({ zh: "", en: "" });
+    setShowUserDialog(showDialog);
   }
 
   function createConversationRunGuard(): ConversationRunGuard {
@@ -592,22 +694,25 @@ function App() {
   }
 
   function upsertSession(list: ChatSessionRecord[], nextSession: ChatSessionRecord) {
-    return [
-      nextSession,
-      ...list.filter((session) => session.id !== nextSession.id),
-    ].slice(0, 20);
+    return upsertSessionSnapshot(list, nextSession);
   }
 
   async function refreshLearnedProfile(projectId = DEFAULT_PROJECT_ID, userId = currentUserId || DEFAULT_PROJECT_ID) {
     if (!userId) {
       setLearnedProfile(null);
+      setMemoryView(null);
       return;
     }
     try {
-      const profile = await loadStyleProfile(projectId, userId);
+      const [profile, memory] = await Promise.all([
+        loadStyleProfile(projectId, userId),
+        loadMemoryView(projectId, userId),
+      ]);
       setLearnedProfile(profile);
+      setMemoryView(memory);
     } catch {
       setLearnedProfile(null);
+      setMemoryView(null);
     }
   }
 
@@ -622,9 +727,30 @@ function App() {
     }).catch(() => undefined);
   }
 
-  const hasUserNamespace = Boolean(currentUserId);
-  const canEditSelectedResult = hasUserNamespace && isImageWorkspace && composerMode === "edit-selected-result" && Boolean(activeResult?.imageUrl) && hasPromptText;
-  const canGenerateNew = !isImageWorkspace || !hasUserNamespace
+  const hasAuthenticatedUser = Boolean(currentUserId);
+  function getGenerationBlocker(mode: GenerationMode) {
+    if (!hasAuthenticatedUser) {
+      return locale === "zh" ? "请先登录或注册账号" : "Sign in or create an account first";
+    }
+    if (mode === "standard") {
+      return hasPromptText
+        ? ""
+        : locale === "zh"
+          ? "请输入要直接发送给画图模型的提示词"
+          : "Enter the prompt to send directly to the image model";
+    }
+    if (floorPlanFiles.length === 0) {
+      return locale === "zh" ? "请先粘贴或拖入至少一张平面图" : "Paste or drop at least one floor plan first";
+    }
+    if (mode === "render3d" && !hasPromptText) {
+      return locale === "zh"
+        ? "请填写 3D 效果图需求，或使用快捷短语补充需求"
+        : "Add a 3D render brief or insert shortcut phrases before generating";
+    }
+    return "";
+  }
+  const canEditSelectedResult = hasAuthenticatedUser && isImageWorkspace && composerMode === "edit-selected-result" && Boolean(activeResult?.imageUrl) && hasPromptText;
+  const canGenerateNew = !isImageWorkspace || !hasAuthenticatedUser
     ? false
     : generationMode === "standard"
     ? hasPromptText
@@ -632,22 +758,22 @@ function App() {
       ? floorPlanFiles.length > 0
       : floorPlanFiles.length > 0 && hasPromptText;
   const canGenerate = composerMode === "edit-selected-result" ? canEditSelectedResult : canGenerateNew;
-  const canSubmitChat = hasUserNamespace && isChatWorkspace && hasPromptText && !isChatResponding && !isRendering;
+  const canSubmitChat = hasAuthenticatedUser && isChatWorkspace && hasPromptText && !isChatResponding && !isRendering;
   const canSubmitComposer = isChatWorkspace ? canSubmitChat : canGenerate;
-  const chatBlocker = isChatWorkspace && !hasUserNamespace
+  const chatBlocker = isChatWorkspace && !hasAuthenticatedUser
     ? locale === "zh"
-      ? "请先输入自定义访问标识"
-      : "Enter a custom access token first"
+      ? "请先登录或注册账号"
+      : "Sign in or create an account first"
     : isChatWorkspace && !hasPromptText
     ? locale === "zh"
-      ? "输入日常问题，或描述想法后再发送"
-      : "Type a chat message before sending"
+        ? "输入日常问题，或描述想法后再发送"
+        : "Type a chat message before sending"
     : "";
   const generationBlocker = composerMode === "edit-selected-result"
-    ? !hasUserNamespace
+    ? !hasAuthenticatedUser
       ? locale === "zh"
-        ? "请先输入自定义访问标识"
-        : "Enter a custom access token first"
+        ? "请先登录或注册账号"
+        : "Sign in or create an account first"
       : !activeResult?.imageUrl
       ? locale === "zh"
         ? "请先选择一张已有结果"
@@ -657,25 +783,12 @@ function App() {
           ? "请输入要修改的内容"
           : "Describe what to edit"
         : ""
-    : !hasUserNamespace
-      ? locale === "zh"
-        ? "请先输入自定义访问标识"
-        : "Enter a custom access token first"
-    : generationMode === "standard"
-      ? !hasPromptText
-        ? locale === "zh"
-          ? "请输入要直接发送给画图模型的提示词"
-          : "Enter the prompt to send directly to the image model"
-        : ""
-      : floorPlanFiles.length === 0
-        ? locale === "zh"
-          ? "请先粘贴或拖入至少一张平面图"
-          : "Paste or drop at least one floor plan first"
-        : generationMode === "render3d" && !hasPromptText
-          ? locale === "zh"
-            ? "请填写 3D 效果图需求，或使用快捷短语补充需求"
-            : "Add a 3D render brief or insert shortcut phrases before generating"
-          : "";
+    : getGenerationBlocker(generationMode);
+  const coloredFloorPlanActionBlocker = composerMode === "edit-selected-result"
+    ? locale === "zh"
+      ? "彩色平面图工具只在新生成模式下可用"
+      : "Colored plan is only available for new generation"
+    : getGenerationBlocker("colored_floor_plan");
   const selectedEditSourceLabel = isImageWorkspace && composerMode === "edit-selected-result" && activeResult
     ? locale === "zh"
       ? `源图：${activeResult.title} · v${activeResult.versionIndex || 1}`
@@ -708,11 +821,14 @@ function App() {
         : "Default mode skips parsing and built-in prompts; the composer text is sent directly to the image model."
       : generationMode === "colored_floor_plan"
         ? locale === "zh"
-          ? "添加平面图后可生成彩色平面图，输入框文字只作为补充偏好。"
-          : "Add a floor plan to generate a colored plan; composer text is used only as optional preference."
+        ? "添加平面图后可生成彩色平面图，输入框文字只作为补充偏好。"
+        : "Add a floor plan to generate a colored plan; composer text is used only as optional preference."
         : locale === "zh"
           ? "至少添加一张平面图，并填写设计需求，才能开始生成。"
           : "Add at least one floor plan and fill the brief before generating.");
+  const composerSubmitShortcutHint = locale === "zh"
+    ? `${composerSubmitLabel}（Enter 发送，Shift+Enter 换行）`
+    : `${composerSubmitLabel} (Enter to send, Shift+Enter for a new line)`;
   const latestResult = activeResult;
   const progressAnalysisText = buildFloorPlanAnalysisText(liveGeneration?.floorDesc);
   const latestAnalysisText = buildFloorPlanAnalysisText(latestResult?.floorDesc);
@@ -743,10 +859,10 @@ function App() {
     },
     {
       step: "evaluating",
-      title: locale === "zh" ? "复核" : "Review",
+      title: locale === "zh" ? "严格复核" : "Strict review",
       detail: enableQualityEvaluation
-        ? locale === "zh" ? "质量评估开启" : "Quality review on"
-        : locale === "zh" ? "默认跳过" : "Skipped by default"
+        ? locale === "zh" ? "严格复核开启" : "Strict review on"
+        : locale === "zh" ? "默认关闭" : "Off by default"
     },
     {
       step: "completed",
@@ -805,7 +921,7 @@ function App() {
           : liveGeneration?.status || (locale === "zh" ? "正在等待图片结果" : "Waiting for image result")
         : activeStep === "evaluating"
           ? enableQualityEvaluation
-            ? liveGeneration?.status || (locale === "zh" ? "图片已返回，正在评估质量" : "Image returned, evaluating quality")
+            ? liveGeneration?.status || (locale === "zh" ? "图片已返回，正在进行严格复核" : "Image returned, running the strict review")
             : liveGeneration?.status || (locale === "zh" ? "图片已返回，正在整理结果" : "Image returned, packaging result")
         : activeStep === "completed"
           ? locale === "zh" ? "生成完成" : "Completed"
@@ -822,10 +938,35 @@ function App() {
   const isGenerationSlow = isRendering && generationElapsedMs >= GENERATION_SLOW_NOTICE_MS;
 
   useEffect(() => {
+    let isMounted = true;
+    loadAuthMe()
+      .then((response) => {
+        if (!isMounted) return;
+        if (response.authenticated && response.user) {
+          applyAuthenticatedUser(response.user);
+          return;
+        }
+        clearAuthenticatedUserState(true);
+      })
+      .catch((error) => {
+        if (!isMounted) return;
+        clearAuthenticatedUserState(true);
+        setAuthError(`${locale === "zh" ? "无法读取登录状态" : "Could not load sign-in status"}: ${error instanceof Error ? error.message : String(error)}`);
+      })
+      .finally(() => {
+        if (isMounted) {
+          setIsAuthLoading(false);
+        }
+      });
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
+  useEffect(() => {
     if (!currentUserId) {
       return;
     }
-    setApiUserNamespace(currentUserId);
     const localConfig = loadSavedApiConfig(currentUserId);
     setApiConfig(localConfig);
     setSelectedModel(localConfig.imageModel || modelOptions[0]);
@@ -848,7 +989,6 @@ function App() {
 
   useEffect(() => {
     currentUserIdRef.current = currentUserId;
-    setApiUserNamespace(currentUserId);
   }, [currentUserId]);
 
   useEffect(() => {
@@ -877,31 +1017,63 @@ function App() {
   }, [currentUserId]);
 
   useEffect(() => {
+    let bootstrapTimer: number | null = null;
+    const finishBootstrapping = () => {
+      if (typeof window === "undefined") {
+        isBootstrappingSessionRef.current = false;
+        return;
+      }
+      bootstrapTimer = window.setTimeout(() => {
+        isBootstrappingSessionRef.current = false;
+      }, 0);
+    };
+
+    isBootstrappingSessionRef.current = true;
     if (!currentUserId) {
       setChatSessions([]);
       setCurrentSessionId("");
       setMessages([]);
       setChatInput("");
-      setWorkspaceMode("image");
+      setWorkspaceMode(DEFAULT_WORKSPACE_MODE);
       setGenerationMode("standard");
       setComposerMode("new-generation");
-      return;
+      finishBootstrapping();
+      return () => {
+        if (bootstrapTimer !== null) {
+          window.clearTimeout(bootstrapTimer);
+        }
+        isBootstrappingSessionRef.current = false;
+      };
     }
     const stored = loadStoredSessions(currentUserId);
     if (stored.sessions.length > 0) {
       const target = stored.sessions.find((session) => session.id === stored.currentSessionId) ?? stored.sessions[0];
-      setChatSessions(stored.sessions);
+      setChatSessions(upsertSession(stored.sessions, target));
       setCurrentSessionId(target.id);
       applySession(target);
-      return;
+      finishBootstrapping();
+      return () => {
+        if (bootstrapTimer !== null) {
+          window.clearTimeout(bootstrapTimer);
+        }
+        isBootstrappingSessionRef.current = false;
+      };
     }
     const nextSession = createEmptySession();
     setChatSessions([nextSession]);
     setCurrentSessionId(nextSession.id);
     applySession(nextSession);
+    finishBootstrapping();
+    return () => {
+      if (bootstrapTimer !== null) {
+        window.clearTimeout(bootstrapTimer);
+      }
+      isBootstrappingSessionRef.current = false;
+    };
   }, [currentUserId]);
 
   useEffect(() => {
+    if (isBootstrappingSessionRef.current) return;
     const nextSession = snapshotCurrentSession();
     if (!nextSession) return;
     setChatSessions((current) => upsertSession(current, nextSession));
@@ -941,7 +1113,7 @@ function App() {
   }, [currentUserId]);
 
   useEffect(() => {
-    if (activeUtilityPanel === "settings" && currentUserId) {
+    if (activeUtilityPanel === "preferences" && currentUserId) {
       void refreshLearnedProfile();
     }
   }, [activeUtilityPanel, currentUserId]);
@@ -982,6 +1154,10 @@ function App() {
       const target = event.target as HTMLElement | null;
       const isEditableTarget = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
       if (event.key === "Escape") {
+        if (isSettingsMenuOpen) {
+          setIsSettingsMenuOpen(false);
+          return;
+        }
         if (annotationTarget && !isSubmittingAnnotation) {
           setAnnotationTarget(null);
           return;
@@ -1006,7 +1182,66 @@ function App() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [annotationTarget, isComparisonOpen, isSubmittingAnnotation, locale, previewImage]);
+  }, [annotationTarget, isComparisonOpen, isSettingsMenuOpen, isSubmittingAnnotation, locale, previewImage]);
+
+  useEffect(() => {
+    if (!isSettingsMenuOpen) return;
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node | null;
+      if (settingsMenuRef.current && target && !settingsMenuRef.current.contains(target)) {
+        setIsSettingsMenuOpen(false);
+      }
+    }
+    window.addEventListener("pointerdown", handlePointerDown);
+    return () => window.removeEventListener("pointerdown", handlePointerDown);
+  }, [isSettingsMenuOpen]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(LAYOUT_SIDEBAR_WIDTH_STORAGE_KEY, String(sidebarWidth));
+    } catch {
+      // Ignore local layout persistence failures.
+    }
+  }, [sidebarWidth]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      window.localStorage.setItem(LAYOUT_DRAWER_WIDTH_STORAGE_KEY, String(drawerWidth));
+    } catch {
+      // Ignore local layout persistence failures.
+    }
+  }, [drawerWidth]);
+
+  useEffect(() => {
+    function stopResize() {
+      activeResizeRef.current = null;
+      document.body.classList.remove("is-resizing-layout");
+    }
+
+    function handlePointerMove(event: PointerEvent) {
+      const activeResize = activeResizeRef.current;
+      if (!activeResize) return;
+      if (activeResize.panel === "sidebar") {
+        const nextWidth = clampPanelWidth(activeResize.startWidth + (event.clientX - activeResize.startX), SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX);
+        setSidebarWidth(nextWidth);
+        return;
+      }
+      const nextWidth = clampPanelWidth(activeResize.startWidth - (event.clientX - activeResize.startX), DRAWER_WIDTH_MIN, DRAWER_WIDTH_MAX);
+      setDrawerWidth(nextWidth);
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+      document.body.classList.remove("is-resizing-layout");
+    };
+  }, []);
 
   function showToast(message: string) {
     setToast(message);
@@ -1150,14 +1385,15 @@ function App() {
   }
 
   function handleComposerKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
-    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
-      event.preventDefault();
-      if (isChatWorkspace) {
-        void runDailyChatFlow();
-      } else {
-        runConversationFlow();
-      }
+    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing) {
+      return;
     }
+    event.preventDefault();
+    if (isChatWorkspace) {
+      void runDailyChatFlow();
+      return;
+    }
+    runConversationFlow();
   }
 
   function handleComposerPaste(event: ReactClipboardEvent<HTMLTextAreaElement>) {
@@ -1170,12 +1406,26 @@ function App() {
   }
 
   function toggleUtilityPanel(panel: UtilityPanel) {
+    setIsSettingsMenuOpen(false);
     setActiveUtilityPanel((current) => current === panel ? null : panel);
   }
 
-  function buildGenerationPrompt(userPrompt?: string) {
+  function beginPanelResize(panel: ResizablePanel, width: number, event: ReactPointerEvent<HTMLDivElement>) {
+    if (typeof window === "undefined" || window.innerWidth <= DESKTOP_DRAWER_BREAKPOINT) {
+      return;
+    }
+    event.preventDefault();
+    activeResizeRef.current = {
+      panel,
+      startX: event.clientX,
+      startWidth: width,
+    };
+    document.body.classList.add("is-resizing-layout");
+  }
+
+  function buildGenerationPrompt(userPrompt?: string, mode: GenerationMode = generationMode) {
     const basePrompt = (userPrompt ?? chatInput).trim();
-    if (generationMode === "standard") {
+    if (mode === "standard") {
       return basePrompt;
     }
     return basePrompt ? (locale === "zh" ? `设计需求：${basePrompt}` : `Design brief: ${basePrompt}`) : "";
@@ -1230,8 +1480,8 @@ function App() {
       return upsertSession(seeded, nextSession);
     });
     setCurrentSessionId(nextSession.id);
-    setShowApiConfig(false);
-    setShowPromptConfig(false);
+    setShowApiConfig(true);
+    setShowPromptConfig(true);
     setConfigStatus(null);
     setConfigAction(null);
     setIsSubmittingAnnotation(false);
@@ -1314,32 +1564,141 @@ function App() {
     }
   }
 
-  function handleCommitUserIdentity(rawValue?: string) {
-    const normalized = normalizeUserIdInput(rawValue ?? userDraftId);
-    setAuthError("");
-    if (!normalized) {
-      setAuthError(locale === "zh" ? "请输入自定义访问标识" : "Enter a custom access token");
-      return;
-    }
-    if (typeof window !== "undefined") {
-      window.localStorage.setItem(USER_TOKEN_STORAGE_KEY, normalized);
-    }
-    beginNamespaceSwitch(normalized);
-    setCurrentUserId(normalized);
-    setUserDraftId(normalized);
-    setShowUserDialog(false);
-    showToast(locale === "zh" ? `已切换到访问标识：${normalized}` : `Switched to token: ${normalized}`);
+  function getMemorySectionCopy(section: MemorySection) {
+    const copyById: Record<string, { title: string; description: string }> = {
+      daily_memories: {
+        title: locale === "zh" ? "日常聊天记忆" : "Daily chat memory",
+        description: locale === "zh"
+          ? "只保存你明确点“记住”后的事实或偏好。"
+          : "Only facts or preferences you explicitly saved from chat.",
+      },
+      long_term_preferences: {
+        title: locale === "zh" ? "生图长期偏好" : "Image preferences",
+        description: locale === "zh"
+          ? "用于改进后续图像提示词的风格偏好。"
+          : "Style preferences used to improve future image prompts.",
+      },
+      avoid_items: {
+        title: locale === "zh" ? "避免项" : "Avoid items",
+        description: locale === "zh"
+          ? "后续图像生成应尽量避开的风格或元素。"
+          : "Styles or details future image generation should avoid.",
+      },
+      project_preferences: {
+        title: locale === "zh" ? "项目偏好" : "Project preferences",
+        description: locale === "zh"
+          ? "当前项目里的结构、材质、灯光和布局约束。"
+          : "Current-project structure, material, lighting, and layout constraints.",
+      },
+      evaluation_standards: {
+        title: locale === "zh" ? "评判标准" : "Evaluation standards",
+        description: locale === "zh"
+          ? "复核图像结果时优先看的质量标准。"
+          : "Quality criteria used when reviewing image output.",
+      },
+      frequent_edit_requests: {
+        title: locale === "zh" ? "最近常见修改" : "Recent common edits",
+        description: locale === "zh"
+          ? "由手动改图动作归纳，仅供查看。"
+          : "Derived from manual image edit actions and shown read-only.",
+      },
+    };
+    return copyById[section.id] ?? {
+      title: section.label,
+      description: section.description || "",
+    };
   }
 
-  function handleClearUserToken() {
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(USER_TOKEN_STORAGE_KEY);
+  function startEditingMemoryItem(item: MemoryItem) {
+    if (item.editable === false) return;
+    setEditingMemoryItemId(item.id);
+    setMemoryDraftText(item.text);
+  }
+
+  async function handleSaveMemoryItem(itemId: string) {
+    const nextText = memoryDraftText.trim();
+    if (!nextText) {
+      showToast(locale === "zh" ? "记忆内容不能为空" : "Memory text cannot be empty");
+      return;
     }
-    beginNamespaceSwitch("");
-    setCurrentUserId("");
-    setUserDraftId("");
-    setShowUserDialog(true);
-    showToast(locale === "zh" ? "已清除当前访问标识" : "Current access token cleared");
+    setMemoryActionId(itemId);
+    try {
+      const response = await updateMemoryItem(itemId, nextText, DEFAULT_PROJECT_ID);
+      setMemoryView(response.memory);
+      if (response.profile) {
+        setLearnedProfile(response.profile);
+      } else {
+        await refreshLearnedProfile();
+      }
+      setEditingMemoryItemId(null);
+      setMemoryDraftText("");
+      showToast(locale === "zh" ? "记忆已更新" : "Memory updated");
+    } catch (error) {
+      showToast(`${locale === "zh" ? "更新记忆失败" : "Memory update failed"}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setMemoryActionId(null);
+    }
+  }
+
+  async function handleDeleteMemoryItem(itemId: string) {
+    setMemoryActionId(itemId);
+    try {
+      const response = await deleteMemoryItem(itemId, DEFAULT_PROJECT_ID);
+      setMemoryView(response.memory);
+      if (response.profile) {
+        setLearnedProfile(response.profile);
+      } else {
+        await refreshLearnedProfile();
+      }
+      if (editingMemoryItemId === itemId) {
+        setEditingMemoryItemId(null);
+        setMemoryDraftText("");
+      }
+      showToast(locale === "zh" ? "记忆已删除" : "Memory deleted");
+    } catch (error) {
+      showToast(`${locale === "zh" ? "删除记忆失败" : "Memory delete failed"}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setMemoryActionId(null);
+    }
+  }
+
+  async function handleSubmitAuth(event?: FormEvent<HTMLFormElement>) {
+    event?.preventDefault();
+    const username = authDraft.username.trim();
+    const password = authDraft.password;
+    setAuthError("");
+    if (!username || !password) {
+      setAuthError(locale === "zh" ? "请输入账号和密码" : "Enter username and password");
+      return;
+    }
+    setIsAuthSubmitting(true);
+    try {
+      const response = authMode === "register"
+        ? await register(username, password)
+        : await login(username, password);
+      if (!response.user) {
+        throw new Error(locale === "zh" ? "登录响应缺少用户信息" : "Auth response did not include a user");
+      }
+      applyAuthenticatedUser(response.user);
+      showToast(authMode === "register"
+        ? locale === "zh" ? "账号已创建并登录" : "Account created and signed in"
+        : locale === "zh" ? "已登录" : "Signed in");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setIsAuthSubmitting(false);
+    }
+  }
+
+  async function handleLogout() {
+    try {
+      await logout();
+    } catch (error) {
+      showToast(`${locale === "zh" ? "登出请求失败，已清空本地状态" : "Logout request failed; local state cleared"}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    clearAuthenticatedUserState(true);
+    setAuthMode("login");
+    showToast(locale === "zh" ? "已登出并清空当前可见数据" : "Signed out and cleared visible user data");
   }
 
   function handleExpandPreview(item: PreviewImage | RenderHistoryItem | null | undefined = activeResult) {
@@ -1443,6 +1802,22 @@ function App() {
     setComparisonImage({ mode: "floor-vs-render", floorPlanUrl, floorPlanName, renderUrl, renderLabel });
     setIsComparisonOpen(true);
     firePreferenceEvent("compare", { mode: "floor-vs-render" }, selectedResult?.id || "");
+  }
+
+  function resolveRenderMessageResult(message: ChatMessage) {
+    if (!message.sourceResultId) {
+      return activeResult;
+    }
+    return renderHistory.find((item) => item.id === message.sourceResultId) ?? activeResult;
+  }
+
+  function isRenderMessageComparisonDisabled(message: ChatMessage) {
+    const messageSourceResult = resolveRenderMessageResult(message);
+    const messageResultMode = messageSourceResult?.generationMode || generationMode;
+    if (messageResultMode === "standard") {
+      return comparisonCandidates.length < 2;
+    }
+    return !messageSourceResult?.floorPlanUrl && !floorPlanPreviews[0]?.url;
   }
 
   async function handleCopyRunSummary(item?: RenderHistoryItem | null) {
@@ -1647,7 +2022,7 @@ function App() {
       setActiveStep("completed");
       setAnnotationTarget(null);
       showToast(historyItem.modelWarning || (locale === "zh" ? "标注改图完成，已加入结果库" : "Annotated edit completed and added to library"));
-      if (activeUtilityPanel === "settings") {
+      if (activeUtilityPanel === "preferences") {
         void refreshLearnedProfile(target.projectId || DEFAULT_PROJECT_ID, target.userId || currentUserId || DEFAULT_PROJECT_ID);
       }
       setMessages((current) => [
@@ -1739,19 +2114,19 @@ function App() {
       const waitingForImage = !hasImage;
       const zhContent = hasImage
         ? hasEvaluation
-          ? "图片已返回，质量评估已更新，正在整理最终结果。"
+          ? "图片已返回，严格复核结果已更新，正在整理最终结果。"
           : enableQualityEvaluation
-            ? "图片已返回，正在等待质量评估。"
-            : "图片已返回，质量评估已关闭，正在整理最终结果。"
+            ? "图片已返回，正在等待严格复核结论。"
+            : "图片已返回，严格复核默认关闭，正在整理最终结果。"
         : hasSpatialAnalysis || hasPrompt
           ? "空间分析或提示词已返回，正在继续等待图片生成结果。"
           : "后端正在处理生成流程。";
       const enContent = hasImage
         ? hasEvaluation
-          ? "Images returned and evaluation updated. Packaging the final result."
+          ? "Images returned and the strict review is updated. Packaging the final result."
           : enableQualityEvaluation
-            ? "Images returned. Waiting for quality evaluation."
-            : "Images returned. Quality review is off, packaging the final result."
+            ? "Images returned. Waiting for the strict review result."
+            : "Images returned. Strict review is off by default, packaging the final result."
         : hasSpatialAnalysis || hasPrompt
           ? "Spatial analysis or prompt returned. Still waiting for image generation."
           : "Backend generation is still running.";
@@ -1771,14 +2146,14 @@ function App() {
               hasSpatialAnalysis ? "空间分析已完成" : "",
               hasPrompt ? "最终提示词已生成" : "",
               hasImage ? "图片结果已返回" : "图片仍在生成中，请继续等待",
-              hasEvaluation ? "评估信息已返回" : hasImage ? (enableQualityEvaluation ? "等待质量评估" : "已跳过质量评估") : ""
+              hasEvaluation ? "严格复核结果已返回" : hasImage ? (enableQualityEvaluation ? "等待严格复核" : "严格复核默认关闭") : ""
             ]),
             en: compactLines([
               progress.status || "",
               hasSpatialAnalysis ? "Spatial analysis completed" : "",
               hasPrompt ? "Final prompt generated" : "",
               hasImage ? "Image result returned" : "Image generation is still running",
-              hasEvaluation ? "Evaluation returned" : hasImage ? (enableQualityEvaluation ? "Waiting for quality evaluation" : "Quality review skipped") : ""
+              hasEvaluation ? "Strict review result returned" : hasImage ? (enableQualityEvaluation ? "Waiting for strict review" : "Strict review left off") : ""
             ])
           },
           promptText: progress.prompt
@@ -1880,15 +2255,19 @@ function App() {
     }
   }
 
-  async function runConversationFlow(userPrompt?: string) {
+  async function runConversationFlow(userPrompt?: string, requestedMode: GenerationMode = generationMode) {
     if (isRendering) return;
-    const prompt = buildGenerationPrompt(userPrompt);
+    const submitMode = requestedMode;
+    const prompt = buildGenerationPrompt(userPrompt, submitMode);
     const userBrief = (userPrompt ?? chatInput).trim();
-    if (!canGenerate) {
-      showToast(generationBlocker || (locale === "zh" ? "请先补齐生成输入" : "Complete the generation inputs first"));
+    const submitBlocker = composerMode === "edit-selected-result"
+      ? generationBlocker
+      : getGenerationBlocker(submitMode);
+    if (submitBlocker) {
+      showToast(submitBlocker || (locale === "zh" ? "请先补齐生成输入" : "Complete the generation inputs first"));
       return;
     }
-    const displayedBrief = userBrief || (generationMode === "colored_floor_plan"
+    const displayedBrief = userBrief || (submitMode === "colored_floor_plan"
       ? locale === "zh" ? "生成彩色平面图" : "Generate a colored floor plan"
       : "");
     const idBase = Date.now();
@@ -1909,8 +2288,8 @@ function App() {
         en: "The request is being submitted to the backend. No demo result is shown; output appears only after the real generation returns."
       },
       bullets: {
-        zh: compactLines(["提交生成请求", generationMode === "standard" ? "直通模式：不解析需求" : "同步平面图", "等待后端真实返回"]),
-        en: compactLines(["Submit generation request", generationMode === "standard" ? "Default mode: no requirement parsing" : "Sync floor plan", "Wait for the real backend result"])
+        zh: compactLines(["提交生成请求", submitMode === "standard" ? "直通模式：不解析需求" : "同步平面图", "等待后端真实返回"]),
+        en: compactLines(["Submit generation request", submitMode === "standard" ? "Default mode: no requirement parsing" : "Sync floor plan", "Wait for the real backend result"])
       }
     });
     setMessages((current) => [...current, ...nextMessages]);
@@ -1953,7 +2332,7 @@ function App() {
         setActiveResultId(historyItem.id);
         setActiveStep("completed");
         showToast(locale === "zh" ? "改图完成，已加入结果库" : "Image edit completed and added to library");
-        if (activeUtilityPanel === "settings") {
+        if (activeUtilityPanel === "preferences") {
           void refreshLearnedProfile(activeResult.projectId || DEFAULT_PROJECT_ID, activeResult.userId || currentUserId || DEFAULT_PROJECT_ID);
         }
         removeLiveAnalysisMessage(idBase);
@@ -1979,7 +2358,8 @@ function App() {
             kind: "render",
             content: editResult.ok ? (locale === "zh" ? "修改后的真实渲染结果已返回" : "Edited render result returned") : editResult.error || t.requestFailed,
             imageUrl: historyItem.imageUrl,
-            imageLabel: historyItem.imageLabel || historyItem.title
+            imageLabel: historyItem.imageLabel || historyItem.title,
+            sourceResultId: historyItem.id,
           }
         ]);
         return;
@@ -1989,7 +2369,7 @@ function App() {
         {
           projectId: DEFAULT_PROJECT_ID,
           userId: currentUserId || DEFAULT_PROJECT_ID,
-          mode: generationMode,
+          mode: submitMode,
           prompt,
           directionStackText: "",
           maxIterations: effectiveMaxIterations,
@@ -2018,13 +2398,13 @@ function App() {
         floorDesc: result.floor_desc,
         logs: result.logs,
         createdAt: new Date().toISOString(),
-        generationMode,
+        generationMode: submitMode,
         floorPlanUrl: floorPlanPreviews[0]?.url,
         floorPlanName: floorPlanPreviews[0]?.name
       };
       const newHistoryItems = (backendItems.length > 0 ? backendItems : [fallbackItem]).map((item) => ({
         ...item,
-        generationMode: item.generationMode || generationMode,
+        generationMode: item.generationMode || submitMode,
         floorPlanUrl: item.floorPlanUrl || floorPlanPreviews[0]?.url,
         floorPlanName: item.floorPlanName || floorPlanPreviews[0]?.name
       }));
@@ -2036,7 +2416,7 @@ function App() {
       setActiveResultId(historyItem.id);
       setActiveStep("completed");
       showToast(locale === "zh" ? "生成完成，已加入结果库" : "Generation completed and added to library");
-      if (activeUtilityPanel === "settings") {
+      if (activeUtilityPanel === "preferences") {
         void refreshLearnedProfile(DEFAULT_PROJECT_ID, currentUserId || DEFAULT_PROJECT_ID);
       }
       const finalPrompt = result.prompt || prompt;
@@ -2047,8 +2427,8 @@ function App() {
           role: "assistant",
           kind: "analysis",
           content: {
-            zh: generationMode === "standard" ? "生成完成。默认模式已按输入框文本直通出图。" : "生成完成。空间分析已整理到右侧栏，最终提示词可在这里展开查看。",
-            en: generationMode === "standard" ? "Generation completed. Default mode sent the composer text directly to image generation." : "Generation completed. Spatial analysis is shown in the right panel, and the final prompt can be expanded here."
+            zh: submitMode === "standard" ? "生成完成。默认模式已按输入框文本直通出图。" : "生成完成。空间分析已整理到右侧栏，最终提示词可在这里展开查看。",
+            en: submitMode === "standard" ? "Generation completed. Default mode sent the composer text directly to image generation." : "Generation completed. Spatial analysis is shown in the right panel, and the final prompt can be expanded here."
           },
           bullets: {
             zh: compactLines([result.status || "", finalPrompt ? "最终提示词已生成" : "", result.evaluation ? "评估报告已返回" : ""]),
@@ -2062,7 +2442,8 @@ function App() {
           kind: "render",
           content: result.ok ? (locale === "zh" ? "真实渲染结果已返回" : "Real render result returned") : result.error || t.requestFailed,
           imageUrl: historyItem.imageUrl || firstImage?.data_url || firstImage?.url,
-          imageLabel: historyItem.imageLabel || firstImage?.label
+          imageLabel: historyItem.imageLabel || firstImage?.label,
+          sourceResultId: historyItem.id,
         }
       ];
       setMessages((current) => [...current, ...resultMessages]);
@@ -2095,6 +2476,13 @@ function App() {
     runConversationFlow();
   }
 
+  function handleRunColoredFloorPlanTool() {
+    if (isChatWorkspace) {
+      return;
+    }
+    void runConversationFlow(undefined, "colored_floor_plan");
+  }
+
   function handleComposerSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (isChatWorkspace) {
@@ -2122,16 +2510,16 @@ function App() {
     setConfigAction("save");
     setConfigStatus({
       tone: "warn",
-      message: locale === "zh" ? "正在保存到当前临时空间..." : "Saving to the current temporary space..."
+      message: locale === "zh" ? "正在保存到当前账号..." : "Saving to the current account..."
     });
     try {
       window.localStorage.setItem(apiConfigStorageKey(currentUserId), JSON.stringify(apiConfig));
       const result = await saveConfig(apiConfig);
       setConfigStatus({
         tone: "good",
-        message: result.message || (locale === "zh" ? "模型与 API 配置已保存到当前临时空间" : "Model and API setup saved to this temporary space")
+        message: result.message || (locale === "zh" ? "模型与 API 配置已保存到当前账号" : "Model and API setup saved to this account")
       });
-      showToast(locale === "zh" ? "配置已保存到当前临时空间" : "Configuration saved to this temporary space");
+      showToast(locale === "zh" ? "配置已保存到当前账号" : "Configuration saved to this account");
     } catch (error) {
       setConfigStatus({
         tone: "warn",
@@ -2150,8 +2538,8 @@ function App() {
       tone: "good",
       message:
         locale === "zh"
-          ? "已恢复默认配置；当前临时空间会继续使用后端已保存的本地配置。"
-          : "Defaults restored. This temporary space can still use backend-saved local setup."
+          ? "已恢复默认配置；当前账号会继续使用后端已保存的本地配置。"
+          : "Defaults restored. This account can still use backend-saved local setup."
     });
   }
 
@@ -2161,6 +2549,10 @@ function App() {
   const comparisonRightResult = comparisonImage?.mode === "history-vs-history"
     ? renderHistory.find((item) => item.id === comparisonImage.rightResultId) ?? null
     : null;
+  const layoutStyle = {
+    "--chatgpt-sidebar-width": `${sidebarWidth}px`,
+    "--chatgpt-drawer-width": `${drawerWidth}px`,
+  } as CSSProperties;
 
   return (
     <main
@@ -2180,7 +2572,14 @@ function App() {
         </div>
       )}
 
-      <div className={`chatgpt-layout ${activeUtilityPanel ? "has-drawer" : ""}`}>
+      <div className={`chatgpt-layout ${activeUtilityPanel ? "has-drawer" : ""}`} style={layoutStyle}>
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-label={locale === "zh" ? "调整左侧边栏宽度" : "Resize the left sidebar"}
+          className="chatgpt-layout__resize-handle chatgpt-layout__resize-handle--sidebar"
+          onPointerDown={(event) => beginPanelResize("sidebar", sidebarWidth, event)}
+        />
         <aside className="chatgpt-sidebar" aria-label={locale === "zh" ? "侧边栏" : "Sidebar"}>
           <div className="chatgpt-sidebar__brand">
             <div className="brand-mark">
@@ -2188,27 +2587,23 @@ function App() {
             </div>
             <div>
               <strong>{t.appName}</strong>
-              <span>{locale === "zh" ? "生成工作台" : "Generation workspace"}</span>
+              <span>{locale === "zh" ? "聊天优先，图像辅助" : "Chat first, image assisted"}</span>
             </div>
           </div>
 
           <div className="chatgpt-sidebar__identity">
             <div>
-              <span>{locale === "zh" ? "临时访问标识" : "Temporary token"}</span>
-              <strong>{currentUserId || (locale === "zh" ? "未设置" : "Not set")}</strong>
+              <span>{locale === "zh" ? "当前账号" : "Account"}</span>
+              <strong>{authUser?.username || (locale === "zh" ? "未登录" : "Not signed in")}</strong>
               <small>
                 {locale === "zh"
-                  ? "仅用于本地隔离历史，不是安全登录。"
-                  : "Only separates local history; this is not secure sign-in."}
+                  ? "配置、结果、历史和偏好按登录账号隔离。"
+                  : "Config, results, history, and memory are scoped to this account."}
               </small>
             </div>
-            <button type="button" onClick={() => {
-              setUserDraftId(currentUserId);
-              setAuthError("");
-              setShowUserDialog(true);
-            }}>
-              <KeyRound size={14} />
-              {locale === "zh" ? "切换" : "Switch"}
+            <button type="button" onClick={() => authUser ? void handleLogout() : setShowUserDialog(true)}>
+              {authUser ? <LogOut size={14} /> : <KeyRound size={14} />}
+              {authUser ? (locale === "zh" ? "登出" : "Logout") : (locale === "zh" ? "登录" : "Sign in")}
             </button>
           </div>
 
@@ -2244,6 +2639,53 @@ function App() {
                 </button>
               ))
             )}
+          </div>
+
+          <div className="chatgpt-sidebar__footer">
+            <div className="chatgpt-sidebar__section">
+              <p className="chatgpt-sidebar__label">{locale === "zh" ? "工作台设置" : "Workspace settings"}</p>
+              <div className="chatgpt-sidebar__settings-menu" ref={settingsMenuRef}>
+                <button
+                  type="button"
+                  className={`chatgpt-sidebar__settings-trigger ${isSettingsMenuOpen ? "is-active" : ""}`}
+                  aria-expanded={isSettingsMenuOpen}
+                  aria-haspopup="menu"
+                  onClick={() => setIsSettingsMenuOpen((current) => !current)}
+                >
+                  <span className="chatgpt-sidebar__tool-icon">
+                    <Settings2 size={15} />
+                  </span>
+                  <span className="chatgpt-sidebar__tool-copy">
+                    <strong>{locale === "zh" ? "设置" : "Settings"}</strong>
+                    <small>{locale === "zh" ? "点击后选择要调整的功能项" : "Choose a category to adjust"}</small>
+                  </span>
+                </button>
+                {isSettingsMenuOpen && (
+                  <div className="chatgpt-sidebar__settings-popover" role="menu" aria-label={locale === "zh" ? "设置菜单" : "Settings menu"}>
+                    {sidebarSettingPanels.map((item) => {
+                      const Icon = item.icon;
+                      return (
+                        <button
+                          key={item.panel}
+                          type="button"
+                          role="menuitem"
+                          className={`chatgpt-sidebar__menu-item ${activeUtilityPanel === item.panel ? "is-active" : ""}`}
+                          onClick={() => openSettingsPanel(item.panel)}
+                        >
+                          <span className="chatgpt-sidebar__tool-icon">
+                            <Icon size={15} />
+                          </span>
+                          <span className="chatgpt-sidebar__tool-copy">
+                            <strong>{item.title}</strong>
+                            <small>{item.description}</small>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
 
         </aside>
@@ -2310,10 +2752,6 @@ function App() {
                     {locale === "zh" ? "管理短语" : "Manage phrases"}
                   </button>
                 )}
-                <button type="button" className={activeUtilityPanel === "settings" ? "is-active" : ""} onClick={() => toggleUtilityPanel("settings")}>
-                  <PanelRight size={14} />
-                  {locale === "zh" ? "设置" : "Settings"}
-                </button>
               </div>
               {isImageWorkspace && (
                 <div className="chatgpt-main__action-group chatgpt-main__action-group--result">
@@ -2361,9 +2799,9 @@ function App() {
                     <ImagePlus size={14} />
                     {locale === "zh" ? "打开结果库" : "Open results"}
                   </button>
-                  <button type="button" onClick={() => toggleUtilityPanel("settings")}>
-                    <PlugZap size={14} />
-                    {locale === "zh" ? "生成设置" : "Generation settings"}
+                  <button type="button" onClick={() => toggleUtilityPanel("generation")}>
+                    <Box size={14} />
+                    {locale === "zh" ? "打开生成控制" : "Open generation controls"}
                   </button>
                 </div>
               </div>
@@ -2393,7 +2831,7 @@ function App() {
                         <span className={["submitted", "analysis", "rendering", "evaluating", "completed"].includes(activeStep) ? "is-active" : ""}>{locale === "zh" ? "已提交" : "Submitted"}</span>
                         <span className={["analysis", "rendering", "evaluating", "completed"].includes(activeStep) || hasCurrentAnalysisResult ? "is-active" : ""}>{progressAnalysisStepLabel}</span>
                         <span className={["rendering", "evaluating", "completed"].includes(activeStep) ? "is-active" : ""}>{currentIteration ? (locale === "zh" ? `第 ${currentIteration} 轮出图` : `Rendering iteration ${currentIteration}`) : (locale === "zh" ? "等待图片" : "Waiting for image")}</span>
-                        <span className={enableQualityEvaluation && ["evaluating", "completed"].includes(activeStep) ? "is-active" : !enableQualityEvaluation ? "is-muted" : ""}>{enableQualityEvaluation ? (locale === "zh" ? "评估质量" : "Evaluating") : (locale === "zh" ? "跳过质检" : "Review off")}</span>
+                        <span className={enableQualityEvaluation && ["evaluating", "completed"].includes(activeStep) ? "is-active" : !enableQualityEvaluation ? "is-muted" : ""}>{enableQualityEvaluation ? (locale === "zh" ? "严格复核" : "Strict review") : (locale === "zh" ? "默认关闭" : "Off by default")}</span>
                       </div>
                       {isGenerationSlow && (
                         <p className="generation-slow-note">
@@ -2470,22 +2908,22 @@ function App() {
                             </div>
                             {message.imageUrl && <span className="score-pill">{locale === "zh" ? "结果" : "Result"}</span>}
                           </div>
-                          {message.imageUrl ? (
-                            <>
-                              <button type="button" className="image-zoom-trigger" onClick={() => message.imageUrl && handleExpandPreview({ url: message.imageUrl, label: message.imageLabel || t.renderPreview })} title={locale === "zh" ? "单击放大" : "Click to enlarge"}><img className="api-render-image" src={message.imageUrl} alt={message.imageLabel || t.renderPreview} /></button>
-                              <div className="render-card-actions">
-                                <button type="button" onClick={() => message.imageUrl && handleExpandPreview({ url: message.imageUrl, label: message.imageLabel || t.renderPreview })}>
-                                  <Eye size={14} />
-                                  {locale === "zh" ? "放大" : "Enlarge"}
-                                </button>
-                                <button type="button" onClick={() => handleCopyImage(message.imageUrl, message.imageLabel)}>
-                                  <Clipboard size={14} />
-                                  {locale === "zh" ? "复制图片" : "Copy image"}
-                                </button>
-                                <button type="button" onClick={() => message.imageUrl && handleOpenComparison({ url: message.imageUrl, label: message.imageLabel || t.renderPreview })} disabled={activeResultMode === "standard" ? comparisonCandidates.length < 2 : !floorPlanPreviews[0]?.url}>
-                                  <FileText size={14} />
-                                  {locale === "zh" ? "对比分析" : "Compare"}
-                                </button>
+                  {message.imageUrl ? (
+                    <>
+                      <button type="button" className="image-zoom-trigger" onClick={() => message.imageUrl && handleExpandPreview({ url: message.imageUrl, label: message.imageLabel || t.renderPreview, sourceResultId: message.sourceResultId })} title={locale === "zh" ? "单击放大" : "Click to enlarge"}><img className="api-render-image" src={message.imageUrl} alt={message.imageLabel || t.renderPreview} /></button>
+                      <div className="render-card-actions">
+                        <button type="button" onClick={() => message.imageUrl && handleExpandPreview({ url: message.imageUrl, label: message.imageLabel || t.renderPreview, sourceResultId: message.sourceResultId })}>
+                          <Eye size={14} />
+                          {locale === "zh" ? "放大" : "Enlarge"}
+                        </button>
+                        <button type="button" onClick={() => handleCopyImage(message.imageUrl, message.imageLabel)}>
+                          <Clipboard size={14} />
+                          {locale === "zh" ? "复制图片" : "Copy image"}
+                        </button>
+                        <button type="button" onClick={() => message.imageUrl && handleOpenComparison({ url: message.imageUrl, label: message.imageLabel || t.renderPreview, sourceResultId: message.sourceResultId })} disabled={isRenderMessageComparisonDisabled(message)}>
+                          <FileText size={14} />
+                          {locale === "zh" ? "对比分析" : "Compare"}
+                        </button>
                                 <button type="button" onClick={() => handleDownloadResult({ id: message.id, title: message.imageLabel || t.renderPreview, imageUrl: message.imageUrl, imageLabel: message.imageLabel, createdAt: new Date().toISOString() })}>
                                   <Download size={14} />
                                   {locale === "zh" ? "下载" : "Download"}
@@ -2542,9 +2980,9 @@ function App() {
               />
               <div className="chatgpt-composer__inline-actions">
                 {isImageWorkspace && (
-                  <button type="button" className={enableQualityEvaluation ? "is-active" : ""} onClick={() => setEnableQualityEvaluation((current) => !current)} disabled={isRendering}>
+                  <button type="button" className={enableQualityEvaluation ? "is-active" : ""} onClick={() => setEnableQualityEvaluation((current) => !current)} disabled={isRendering} title={enableQualityEvaluation ? (locale === "zh" ? "关闭严格复核" : "Disable strict review") : (locale === "zh" ? "启用可选严格复核" : "Enable optional strict review")}>
                     <CheckCircle2 size={14} />
-                    {locale === "zh" ? "复核" : "Review"}
+                    {locale === "zh" ? "严格复核" : "Strict review"}
                   </button>
                 )}
                 <button
@@ -2552,7 +2990,7 @@ function App() {
                   className="chatgpt-composer__send"
                   disabled={isRendering || isChatResponding || !canSubmitComposer}
                   aria-busy={isRendering || isChatResponding}
-                  title={(isChatWorkspace ? chatBlocker : generationBlocker) || `${composerSubmitLabel} (Ctrl/⌘ + Enter)`}
+                  title={(isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
                 >
                   <Send size={16} />
                 </button>
@@ -2584,6 +3022,18 @@ function App() {
                 )}
               </div>
               <div className="chatgpt-composer__utility-row">
+                {isImageWorkspace && composerMode === "new-generation" && floorPlanFiles.length > 0 && (
+                  <button
+                    type="button"
+                    className="chatgpt-tool-action"
+                    onClick={handleRunColoredFloorPlanTool}
+                    disabled={isRendering || isChatResponding || Boolean(coloredFloorPlanActionBlocker)}
+                    title={coloredFloorPlanActionBlocker || (locale === "zh" ? "用当前平面图直接生成彩色平面图，输入框文字只作为补充偏好" : "Generate a colored floor plan from the current attachment; composer text is only an optional preference")}
+                  >
+                    <Aperture size={14} />
+                    {locale === "zh" ? "彩色平面图" : "Colored plan"}
+                  </button>
+                )}
                 <span>{locale === "zh" ? `已输入 ${chatInput.trim().length} 字` : `${chatInput.trim().length} characters`}</span>
               </div>
             </div>
@@ -2792,52 +3242,92 @@ function App() {
                 </div>
               )}
 
-              {activeUtilityPanel === "settings" && (
+              {activeUtilityPanel === "preferences" && (
                 <div className="chatgpt-drawer__stack">
                   <div className="control-section">
                     <div className="section-title">
                       <CheckCircle2 size={14} />
-                      {locale === "zh" ? "已学习偏好" : "Learned preferences"}
+                      {locale === "zh" ? "记忆与偏好" : "Memory and preferences"}
                     </div>
-                    {learnedProfile ? (
+                    <p className="config-hint">
+                      {locale === "zh"
+                        ? "日常聊天记忆只来自你手动确认的“记住”；生图偏好用于辅助图像提示词。"
+                        : "Daily chat memory only comes from explicit Remember actions; image preferences support image prompts."}
+                    </p>
+                    {memoryView ? (
                       <div className="learned-profile-list">
-                        {learnedProfile.preference_summary?.long_term_preferences?.length ? (
-                          <div className="learned-profile-block">
-                            <strong>{locale === "zh" ? "长期偏好" : "Long-term preferences"}</strong>
-                            <p>{learnedProfile.preference_summary.long_term_preferences.join("；")}</p>
-                          </div>
-                        ) : null}
-                        {learnedProfile.preference_summary?.avoid_items?.length ? (
-                          <div className="learned-profile-block">
-                            <strong>{locale === "zh" ? "避免项" : "Avoid items"}</strong>
-                            <p>{learnedProfile.preference_summary.avoid_items.join("；")}</p>
-                          </div>
-                        ) : null}
-                        {learnedProfile.preference_summary?.evaluation_standards?.length ? (
-                          <div className="learned-profile-block">
-                            <strong>{locale === "zh" ? "评判标准" : "Evaluation standards"}</strong>
-                            <p>{learnedProfile.preference_summary.evaluation_standards.join("；")}</p>
-                          </div>
-                        ) : null}
-                        {learnedProfile.preference_summary?.frequent_edit_requests?.length ? (
-                          <div className="learned-profile-block">
-                            <strong>{locale === "zh" ? "最近常见修改" : "Frequent recent edits"}</strong>
-                            <p>{learnedProfile.preference_summary.frequent_edit_requests.join("；")}</p>
-                          </div>
-                        ) : null}
-                        {!learnedProfile.preference_summary?.long_term_preferences?.length &&
-                        !learnedProfile.preference_summary?.avoid_items?.length &&
-                        !learnedProfile.preference_summary?.evaluation_standards?.length &&
-                        !learnedProfile.preference_summary?.frequent_edit_requests?.length ? (
-                          <p className="chatgpt-drawer__empty-note">{locale === "zh" ? "目前还没有学到稳定偏好。" : "No stable preferences learned yet."}</p>
-                        ) : null}
+                        {memoryView.sections.map((section) => {
+                          const sectionCopy = getMemorySectionCopy(section);
+                          return (
+                            <div className="learned-profile-block" key={section.id}>
+                              <strong>{sectionCopy.title}</strong>
+                              <p>{sectionCopy.description}</p>
+                              {section.items.length === 0 ? (
+                                <p className="memory-item-empty">{locale === "zh" ? "暂无内容" : "Nothing saved yet"}</p>
+                              ) : (
+                                <div className="memory-item-list">
+                                  {section.items.map((item) => (
+                                    <div className="memory-item-row" key={item.id}>
+                                      {editingMemoryItemId === item.id ? (
+                                        <input
+                                          value={memoryDraftText}
+                                          onChange={(event) => setMemoryDraftText(event.target.value)}
+                                          aria-label={locale === "zh" ? "编辑记忆" : "Edit memory"}
+                                        />
+                                      ) : (
+                                        <span>{item.text}</span>
+                                      )}
+                                      {item.editable === false ? (
+                                        <small>{locale === "zh" ? "只读" : "Read-only"}</small>
+                                      ) : editingMemoryItemId === item.id ? (
+                                        <div className="memory-item-actions">
+                                          <button type="button" onClick={() => void handleSaveMemoryItem(item.id)} disabled={memoryActionId === item.id}>
+                                            <Save size={13} />
+                                            {locale === "zh" ? "保存" : "Save"}
+                                          </button>
+                                          <button type="button" onClick={() => {
+                                            setEditingMemoryItemId(null);
+                                            setMemoryDraftText("");
+                                          }}>
+                                            <X size={13} />
+                                            {locale === "zh" ? "取消" : "Cancel"}
+                                          </button>
+                                        </div>
+                                      ) : (
+                                        <div className="memory-item-actions">
+                                          <button type="button" onClick={() => startEditingMemoryItem(item)}>
+                                            <Edit3 size={13} />
+                                            {locale === "zh" ? "编辑" : "Edit"}
+                                          </button>
+                                          <button type="button" onClick={() => void handleDeleteMemoryItem(item.id)} disabled={memoryActionId === item.id}>
+                                            <Trash2 size={13} />
+                                            {locale === "zh" ? "删除" : "Delete"}
+                                          </button>
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : (
-                      <p className="chatgpt-drawer__empty-note">{locale === "zh" ? "还没有读取到偏好摘要。" : "Preference summary is not available yet."}</p>
+                      <p className="chatgpt-drawer__empty-note">{locale === "zh" ? "还没有读取到记忆内容。" : "Memory is not available yet."}</p>
                     )}
                   </div>
+                </div>
+              )}
 
+              {activeUtilityPanel === "generation" && (
+                <div className="chatgpt-drawer__stack">
                   <div className="control-section">
+                    <p className="config-hint">
+                      {locale === "zh"
+                        ? "这里的改动会直接影响下一次出图；如果你希望长期保留到当前账号，再去“模型与 API”面板保存。"
+                        : "Changes here affect the next image run immediately. Use the Model & API panel if you want to save them for this account."}
+                    </p>
                     <label className="select-row">
                       <span>
                         <Box size={15} />
@@ -2901,12 +3391,12 @@ function App() {
                       <div>
                         <div className="section-title">
                           <CheckCircle2 size={14} />
-                          {locale === "zh" ? "质量复核（可选）" : "Quality review (optional)"}
+                          {locale === "zh" ? "严格复核（可选）" : "Strict review (optional)"}
                         </div>
                         <p>
                           {enableQualityEvaluation
-                            ? locale === "zh" ? "本次会在图片返回后调用视觉模型评分，并按最大迭代继续优化。" : "This run will score the image with the vision model and iterate up to the max pass count."
-                            : locale === "zh" ? "默认跳过质量评估，图片返回后直接入库；需要时手动启用。" : "Skipped by default. The image is saved as soon as it returns; enable it only when needed."}
+                            ? locale === "zh" ? "本次会在首轮出图后追加一次视觉复核；只有复核认为仍需补跑时，才会继续占用剩余轮数。" : "This run adds a vision-based review after the first image and only spends extra passes if that review asks for another try."
+                            : locale === "zh" ? "默认关闭。首轮图片返回后直接入库；只有你主动打开时，才会进入额外复核流程。" : "Off by default. The first returned image is saved immediately; turn this on only when you want the extra review pass."}
                         </p>
                       </div>
                       <button
@@ -2916,11 +3406,15 @@ function App() {
                         disabled={isRendering}
                       >
                         <CheckCircle2 size={14} />
-                        {enableQualityEvaluation ? (locale === "zh" ? "本次启用" : "Enabled") : (locale === "zh" ? "启用复核" : "Enable")}
+                        {enableQualityEvaluation ? (locale === "zh" ? "本次启用" : "Enabled") : (locale === "zh" ? "启用严格复核" : "Enable")}
                       </button>
                     </div>
                   </div>
+                </div>
+              )}
 
+              {activeUtilityPanel === "setup" && (
+                <div className="chatgpt-drawer__stack">
                   <div className="control-section">
                     <button
                       className="config-toggle"
@@ -2935,8 +3429,8 @@ function App() {
                     </button>
                     <p className="config-hint">
                       {locale === "zh"
-                        ? "留空则使用当前临时空间已保存的后端配置；点击保存配置后会写入该空间的本地配置，并同步缓存到本机浏览器。"
-                        : "Leave empty to use this temporary space's saved backend setup. Save writes to that local space and also caches it in this browser."}
+                        ? "留空则使用当前账号已保存的后端配置；点击保存配置后会写入该账号的本地配置，并同步缓存到本机浏览器。"
+                        : "Leave empty to use this account's saved backend setup. Save writes to this account and also caches it in this browser."}
                     </p>
                     <div className="config-action-row">
                       <button type="button" onClick={handleSaveApiConfig} disabled={configAction !== null}>
@@ -3084,7 +3578,11 @@ function App() {
                       </div>
                     )}
                   </div>
+                </div>
+              )}
 
+              {activeUtilityPanel === "prompts" && (
+                <div className="chatgpt-drawer__stack">
                   <div className="control-section">
                     <button
                       className="config-toggle"
@@ -3099,8 +3597,8 @@ function App() {
                     </button>
                     <p className="config-hint">
                       {locale === "zh"
-                        ? "这里单独维护分析提示词和生图提示词，避免和 API 参数混在一起。保存时写入当前临时空间的本地配置。"
-                        : "Manage analysis and generation prompts separately here. Saving writes to this temporary space's local setup."}
+                        ? "这里单独维护分析提示词和生图提示词，避免和模型/API 参数混在一起。保存时仍写入当前账号的本地配置。"
+                        : "Prompt overrides live here separately from the model/API setup. Saving still writes to this account's local config."}
                     </p>
                     {showPromptConfig && (
                       <div className="api-config-grid">
@@ -3144,6 +3642,15 @@ function App() {
             </div>
           </aside>
         )}
+        {activeUtilityPanel && (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            aria-label={locale === "zh" ? "调整右侧抽屉宽度" : "Resize the right drawer"}
+            className="chatgpt-layout__resize-handle chatgpt-layout__resize-handle--drawer"
+            onPointerDown={(event) => beginPanelResize("drawer", drawerWidth, event)}
+          />
+        )}
       </div>
 
       {annotationTarget && (
@@ -3158,14 +3665,14 @@ function App() {
         />
       )}
       {showUserDialog && (
-        <div className="identity-modal" role="dialog" aria-modal="true" aria-label={locale === "zh" ? "用户空间" : "User space"} onClick={() => currentUserId && setShowUserDialog(false)}>
+        <div className="identity-modal" role="dialog" aria-modal="true" aria-label={locale === "zh" ? "账号登录" : "Account sign in"} onClick={() => authUser && setShowUserDialog(false)}>
           <div className="identity-modal__content" onClick={(event) => event.stopPropagation()}>
             <div className="identity-modal__head">
               <div className="identity-modal__title-block">
-                <p className="eyebrow">{locale === "zh" ? "临时隔离" : "Temporary isolation"}</p>
-                <h2>{locale === "zh" ? "输入自定义访问标识" : "Enter a custom token"}</h2>
+                <p className="eyebrow">{locale === "zh" ? "账号空间" : "Account workspace"}</p>
+                <h2>{authMode === "register" ? (locale === "zh" ? "创建账号" : "Create account") : (locale === "zh" ? "登录账号" : "Sign in")}</h2>
               </div>
-              {currentUserId && (
+              {authUser && (
                 <button type="button" className="identity-modal__close" onClick={() => setShowUserDialog(false)} aria-label={locale === "zh" ? "关闭" : "Close"}>
                   <X size={18} aria-hidden="true" />
                 </button>
@@ -3173,25 +3680,51 @@ function App() {
             </div>
             <p className="identity-modal__hint">
               {locale === "zh"
-                ? "相同标识会打开同一份聊天历史、结果库和偏好；全新标识会进入空白空间。这个标识只用于临时命名空间隔离，不是安全登录。"
-                : "The same token opens the same chat history, result library, and preferences. A new token starts blank. This is temporary namespace isolation, not secure authentication."}
+                ? "登录后，你的聊天历史、结果库、API Key、配置和记忆都会按账号隔离。"
+                : "After sign-in, chat history, results, API keys, config, and memory are isolated by account."}
             </p>
-            <form className="identity-modal__form" onSubmit={(event) => {
-              event.preventDefault();
-              handleCommitUserIdentity();
-            }}>
+            <div className="identity-modal__mode-row" role="tablist" aria-label={locale === "zh" ? "登录方式" : "Auth mode"}>
+              <button type="button" className={authMode === "login" ? "is-active" : ""} onClick={() => {
+                setAuthMode("login");
+                setAuthError("");
+              }}>
+                {locale === "zh" ? "登录" : "Sign in"}
+              </button>
+              <button type="button" className={authMode === "register" ? "is-active" : ""} onClick={() => {
+                setAuthMode("register");
+                setAuthError("");
+              }}>
+                {locale === "zh" ? "注册" : "Register"}
+              </button>
+            </div>
+            <form className="identity-modal__form" onSubmit={handleSubmitAuth}>
               <label className="identity-modal__field">
-                <span>{locale === "zh" ? "访问标识" : "Access token"}</span>
+                <span>{locale === "zh" ? "账号名" : "Username"}</span>
                 <input
                   id="identity-username"
                   name="username"
-                  value={userDraftId}
+                  value={authDraft.username}
                   onChange={(event) => {
-                    setUserDraftId(event.target.value);
+                    setAuthDraft((current) => ({ ...current, username: event.target.value }));
                     setAuthError("");
                   }}
-                  placeholder={locale === "zh" ? "例如：team-a 或 my-demo-token" : "e.g. team-a or my-demo-token"}
+                  placeholder={locale === "zh" ? "例如：alex 或 team-a" : "e.g. alex or team-a"}
                   autoComplete="username"
+                />
+              </label>
+              <label className="identity-modal__field">
+                <span>{locale === "zh" ? "密码" : "Password"}</span>
+                <input
+                  id="identity-password"
+                  name="password"
+                  type="password"
+                  value={authDraft.password}
+                  onChange={(event) => {
+                    setAuthDraft((current) => ({ ...current, password: event.target.value }));
+                    setAuthError("");
+                  }}
+                  placeholder={authMode === "register" ? (locale === "zh" ? "至少 8 位" : "At least 8 characters") : ""}
+                  autoComplete={authMode === "register" ? "new-password" : "current-password"}
                 />
               </label>
               {authError && (
@@ -3199,18 +3732,16 @@ function App() {
                   {authError}
                 </div>
               )}
-              <button type="submit" className="identity-modal__submit">
+              <button type="submit" className="identity-modal__submit" disabled={isAuthSubmitting || isAuthLoading}>
                 <KeyRound size={17} aria-hidden="true" />
                 <span>
-                  {locale === "zh" ? "进入这个空间" : "Open this space"}
+                  {isAuthSubmitting
+                    ? locale === "zh" ? "处理中" : "Working"
+                    : authMode === "register"
+                      ? locale === "zh" ? "注册并进入" : "Create and enter"
+                      : locale === "zh" ? "登录并进入" : "Sign in"}
                 </span>
               </button>
-              {currentUserId && (
-                <button type="button" onClick={handleClearUserToken}>
-                  <X size={14} aria-hidden="true" />
-                  {locale === "zh" ? "清除当前标识" : "Clear current token"}
-                </button>
-              )}
             </form>
           </div>
         </div>

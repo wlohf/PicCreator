@@ -82,7 +82,10 @@ def _hash_password(password: str, salt_hex: str | None = None) -> tuple[str, str
 
 
 def register_user(username: str, password: str) -> dict[str, Any]:
-    user_id = normalize_user_id(username)
+    display_name = username.strip()
+    user_id = normalize_user_id(display_name)
+    if not display_name or user_id == DEFAULT_LOCAL_USER_ID:
+        raise HTTPException(status_code=400, detail="该用户名不可用")
     if len(password.strip()) < 8:
         raise HTTPException(status_code=400, detail="密码至少需要 8 位")
     with _lock:
@@ -92,7 +95,7 @@ def register_user(username: str, password: str) -> dict[str, Any]:
         salt_hex, password_hash = _hash_password(password)
         user = {
             "user_id": user_id,
-            "username": username.strip(),
+            "username": display_name,
             "password_salt": salt_hex,
             "password_hash": password_hash,
             "created_at": datetime.now(timezone.utc).isoformat(),
@@ -205,11 +208,16 @@ def get_request_namespace_user(request: Request) -> dict[str, Any] | None:
 
 
 def get_current_or_default_user(request: Request) -> dict[str, Any]:
-    namespace_user = get_request_namespace_user(request)
-    if namespace_user is not None:
-        return namespace_user
     try:
         user = get_current_user(request)
     except HTTPException:
+        namespace_user = get_request_namespace_user(request)
+        if namespace_user is not None:
+            return namespace_user
         return get_default_local_user()
     return {**user, "authenticated": True}
+
+
+def resolve_config_user_id(user: dict[str, Any] | None) -> str:
+    normalized = normalize_user_id((user or {}).get("user_id"))
+    return normalized or DEFAULT_LOCAL_USER_ID

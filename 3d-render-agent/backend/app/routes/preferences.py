@@ -1,13 +1,16 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from backend.app.services.auth_service import get_current_or_default_user
 from backend.app.services.preferences_store import (
+    delete_memory_item,
+    load_memory_view,
     load_shortcuts,
     load_style_profile,
     record_behavior_signal,
     save_shortcuts,
     save_style_profile,
+    update_memory_item,
 )
 
 router = APIRouter(prefix="/api/preferences", tags=["preferences"])
@@ -33,6 +36,11 @@ class PreferenceEventPayload(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
+class MemoryItemPayload(BaseModel):
+    text: str = ""
+    project_id: str = "default"
+
+
 @router.get("/shortcuts")
 def get_shortcuts(user=Depends(get_current_or_default_user)):
     return {"ok": True, "shortcuts": load_shortcuts(user["user_id"])}
@@ -51,6 +59,43 @@ def get_style_profile(project_id: str = "default", user=Depends(get_current_or_d
 @router.put("/style-profile")
 def put_style_profile(payload: StyleProfilePayload, user=Depends(get_current_or_default_user)):
     return {"ok": True, "profile": save_style_profile(payload.project_id, payload.model_dump(), user["user_id"])}
+
+
+@router.get("/memory")
+def get_memory(project_id: str = "default", user=Depends(get_current_or_default_user)):
+    return {
+        "ok": True,
+        "memory": load_memory_view(project_id, user["user_id"]),
+        "profile": load_style_profile(project_id, user["user_id"]),
+    }
+
+
+@router.patch("/memory/{item_id}")
+def patch_memory_item(item_id: str, payload: MemoryItemPayload, user=Depends(get_current_or_default_user)):
+    try:
+        memory = update_memory_item(item_id, payload.text, payload.project_id, user["user_id"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "memory": memory,
+        "profile": load_style_profile(payload.project_id, user["user_id"]),
+    }
+
+
+@router.delete("/memory/{item_id}")
+def remove_memory_item(item_id: str, project_id: str = "default", user=Depends(get_current_or_default_user)):
+    try:
+        memory = delete_memory_item(item_id, project_id, user["user_id"])
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "memory": memory,
+        "profile": load_style_profile(project_id, user["user_id"]),
+    }
 
 
 @router.post("/events")

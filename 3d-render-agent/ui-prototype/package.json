@@ -9,7 +9,9 @@
     "preview": "vite preview --host 0.0.0.0",
     "test:attachments": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/fileAttachments.test.ts && node .tmp-tests/tests/fileAttachments.test.js",
     "test:chat-sessions": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/chatSessions.test.ts && node .tmp-tests/tests/chatSessions.test.js",
-    "test:api-config-storage": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/apiConfigStorage.test.ts && node .tmp-tests/tests/apiConfigStorage.test.js"
+    "test:api-config-storage": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/apiConfigStorage.test.ts && node .tmp-tests/tests/apiConfigStorage.test.js",
+    "test:result-asset-urls": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/resultAssetUrls.test.ts && node .tmp-tests/tests/resultAssetUrls.test.js",
+    "test:composer-layout": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/composerLayout.test.ts && node .tmp-tests/composerLayout.test.js"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

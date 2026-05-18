@@ -18,8 +18,10 @@ def get_preferences_path(user_id: str = "default") -> Path:
 def _empty_preferences() -> dict[str, Any]:
     return {
         "shortcuts": [],
+        "daily_memories": [],
         "user_style_preferences": {"explicit": [], "inferred": [], "avoid": []},
         "project_style_memories": {},
+        "evaluation_standards": [],
         "behavior_signals": [],
         "preference_summary": {
             "long_term_preferences": [],
@@ -49,6 +51,9 @@ def _read_preferences(user_id: str = "default") -> dict[str, Any]:
     merged = _empty_preferences()
     merged.update(data)
     merged.pop("reference_memories", None)
+    summary = merged.get("preference_summary") if isinstance(merged.get("preference_summary"), dict) else {}
+    if not _normalize_text_list(merged.get("evaluation_standards")) and isinstance(summary, dict):
+        merged["evaluation_standards"] = _normalize_text_list(summary.get("evaluation_standards"))
     return merged
 
 
@@ -101,6 +106,37 @@ def _normalize_user_style(value: Any) -> dict[str, list[str]]:
     }
 
 
+def _normalize_daily_memories(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    memories: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, item in enumerate(value):
+        if isinstance(item, str):
+            text = item.strip()
+            kind = "preference"
+            created_at = ""
+            item_id = f"daily-{index}-{text}"
+        elif isinstance(item, dict):
+            text = str(item.get("text") or "").strip()
+            kind = str(item.get("kind") or "preference").strip() or "preference"
+            created_at = str(item.get("created_at") or "").strip()
+            item_id = str(item.get("id") or f"daily-{index}-{text}").strip()
+        else:
+            continue
+        key = (kind, text)
+        if not text or key in seen:
+            continue
+        seen.add(key)
+        memories.append({
+            "id": item_id or f"daily-{index}",
+            "kind": kind,
+            "text": text,
+            "created_at": created_at,
+        })
+    return memories[:100]
+
+
 def _normalize_project_memory(value: Any) -> dict[str, list[str]]:
     value = value if isinstance(value, dict) else {}
     return {
@@ -111,6 +147,34 @@ def _normalize_project_memory(value: Any) -> dict[str, list[str]]:
         "lighting": _normalize_text_list(value.get("lighting")),
         "avoid": _normalize_text_list(value.get("avoid")),
     }
+
+
+def _memory_record(text: str, kind: str) -> dict[str, str]:
+    created_at = datetime.now(timezone.utc).isoformat()
+    safe = "".join(ch if ch.isalnum() else "-" for ch in text.strip())[:24].strip("-") or kind
+    return {
+        "id": f"daily-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}-{safe}",
+        "kind": kind,
+        "text": text.strip(),
+        "created_at": created_at,
+    }
+
+
+def _append_daily_memories(existing: Any, candidate: dict[str, Any]) -> list[dict[str, str]]:
+    memories = _normalize_daily_memories(existing)
+    seen = {(item["kind"], item["text"]) for item in memories}
+    additions: list[dict[str, str]] = []
+    for text in _normalize_text_list(candidate.get("likes")):
+        key = ("preference", text)
+        if key not in seen:
+            additions.append(_memory_record(text, "preference"))
+            seen.add(key)
+    for text in _normalize_text_list(candidate.get("avoids")):
+        key = ("avoid", text)
+        if key not in seen:
+            additions.append(_memory_record(text, "avoid"))
+            seen.add(key)
+    return [*additions, *memories][:100]
 
 
 def normalize_shortcuts(value: Any) -> list[dict[str, str]]:
@@ -201,23 +265,200 @@ def apply_chat_memory(project_id: str, memory_candidate: dict[str, Any], user_id
     project_items = _normalize_text_list(candidate.get("project"))
     current_project["structure"] = _normalize_text_list([*current_project.get("structure", []), *project_items])
 
-    preference_summary = data.get("preference_summary") if isinstance(data.get("preference_summary"), dict) else {}
     evaluation_standards = _normalize_text_list(
         [
-            *(_normalize_text_list(preference_summary.get("evaluation_standards"))),
+            *_normalize_text_list(data.get("evaluation_standards")),
             *_normalize_text_list(candidate.get("evaluation_standards")),
         ]
     )
+    preference_summary = data.get("preference_summary") if isinstance(data.get("preference_summary"), dict) else {}
     preference_summary = {**preference_summary, "evaluation_standards": evaluation_standards}
 
     next_data = {
         **data,
+        "daily_memories": _append_daily_memories(data.get("daily_memories"), candidate),
         "user_style_preferences": current_user,
         "project_style_memories": {**project_memories, project_key: current_project},
+        "evaluation_standards": evaluation_standards,
         "preference_summary": preference_summary,
     }
     _write_preferences(next_data, user_id)
     return next_data
+
+
+def load_memory_view(project_id: str = "default", user_id: str = "default") -> dict[str, Any]:
+    data = _read_preferences(user_id)
+    project_key = project_id or "default"
+    user_style = _normalize_user_style(data.get("user_style_preferences"))
+    project_memories = data.get("project_style_memories") if isinstance(data.get("project_style_memories"), dict) else {}
+    project_memory = _normalize_project_memory(project_memories.get(project_key))
+    preference_summary = data.get("preference_summary") if isinstance(data.get("preference_summary"), dict) else {}
+    direct_evaluation_standards = _normalize_text_list(data.get("evaluation_standards")) or _normalize_text_list(preference_summary.get("evaluation_standards"))
+    behavior_summary = _summarize_behavior_signals(
+        data.get("behavior_signals") if isinstance(data.get("behavior_signals"), list) else [],
+        project_key,
+    )
+
+    def text_items(source: str, values: list[str], editable: bool = True) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": f"{source}:{index}",
+                "text": value,
+                "editable": editable,
+            }
+            for index, value in enumerate(values)
+        ]
+
+    project_items: list[dict[str, Any]] = []
+    for key in ("style", "furniture", "structure", "materials", "lighting", "avoid"):
+        for item in text_items(f"project_style_memory.{key}", project_memory.get(key, [])):
+            item["group"] = key
+            project_items.append(item)
+
+    daily_items = [
+        {
+            "id": f"daily_memories:{item['id']}",
+            "text": item["text"],
+            "kind": item["kind"],
+            "created_at": item["created_at"],
+            "editable": True,
+        }
+        for item in _normalize_daily_memories(data.get("daily_memories"))
+    ]
+
+    return {
+        "project_id": project_key,
+        "sections": [
+            {
+                "id": "daily_memories",
+                "label": "Daily chat memory",
+                "description": "Facts or preferences the user explicitly asked the chat to remember.",
+                "items": daily_items,
+            },
+            {
+                "id": "long_term_preferences",
+                "label": "Image preferences",
+                "description": "Style preferences that can improve future image prompts.",
+                "items": [
+                    *text_items("user_style_preferences.explicit", user_style["explicit"]),
+                    *text_items("user_style_preferences.inferred", user_style["inferred"]),
+                ],
+            },
+            {
+                "id": "avoid_items",
+                "label": "Avoid items",
+                "description": "Styles or details that should be avoided.",
+                "items": text_items("user_style_preferences.avoid", user_style["avoid"]),
+            },
+            {
+                "id": "project_preferences",
+                "label": "Project preferences",
+                "description": "Project-specific layout, material, structure, and lighting memory.",
+                "items": project_items,
+            },
+            {
+                "id": "evaluation_standards",
+                "label": "Evaluation standards",
+                "description": "Quality criteria used when reviewing image output.",
+                "items": text_items(
+                    "evaluation_standards",
+                    direct_evaluation_standards,
+                ),
+            },
+            {
+                "id": "frequent_edit_requests",
+                "label": "Recent common edits",
+                "description": "Recent edit patterns inferred from manual result actions.",
+                "items": text_items("behavior_summary.frequent_edit_requests", behavior_summary["frequent_edit_requests"], editable=False),
+            },
+        ],
+    }
+
+
+def update_memory_item(item_id: str, text: str, project_id: str = "default", user_id: str = "default") -> dict[str, Any]:
+    next_text = str(text or "").strip()
+    if not next_text:
+        raise ValueError("memory text cannot be empty")
+    data = _read_preferences(user_id)
+    _mutate_memory_item(data, item_id, project_id or "default", next_text)
+    _write_preferences(data, user_id)
+    return load_memory_view(project_id, user_id)
+
+
+def delete_memory_item(item_id: str, project_id: str = "default", user_id: str = "default") -> dict[str, Any]:
+    data = _read_preferences(user_id)
+    _mutate_memory_item(data, item_id, project_id or "default", None)
+    _write_preferences(data, user_id)
+    return load_memory_view(project_id, user_id)
+
+
+def _replace_or_delete(values: list[str], index: int, text: str | None) -> list[str]:
+    if index < 0 or index >= len(values):
+        raise KeyError("memory item not found")
+    next_values = list(values)
+    if text is None:
+        next_values.pop(index)
+    else:
+        next_values[index] = text
+    return _normalize_text_list(next_values, limit=100)
+
+
+def _mutate_memory_item(data: dict[str, Any], item_id: str, project_id: str, text: str | None) -> None:
+    source, _, raw_index = str(item_id or "").partition(":")
+    if not source or not raw_index:
+        raise KeyError("memory item not found")
+
+    if source == "daily_memories":
+        memories = _normalize_daily_memories(data.get("daily_memories"))
+        index = next((idx for idx, item in enumerate(memories) if item["id"] == raw_index), -1)
+        if index < 0:
+            raise KeyError("memory item not found")
+        if text is None:
+            memories.pop(index)
+        else:
+            memories[index]["text"] = text
+        data["daily_memories"] = memories
+        return
+
+    try:
+        index = int(raw_index)
+    except ValueError as exc:
+        raise KeyError("memory item not found") from exc
+
+    if source.startswith("user_style_preferences."):
+        key = source.rsplit(".", 1)[-1]
+        if key not in {"explicit", "inferred", "avoid"}:
+            raise KeyError("memory item not found")
+        current = _normalize_user_style(data.get("user_style_preferences"))
+        current[key] = _replace_or_delete(current[key], index, text)
+        data["user_style_preferences"] = current
+        data["preference_summary"] = _build_preference_summary(data, project_id)
+        return
+
+    if source.startswith("project_style_memory."):
+        key = source.rsplit(".", 1)[-1]
+        if key not in {"style", "furniture", "structure", "materials", "lighting", "avoid"}:
+            raise KeyError("memory item not found")
+        project_memories = data.get("project_style_memories") if isinstance(data.get("project_style_memories"), dict) else {}
+        current = _normalize_project_memory(project_memories.get(project_id))
+        current[key] = _replace_or_delete(current[key], index, text)
+        data["project_style_memories"] = {**project_memories, project_id: current}
+        data["preference_summary"] = _build_preference_summary(data, project_id)
+        return
+
+    if source in {"evaluation_standards", "preference_summary.evaluation_standards"}:
+        preference_summary = data.get("preference_summary") if isinstance(data.get("preference_summary"), dict) else {}
+        direct_evaluation_standards = _normalize_text_list(data.get("evaluation_standards")) or _normalize_text_list(preference_summary.get("evaluation_standards"))
+        updated = _replace_or_delete(direct_evaluation_standards, index, text)
+        data["evaluation_standards"] = updated
+        preference_summary = {
+            **preference_summary,
+            "evaluation_standards": _build_preference_summary({**data, "preference_summary": {**preference_summary, "evaluation_standards": updated}}, project_id)["evaluation_standards"],
+        }
+        data["preference_summary"] = preference_summary
+        return
+
+    raise KeyError("memory item is not editable")
 
 
 def record_behavior_signal(
@@ -308,7 +549,12 @@ def _build_preference_summary(data: dict[str, Any], project_id: str) -> dict[str
         "project_preferences": project_memory,
         "avoid_items": _normalize_text_list([*user_style["avoid"], *project_memory["avoid"]], limit=20),
         "evaluation_standards": _normalize_text_list(
-            [*project_memory["structure"], *project_memory["materials"], *project_memory["lighting"]],
+            [
+                *_normalize_text_list(data.get("evaluation_standards")),
+                *project_memory["structure"],
+                *project_memory["materials"],
+                *project_memory["lighting"],
+            ],
             limit=20,
         ),
         "frequent_edit_requests": behavior_summary["frequent_edit_requests"],

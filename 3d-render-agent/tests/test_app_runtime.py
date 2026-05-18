@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -165,3 +166,60 @@ def test_verify_image_api_raises_on_generation_failure(monkeypatch):
     assert "gpt-image-test" in message
     assert "https://image.example.invalid/v1" in message
     assert "image route rejected" in message
+
+
+def test_get_config_inherits_default_runtime_config_without_keys_for_fresh_token_namespace(tmp_path, monkeypatch):
+    default_config = {
+        "llm": {
+            "provider": "openai_compat",
+            "provider_name": "Default Analysis",
+            "api_format": "openai_chat",
+            "api_key_env": "LLM_API_KEY",
+            "api_key": "",
+            "base_url": "https://analysis.example/v1",
+            "model": "analysis-model",
+        },
+        "vision": {
+            "provider": "openai_compat",
+            "provider_name": "Default Vision",
+            "api_format": "openai_chat",
+            "api_key_env": "VISION_API_KEY",
+            "api_key": "",
+            "base_url": "https://vision.example/v1",
+            "model": "vision-model",
+        },
+        "image_gen": {
+            "provider": "openai_compat",
+            "provider_name": "Default Image",
+            "api_format": "openai_chat",
+            "api_key_env": "IMAGE_API_KEY",
+            "api_key": "",
+            "base_url": "https://image.example/v1",
+            "model": "image-model",
+        },
+    }
+    config_path = tmp_path / "config.json"
+    config_example_path = tmp_path / "config.example.json"
+    env_path = tmp_path / ".env"
+    config_path.write_text(json.dumps(default_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    config_example_path.write_text(json.dumps(default_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    env_path.write_text("LLM_API_KEY=analysis-env\nVISION_API_KEY=vision-env\nIMAGE_API_KEY=image-env\n", encoding="utf-8")
+    monkeypatch.setattr(app_runtime, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(app_runtime, "CONFIG_EXAMPLE_PATH", config_example_path)
+    monkeypatch.setattr(app_runtime, "ENV_PATH", env_path)
+    monkeypatch.setenv("RENDER_AGENT_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.delenv("LLM_API_KEY", raising=False)
+    monkeypatch.delenv("VISION_API_KEY", raising=False)
+    monkeypatch.delenv("IMAGE_API_KEY", raising=False)
+
+    cfg = app_runtime.get_config("fresh-token")
+
+    assert cfg.llm.provider_name == "Default Analysis"
+    assert cfg.llm.base_url == "https://analysis.example/v1"
+    assert cfg.llm.model == "analysis-model"
+    assert cfg.llm.api_key == ""
+    assert cfg.vision.api_key == ""
+    assert cfg.image_gen.provider_name == "Default Image"
+    assert cfg.image_gen.base_url == "https://image.example/v1"
+    assert cfg.image_gen.model == "image-model"
+    assert cfg.image_gen.api_key == ""

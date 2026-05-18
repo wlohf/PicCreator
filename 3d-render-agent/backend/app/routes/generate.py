@@ -3,16 +3,12 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from backend.app.schemas.generation import GenerateForm
-from backend.app.services.auth_service import get_current_or_default_user
+from backend.app.services.auth_service import get_current_or_default_user, resolve_config_user_id
 from backend.app.services.generation_service import generate_render, stream_generate_render
 from backend.app.services.preferences_store import load_style_profile
 from models.schemas import GenerationMode
 
 router = APIRouter(prefix="/api", tags=["generation"])
-
-
-def _config_user_id(user: dict) -> str:
-    return user["user_id"] if user.get("auth_scheme") == "token_namespace" else "default"
 
 
 @router.post("/generate")
@@ -42,7 +38,7 @@ async def generate(
 ):
     form = GenerateForm(
         user_id=user["user_id"],
-        config_user_id=_config_user_id(user),
+        config_user_id=resolve_config_user_id(user),
         project_id=project_id,
         mode=mode,
         requirement=requirement,
@@ -95,7 +91,7 @@ async def generate_stream(
 ):
     form = GenerateForm(
         user_id=user["user_id"],
-        config_user_id=_config_user_id(user),
+        config_user_id=resolve_config_user_id(user),
         project_id=project_id,
         mode=mode,
         requirement=requirement,

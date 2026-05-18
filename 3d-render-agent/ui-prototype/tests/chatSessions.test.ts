@@ -1,4 +1,4 @@
-import { countGenerationRecords, hasConversationContent, hasDurableConversationContent, isCurrentConversationRun } from "../src/utils/chatSessions.js";
+import { countGenerationRecords, hasConversationContent, hasDurableConversationContent, isCurrentConversationRun, upsertSessionSnapshot } from "../src/utils/chatSessions.js";
 import type { ChatMessage } from "../src/types/domain.js";
 
 function assert(condition: unknown, message: string) {
@@ -44,3 +44,35 @@ const runGuard = { userId: "alpha", epoch: 1 };
 assert(isCurrentConversationRun(runGuard, "alpha", 1), "matching token and epoch should allow async conversation updates");
 assert(!isCurrentConversationRun(runGuard, "beta", 1), "token switches should reject stale async conversation updates");
 assert(!isCurrentConversationRun(runGuard, "alpha", 2), "namespace epoch changes should reject stale async conversation updates");
+
+const baseSession = {
+  id: "session-1",
+  title: "Session 1",
+  createdAt: "2026-05-11T00:00:00.000Z",
+  updatedAt: "2026-05-11T00:00:00.000Z",
+  messages: [userMessage],
+  chatInput: "warm wood",
+  workspaceMode: "image",
+  generationMode: "standard",
+  composerMode: "new-generation",
+  activeResultId: null,
+};
+
+const unchangedSession = {
+  ...baseSession,
+  updatedAt: "2026-05-11T00:01:00.000Z",
+};
+
+const stableList = [baseSession];
+assert(
+  upsertSessionSnapshot(stableList, unchangedSession) === stableList,
+  "unchanged session snapshots should not force another state update",
+);
+
+const secondSession = {
+  ...baseSession,
+  id: "session-2",
+  title: "Session 2",
+};
+const reordered = upsertSessionSnapshot([secondSession, baseSession], unchangedSession);
+assert(reordered[0].id === "session-1", "current session snapshot should still move to the front");

@@ -2,17 +2,13 @@ from fastapi import APIRouter, Depends, Form
 from fastapi.responses import JSONResponse
 
 from app_runtime import load_model_config_for_ui, save_model_config_to_files, verify_analysis_api, verify_image_api
-from backend.app.services.auth_service import get_current_or_default_user
+from backend.app.services.auth_service import get_current_or_default_user, resolve_config_user_id
 
 router = APIRouter(prefix="/api/config", tags=["config"])
 
 
 def error_response(stage: str, message: str):
     return JSONResponse(status_code=400, content={"ok": False, "stage": stage, "error": message})
-
-
-def _config_user_id(user: dict) -> str:
-    return user["user_id"] if user.get("auth_scheme") == "token_namespace" else "default"
 
 
 @router.post("/verify-analysis")
@@ -25,7 +21,7 @@ def verify_analysis(
     model: str = Form(""),
 ):
     try:
-        message = verify_analysis_api(provider_name, api_format, base_url, api_key, model, user_id=_config_user_id(user))
+        message = verify_analysis_api(provider_name, api_format, base_url, api_key, model, user_id=resolve_config_user_id(user))
         return {"ok": True, "message": message}
     except Exception as exc:
         return error_response("verify-analysis", str(exc))
@@ -34,7 +30,7 @@ def verify_analysis(
 @router.get("")
 def load_config(user=Depends(get_current_or_default_user)):
     try:
-        return {"ok": True, "config": load_model_config_for_ui(_config_user_id(user))}
+        return {"ok": True, "config": load_model_config_for_ui(resolve_config_user_id(user))}
     except Exception as exc:
         return error_response("load", str(exc))
 
@@ -49,7 +45,7 @@ def verify_image(
     model: str = Form(""),
 ):
     try:
-        message = verify_image_api(provider_name, api_format, base_url, api_key, model, user_id=_config_user_id(user))
+        message = verify_image_api(provider_name, api_format, base_url, api_key, model, user_id=resolve_config_user_id(user))
         return {"ok": True, "message": message}
     except Exception as exc:
         return error_response("verify-image", str(exc))
@@ -91,7 +87,7 @@ def save_config(
             fallback_models_text,
             model_switch_after_failures,
             stop_after_last_model_failures,
-            user_id=_config_user_id(user),
+            user_id=resolve_config_user_id(user),
         )
         return {"ok": True, "message": message}
     except Exception as exc:

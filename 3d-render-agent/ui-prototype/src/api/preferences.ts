@@ -13,6 +13,27 @@ export type StyleProfile = {
   };
 };
 
+export type MemoryItem = {
+  id: string;
+  text: string;
+  editable?: boolean;
+  kind?: string;
+  group?: string;
+  created_at?: string;
+};
+
+export type MemorySection = {
+  id: string;
+  label: string;
+  description?: string;
+  items: MemoryItem[];
+};
+
+export type MemoryView = {
+  project_id: string;
+  sections: MemorySection[];
+};
+
 export type PreferenceEventRequest = {
   eventType: string;
   userId?: string;
@@ -31,6 +52,14 @@ type StyleProfileResponse = {
   ok: boolean;
   profile: StyleProfile;
   error?: string;
+};
+
+type MemoryResponse = {
+  ok: boolean;
+  memory: MemoryView;
+  profile?: StyleProfile;
+  error?: string;
+  detail?: string;
 };
 
 type ShortcutPreferencesResponse = {
@@ -68,6 +97,39 @@ export async function loadStyleProfile(projectId = "default", userId = "default"
     throw new Error(data.error || response.statusText);
   }
   return data.profile ?? {};
+}
+
+export async function loadMemoryView(projectId = "default", userId = "default"): Promise<MemoryView> {
+  const response = await apiFetch(`/api/preferences/memory?project_id=${encodeURIComponent(projectId)}&user_id=${encodeURIComponent(userId)}`);
+  const data = await parseApiJson<MemoryResponse>(response);
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || data.detail || response.statusText);
+  }
+  return data.memory ?? { project_id: projectId, sections: [] };
+}
+
+export async function updateMemoryItem(itemId: string, text: string, projectId = "default"): Promise<MemoryResponse> {
+  const response = await apiFetch(`/api/preferences/memory/${encodeURIComponent(itemId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, text }),
+  });
+  const data = await parseApiJson<MemoryResponse>(response);
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || data.detail || response.statusText);
+  }
+  return data;
+}
+
+export async function deleteMemoryItem(itemId: string, projectId = "default"): Promise<MemoryResponse> {
+  const response = await apiFetch(`/api/preferences/memory/${encodeURIComponent(itemId)}?project_id=${encodeURIComponent(projectId)}`, {
+    method: "DELETE",
+  });
+  const data = await parseApiJson<MemoryResponse>(response);
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || data.detail || response.statusText);
+  }
+  return data;
 }
 
 export async function recordPreferenceEvent({

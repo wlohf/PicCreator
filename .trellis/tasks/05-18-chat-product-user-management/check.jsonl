@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "review backend route/service changes"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "verify namespace/key isolation and generation contracts remain intact"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "verify chat/image workspace state and memory writes"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "verify API/UI type alignment"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "verify identity and memory data flow across layers"}

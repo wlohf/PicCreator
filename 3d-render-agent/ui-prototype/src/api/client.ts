@@ -1,9 +1,4 @@
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
-let apiUserNamespace = "";
-
-export function setApiUserNamespace(userId: string) {
-  apiUserNamespace = userId.trim();
-}
 
 export function buildApiUrl(path: string, query?: Record<string, string | number | boolean | undefined>) {
   const normalizedPath = path.startsWith("/") ? path : `/${path}`;
@@ -17,9 +12,6 @@ export function buildApiUrl(path: string, query?: Record<string, string | number
 
 export function apiFetch(input: string, init: RequestInit = {}) {
   const headers = new Headers(init.headers);
-  if (apiUserNamespace) {
-    headers.set("X-Render-Agent-User-Token", apiUserNamespace);
-  }
   return fetch(buildApiUrl(input), {
     credentials: "include",
     ...init,
