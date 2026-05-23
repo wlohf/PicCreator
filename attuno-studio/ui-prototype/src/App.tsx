@@ -46,7 +46,7 @@ import {
   directionItems,
   modelOptions
 } from "./data/studioData";
-import type { ApiConfig, ChatMemoryCandidate, ChatMessage, FilePreview, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
+import type { ApiConfig, ChatMemoryCandidate, ChatMessage, ChatReasoningEffort, FilePreview, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
 import { countGenerationRecords, hasConversationContent, hasDurableConversationContent, isCurrentConversationRun, upsertSessionSnapshot, type ConversationRunGuard } from "./utils/chatSessions";
 import { apiConfigStorageKey, apiConfigStorageReadKeys } from "./utils/apiConfigStorage";
 import { filesFromList, imageFilesFromFiles, mergeFloorPlanFiles } from "./utils/fileAttachments";
@@ -218,6 +218,26 @@ const generationModeOptions: { value: "standard" | "render3d"; zh: string; en: s
   { value: "standard", zh: "默认模式", en: "Default" },
   { value: "render3d", zh: "3D 效果图", en: "3D render" },
 ];
+
+const defaultChatModelOptions = ["gpt-4o", "gpt-4o-mini", "claude-3-5-sonnet", "gemini-pro"];
+const chatReasoningEffortOptions: Array<{ value: ChatReasoningEffort; zh: string; en: string }> = [
+  { value: "low", zh: "低", en: "Low" },
+  { value: "medium", zh: "中", en: "Medium" },
+  { value: "high", zh: "高", en: "High" },
+];
+
+function modelSelectOptions(primaryModel: string, fallbackModels: string[]) {
+  const options = [primaryModel, ...fallbackModels]
+    .map((item) => String(item || "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(options));
+}
+
+function apiFormatDisplayName(value: string) {
+  const normalized = String(value || "").trim();
+  if (!normalized) return "";
+  return apiFormatOptions.find((option) => option.value === normalized)?.label || normalized;
+}
 
 function normalizeApiConfig(value: unknown): ApiConfig {
   if (!value || typeof value !== "object") {
@@ -454,6 +474,7 @@ function App() {
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>(DEFAULT_WORKSPACE_MODE);
   const [generationMode, setGenerationMode] = useState<GenerationMode>("standard");
   const [chatInput, setChatInput] = useState("");
+  const [chatReasoningEffort, setChatReasoningEffort] = useState<ChatReasoningEffort>("medium");
   const [composerMode, setComposerMode] = useState<ComposerMode>("new-generation");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [floorPlanFiles, setFloorPlanFiles] = useState<File[]>([]);
@@ -801,6 +822,14 @@ function App() {
   const canGenerate = composerMode === "edit-selected-result" ? canEditSelectedResult : canGenerateNew;
   const canSubmitChat = hasAuthenticatedUser && isChatWorkspace && hasPromptText && !isChatResponding && !isRendering;
   const canSubmitComposer = isChatWorkspace ? canSubmitChat : canGenerate;
+  const chatProviderLabel = apiConfig.analysisProviderName || apiFormatDisplayName(apiConfig.analysisApiFormat) || (locale === "zh" ? "聊天供应商" : "Chat provider");
+  const imageProviderLabel = apiConfig.imageProviderName || apiFormatDisplayName(apiConfig.imageApiFormat) || (locale === "zh" ? "图像供应商" : "Image provider");
+  const chatModelValue = apiConfig.analysisModel || "";
+  const composerProviderLabel = isChatWorkspace ? chatProviderLabel : imageProviderLabel;
+  const composerModelValue = isChatWorkspace ? chatModelValue : selectedModel;
+  const composerModelOptions = isChatWorkspace
+    ? modelSelectOptions(chatModelValue, defaultChatModelOptions)
+    : modelSelectOptions(selectedModel, modelOptions);
   const chatBlocker = isChatWorkspace && !hasAuthenticatedUser
     ? locale === "zh"
       ? "请先登录或注册账号"
@@ -1475,6 +1504,18 @@ function App() {
   function handleSelectedModelChange(value: string) {
     setSelectedModel(value);
     setApiConfig((current) => ({ ...current, imageModel: value }));
+  }
+
+  function handleChatModelChange(value: string) {
+    setApiConfig((current) => ({ ...current, analysisModel: value }));
+  }
+
+  function handleComposerModelChange(value: string) {
+    if (isChatWorkspace) {
+      handleChatModelChange(value);
+      return;
+    }
+    handleSelectedModelChange(value);
   }
 
   function handleMaxIterationsChange(value: string) {
@@ -2236,6 +2277,8 @@ function App() {
         user_id: currentUserId || DEFAULT_PROJECT_ID,
         project_id: DEFAULT_PROJECT_ID,
         active_result_id: activeResult?.id || "",
+        api_config: apiConfig,
+        reasoning_effort: chatReasoningEffort,
         context: {
           workspace_mode: "chat",
           chatInput: userBrief,
@@ -2261,7 +2304,7 @@ function App() {
           id: `m-chat-ai-${idBase}`,
           role: "assistant",
           kind: "text",
-          content: response.reply || (locale === "zh" ? "收到。" : "Got it."),
+          content: response.reply,
           bullets: bullets.length
             ? {
                 zh: locale === "zh" ? bullets : compactLines([
@@ -3022,6 +3065,41 @@ function App() {
                 aria-label={composerPlaceholder}
               />
               <div className="chatgpt-composer__inline-actions">
+                <span className="chatgpt-composer__provider-badge" title={composerProviderLabel}>
+                  <PlugZap size={14} aria-hidden="true" />
+                  <span>{composerProviderLabel}</span>
+                </span>
+                <select
+                  className="chatgpt-composer__model-select"
+                  value={composerModelValue}
+                  onChange={(event) => handleComposerModelChange(event.target.value)}
+                  disabled={isRendering || isChatResponding}
+                  aria-label={isChatWorkspace ? (locale === "zh" ? "聊天模型" : "Chat model") : (locale === "zh" ? "图像模型" : "Image model")}
+                  title={isChatWorkspace ? (locale === "zh" ? "切换聊天模型" : "Switch chat model") : (locale === "zh" ? "切换图像模型" : "Switch image model")}
+                >
+                  {!composerModelValue && (
+                    <option value="">{locale === "zh" ? "选择模型" : "Select model"}</option>
+                  )}
+                  {composerModelOptions.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+                {isChatWorkspace && (
+                  <select
+                    className="chatgpt-composer__effort-select"
+                    value={chatReasoningEffort}
+                    onChange={(event) => setChatReasoningEffort(event.target.value as ChatReasoningEffort)}
+                    disabled={isChatResponding}
+                    aria-label={locale === "zh" ? "思考强度" : "Reasoning effort"}
+                    title={locale === "zh" ? "切换回复深度" : "Switch response depth"}
+                  >
+                    {chatReasoningEffortOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {locale === "zh" ? `思考 ${option.zh}` : `Effort ${option.en}`}
+                      </option>
+                    ))}
+                  </select>
+                )}
                 {isImageWorkspace && (
                   <button type="button" className={enableQualityEvaluation ? "is-active" : ""} onClick={() => setEnableQualityEvaluation((current) => !current)} disabled={isRendering} title={enableQualityEvaluation ? (locale === "zh" ? "关闭严格复核" : "Disable strict review") : (locale === "zh" ? "启用可选严格复核" : "Enable optional strict review")}>
                     <CheckCircle2 size={14} />

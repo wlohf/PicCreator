@@ -2,6 +2,7 @@ export type Locale = "zh" | "en";
 export type Tone = "neutral" | "good" | "warn";
 export type ToolKey = "select";
 export type GenerationMode = "standard" | "render3d" | "colored_floor_plan";
+export type ChatReasoningEffort = "low" | "medium" | "high";
 export type ChatMemoryCandidate = {
   likes?: string[];
   avoids?: string[];

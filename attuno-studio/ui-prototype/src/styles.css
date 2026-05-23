@@ -3711,13 +3711,19 @@ textarea:focus-visible {
 }
 
 .chatgpt-sidebar__settings-menu {
+  min-width: 0;
+  max-width: 100%;
   position: relative;
 }
 
-.chatgpt-sidebar__settings-trigger,
-.chatgpt-sidebar__menu-item {
+.chatgpt-sidebar__settings-menu .chatgpt-sidebar__settings-trigger,
+.chatgpt-sidebar__settings-popover .chatgpt-sidebar__menu-item {
+  box-sizing: border-box;
+  display: flex;
   align-items: flex-start;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: 56px;
   padding: 10px 12px;
   white-space: normal;
@@ -3735,10 +3741,16 @@ textarea:focus-visible {
 }
 
 .chatgpt-sidebar__settings-popover {
+  box-sizing: border-box;
   position: absolute;
   left: 0;
   right: 0;
   bottom: calc(100% + 10px);
+  max-width: 100%;
+  max-height: min(420px, calc(100vh - 180px));
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   display: grid;
   gap: 8px;
   padding: 10px;
@@ -3763,7 +3775,9 @@ textarea:focus-visible {
 
 .chatgpt-sidebar__tool-icon {
   width: 32px;
+  min-width: 32px;
   height: 32px;
+  flex: 0 0 32px;
   display: grid;
   place-items: center;
   border-radius: 10px;
@@ -3773,13 +3787,29 @@ textarea:focus-visible {
 
 .chatgpt-sidebar__tool-copy {
   min-width: 0;
+  max-width: 100%;
   display: grid;
   gap: 2px;
+}
+
+.chatgpt-sidebar__settings-popover .chatgpt-sidebar__tool-copy {
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .chatgpt-sidebar__tool-copy strong,
 .chatgpt-sidebar__tool-copy small {
   display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chatgpt-sidebar__settings-popover .chatgpt-sidebar__tool-copy strong,
+.chatgpt-sidebar__settings-popover .chatgpt-sidebar__tool-copy small {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .chatgpt-sidebar__tool-copy strong {
@@ -4406,11 +4436,15 @@ textarea:focus-visible {
 }
 
 .chatgpt-composer__inline-actions {
+  min-width: 0;
   display: flex;
   align-items: center;
   gap: 6px;
 }
 
+.chatgpt-composer__provider-badge,
+.chatgpt-composer__model-select,
+.chatgpt-composer__effort-select,
 .chatgpt-composer__inline-actions button {
   min-height: 38px;
   display: inline-flex;
@@ -4424,6 +4458,33 @@ textarea:focus-visible {
   background: #ffffff;
   cursor: pointer;
   transition: border-color 160ms ease, background-color 160ms ease, color 160ms ease, transform 160ms ease;
+}
+
+.chatgpt-composer__provider-badge {
+  max-width: 168px;
+  cursor: default;
+}
+
+.chatgpt-composer__provider-badge span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chatgpt-composer__model-select,
+.chatgpt-composer__effort-select {
+  max-width: 178px;
+  appearance: none;
+  padding-right: 26px;
+  background:
+    linear-gradient(45deg, transparent 50%, var(--muted) 50%) right 13px center / 5px 5px no-repeat,
+    linear-gradient(135deg, var(--muted) 50%, transparent 50%) right 8px center / 5px 5px no-repeat,
+    #ffffff;
+}
+
+.chatgpt-composer__effort-select {
+  max-width: 112px;
 }
 
 .chatgpt-composer__inline-actions .chatgpt-composer__send {
@@ -4533,7 +4594,12 @@ textarea:focus-visible {
   gap: 12px;
 }
 
+.chatgpt-drawer__header > div {
+  min-width: 0;
+}
+
 .chatgpt-drawer__header h2 {
+  overflow-wrap: anywhere;
   font-size: 18px;
   font-weight: 650;
 }
@@ -5137,14 +5203,19 @@ textarea:focus-visible {
 
 .quality-toggle-card button,
 .config-action-row button {
+  min-width: 0;
   min-height: 36px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-wrap: wrap;
   gap: 6px;
   padding: 0 12px;
   border: 1px solid var(--line);
   border-radius: 12px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+  text-align: center;
   background: #ffffff;
   cursor: pointer;
 }
@@ -5156,10 +5227,12 @@ textarea:focus-visible {
 
 .config-toggle {
   width: 100%;
+  min-width: 0;
   min-height: 46px;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 10px;
   padding: 0 14px;
   cursor: pointer;
 }
@@ -5169,18 +5242,22 @@ textarea:focus-visible {
 }
 
 .config-toggle span {
+  min-width: 0;
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  overflow-wrap: anywhere;
+  text-align: left;
 }
 
 .config-action-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(132px, 100%), 1fr));
   gap: 8px;
 }
 
 .api-config-grid {
+  min-width: 0;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px 12px;
@@ -5191,14 +5268,34 @@ textarea:focus-visible {
 }
 
 .api-config-grid label {
+  min-width: 0;
   display: grid;
   gap: 8px;
 }
 
 .api-config-grid label span {
+  min-width: 0;
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.chatgpt-drawer .api-config-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.chatgpt-drawer .api-config-wide {
+  grid-column: 1 / -1;
+}
+
+.chatgpt-drawer .api-config-grid label,
+.chatgpt-drawer .api-config-grid input,
+.chatgpt-drawer .api-config-grid select,
+.chatgpt-drawer .api-config-grid textarea {
+  width: 100%;
+  min-width: 0;
 }
 
 .learned-profile-list {
@@ -5295,14 +5392,17 @@ textarea:focus-visible {
 
 .api-config-grid input,
 .api-config-grid select {
+  min-width: 0;
   min-height: 44px;
   padding: 0 12px;
 }
 
 .api-config-grid textarea {
+  min-width: 0;
   min-height: 88px;
   padding: 12px;
   resize: vertical;
+  overflow-wrap: anywhere;
 }
 
 @keyframes drawer-in {
@@ -5639,6 +5739,7 @@ textarea:focus-visible {
   .chatgpt-composer__inline-actions {
     grid-column: 1 / -1;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
 
   .chatgpt-composer__bar--chat {
@@ -5647,6 +5748,13 @@ textarea:focus-visible {
 
   .chatgpt-composer__bar--chat .chatgpt-composer__inline-actions {
     grid-column: 1;
+  }
+
+  .chatgpt-composer__provider-badge,
+  .chatgpt-composer__model-select,
+  .chatgpt-composer__effort-select {
+    flex: 1 1 150px;
+    max-width: none;
   }
 
   .api-config-grid,

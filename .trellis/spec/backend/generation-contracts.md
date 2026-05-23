@@ -320,3 +320,80 @@ if (userClickedRemember && memoryCandidateHasEntries(response.memory_candidate))
   await applyChatMemory(projectId, response.memory_candidate);
 }
 ```
+
+---
+
+## Scenario: Configured Daily Chat Routing
+
+### 1. Scope / Trigger
+- Trigger: daily chat crosses frontend composer state, `/api/chat`, authenticated config resolution, model-provider adapters, and memory/draft routing.
+- Applies when changing daily-chat behavior, chat model controls, chat request payloads, or the relationship between normal chat and image-assist intent routing.
+
+### 2. Signatures
+- `POST /api/chat` accepts JSON with existing fields plus optional:
+  - `api_config`: frontend `ApiConfig` subset for the active analysis provider (`analysisProviderName`, `analysisApiFormat`, `analysisBaseUrl`, `analysisApiKey`, `analysisModel`).
+  - `reasoning_effort`: one of `low`, `medium`, or `high`.
+- `POST /api/chat` returns the existing structured action response, with `reply` populated from the configured analysis chat model only when `suggested_action` is `chat`.
+- Frontend daily chat calls `sendDesignChat({ api_config: apiConfig, reasoning_effort, context: { workspace_mode: "chat", ... } })`.
+
+### 3. Contracts
+- Daily chat is model-backed. If `DesignChatAgent` classifies a message as `daily_chat` and returns `suggested_action: "chat"`, the backend must build the analysis adapter for the resolved current user and call `llm.chat(...)`.
+- Image-assist routing stays deterministic. If the message implies generation, edit, analysis, or remembering preferences, `/api/chat` must keep the structured `intent`, `suggested_action`, `draft_instruction`, `memory_candidate`, and `ui_hints` behavior and must not call the daily-chat model.
+- Account identity wins over compatibility namespaces. For logged-in requests, config lookup must use `resolve_config_user_id(user)` after `get_current_or_default_user(...)` has resolved the real session, even if namespace headers are present.
+- Non-default users must not inherit default workspace API keys. If a logged-in or token namespace user lacks its own analysis key, daily chat returns a clear `stage: "chat"` error instead of falling back to `.env` or default `config.json`.
+- The frontend must render backend `reply` or an explicit error message. Do not synthesize fixed local fallback replies such as `收到。` for a successful `/api/chat` response.
+- Composer model switching in chat mode updates `apiConfig.analysisModel`; image mode model switching continues to update the image model.
+
+### 4. Validation & Error Matrix
+- `daily_chat` with valid analysis config -> call configured analysis provider/model and return its text as `reply`.
+- `daily_chat` with missing current-user API key -> `400 { ok: false, stage: "chat", error: ... }`.
+- `daily_chat` model returns empty text -> `400 { ok: false, stage: "chat", error: "聊天模型返回为空" }`.
+- Image/generation intent in chat workspace -> structured draft response; no model call.
+- Logged-in request with spoofed namespace header -> session user's saved chat config is used.
+
+### 5. Good / Base / Bad Cases
+- Good: logged-in user saves `analysisModel=chat-model`, sends a normal chat message, and `/api/chat` calls `chat-model`.
+- Good: user types "把这个空间画成温馨一点的效果图"; `/api/chat` returns a draft generation instruction without spending a model call on normal chat.
+- Base: unauthenticated/default workspace can still use default config for backward-compatible local usage.
+- Bad: daily chat keeps returning the deterministic `DesignChatAgent` sentence after API verification succeeded.
+- Bad: frontend replaces a missing backend reply with a local fixed phrase, hiding chat route failures.
+- Bad: a logged-in request can be redirected to a different namespace's key by adding `X-Attuno-User-Token`.
+
+### 6. Tests Required
+- Backend API test proving daily chat calls the configured analysis model and returns the adapter reply.
+- Backend API test proving image/generation chat intents do not call the daily-chat model.
+- Backend API test proving session identity wins over namespace headers for chat config lookup.
+- Backend API test proving non-default users without their own key do not fall back to workspace keys.
+- Frontend test proving `sendDesignChat` carries `api_config` and `reasoning_effort`.
+- Frontend test proving the composer exposes provider/model/effort controls and no local fixed reply fallback.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# This leaves daily chat as a fixed router response even after API keys are configured.
+result = DesignChatAgent().respond(data)
+return result
+```
+
+#### Correct
+
+```python
+result = DesignChatAgent().respond(data)
+if result.get("suggested_action") == "chat":
+    result["reply"] = run_configured_daily_chat(payload, result, user)
+return result
+```
+
+#### Wrong
+
+```typescript
+content: response.reply || "收到。"
+```
+
+#### Correct
+
+```typescript
+content: response.reply
+```

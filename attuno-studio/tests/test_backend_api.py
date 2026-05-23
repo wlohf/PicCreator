@@ -106,6 +106,179 @@ def test_chat_endpoint_returns_structured_action(tmp_path, monkeypatch):
     assert payload["ui_hints"]["switch_to_edit"] is True
 
 
+def test_daily_chat_endpoint_uses_configured_analysis_model(tmp_path, monkeypatch):
+    import app_runtime
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("daily-chat-user")
+    calls = []
+
+    class FakeChatAdapter:
+        async def chat(self, messages, **kwargs):
+            calls.append({"messages": messages, "kwargs": kwargs, "cfg": self.cfg})
+            return "后端模型返回的真实回复"
+
+    def fake_build_adapter(cfg, role):
+        assert role == "llm"
+        adapter = FakeChatAdapter()
+        adapter.cfg = cfg
+        return adapter
+
+    monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "今天先正常聊聊项目节奏",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+            "reasoning_effort": "low",
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["intent"] == "daily_chat"
+    assert payload["reply"] == "后端模型返回的真实回复"
+    assert calls
+    assert calls[0]["cfg"].provider_name == "Configured Chat"
+    assert calls[0]["cfg"].model == "chat-model"
+    assert calls[0]["kwargs"]["max_tokens"] == 900
+
+
+def test_chat_endpoint_does_not_call_analysis_model_for_image_actions(tmp_path, monkeypatch):
+    import app_runtime
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("image-chat-router-user")
+
+    def fail_build_adapter(*_args, **_kwargs):
+        raise AssertionError("image intent routing should not call the daily chat model")
+
+    monkeypatch.setattr(app_runtime, "build_adapter", fail_build_adapter)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "把这个空间画成温馨一点的效果图",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["suggested_action"] != "chat"
+    assert payload["draft_instruction"]
+
+
+def test_daily_chat_session_identity_wins_over_namespace_header_for_config(tmp_path, monkeypatch):
+    import app_runtime
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    client = _auth_client("daily-chat-session-user")
+    spoofed_headers = {"X-Attuno-User-Token": "spoofed-token"}
+
+    save_response = client.post(
+        "/api/config/save",
+        data={
+            "analysis_provider_name": "Session Chat",
+            "analysis_api_format": "openai",
+            "analysis_base_url": "https://session-chat.example/v1",
+            "analysis_api_key": "session-chat-key",
+            "analysis_model": "session-chat-model",
+            "img_provider_name": "Session Image",
+            "img_api_format": "openai_image",
+            "img_base_url": "https://session-image.example/v1",
+            "img_api_key": "session-image-key",
+            "img_model": "gpt-image-2",
+        },
+        headers=spoofed_headers,
+    )
+    assert save_response.status_code == 200
+    assert app_runtime.get_config("spoofed-token").llm.api_key == ""
+
+    calls = []
+
+    class FakeChatAdapter:
+        async def chat(self, messages, **kwargs):
+            calls.append({"messages": messages, "kwargs": kwargs, "cfg": self.cfg})
+            return "session scoped reply"
+
+    def fake_build_adapter(cfg, role):
+        assert role == "llm"
+        adapter = FakeChatAdapter()
+        adapter.cfg = cfg
+        return adapter
+
+    monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "今天正常聊一下",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+        },
+        headers=spoofed_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["reply"] == "session scoped reply"
+    assert calls
+    assert calls[0]["cfg"].provider_name == "Session Chat"
+    assert calls[0]["cfg"].model == "session-chat-model"
+    assert calls[0]["cfg"].api_key == "session-chat-key"
+
+
+def test_daily_chat_non_default_user_missing_key_does_not_fallback_to_workspace_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    config_path, env_path = _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    config_data = json.loads(config_path.read_text(encoding="utf-8"))
+    config_data["llm"]["provider_name"] = "Workspace Analysis"
+    config_data["llm"]["api_format"] = "openai"
+    config_data["llm"]["base_url"] = "https://workspace-analysis.example/v1"
+    config_data["llm"]["model"] = "workspace-analysis-model"
+    config_path.write_text(json.dumps(config_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    env_path.write_text("LLM_API_KEY=workspace-analysis-key\nVISION_API_KEY=workspace-vision-key\n", encoding="utf-8")
+    client = _auth_client("daily-chat-missing-key-user")
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "今天正常聊一下",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["stage"] == "chat"
+    assert "请先为当前用户保存自己的 API Key" in payload["error"]
+    assert ".env" not in payload["error"]
+
+
 def test_chat_memory_endpoint_saves_extracted_memory(tmp_path, monkeypatch):
     monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
     client = _auth_client("config-save-user")

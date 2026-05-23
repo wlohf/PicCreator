@@ -1,5 +1,5 @@
 import { apiFetch, parseApiJson } from "./client";
-import type { ChatMemoryCandidate } from "../types/domain";
+import type { ApiConfig, ChatMemoryCandidate, ChatReasoningEffort } from "../types/domain";
 export type { ChatMemoryCandidate } from "../types/domain";
 
 export type DesignChatContext = {
@@ -20,6 +20,8 @@ export type DesignChatRequest = {
   project_id?: string;
   active_result_id?: string;
   context?: DesignChatContext;
+  api_config?: ApiConfig;
+  reasoning_effort?: ChatReasoningEffort;
 };
 
 export type DesignChatResponse = {

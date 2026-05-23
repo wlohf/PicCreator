@@ -58,6 +58,35 @@ assert(
 );
 
 assert(
+  appSource.includes("chatProviderLabel") &&
+  appSource.includes("chatModelValue") &&
+  appSource.includes("handleChatModelChange") &&
+  appSource.includes("chatReasoningEffort") &&
+  appSource.includes('className="chatgpt-composer__provider-badge"') &&
+  appSource.includes('className="chatgpt-composer__model-select"') &&
+  appSource.includes('className="chatgpt-composer__effort-select"'),
+  "composer footer should expose provider, model switching, and effort controls near the send button",
+);
+
+const dailyChatFlowBlock = appSource.match(/async function runDailyChatFlow[\s\S]*?async function runConversationFlow/m)?.[0] ?? "";
+assert(
+  dailyChatFlowBlock.includes("sendDesignChat({") &&
+  dailyChatFlowBlock.includes("api_config: apiConfig") &&
+  dailyChatFlowBlock.includes("reasoning_effort: chatReasoningEffort"),
+  "daily chat submit should call the backend chat API with active provider/model config and effort",
+);
+
+assert(
+  !dailyChatFlowBlock.includes("response.reply ||"),
+  "daily chat UI should display the backend reply or an error state instead of synthesizing a repeated fixed fallback",
+);
+
+assert(
+  !/权限|permission|temporary access token|临时访问标识/.test(appSource),
+  "composer and account UI should not reintroduce permission management or temporary-token copy",
+);
+
+assert(
   appSource.includes('className="chatgpt-sidebar__footer"') &&
   appSource.includes('chatgpt-sidebar__settings-trigger') &&
   appSource.includes('aria-haspopup="menu"') &&
