@@ -89,6 +89,67 @@ runConversationFlow(undefined, "colored_floor_plan");
 
 ---
 
+## Scenario: OpenAI Images API Text And Image Input Routing
+
+### 1. Scope / Trigger
+- Trigger: image provider adapter behavior crosses saved provider configuration, image generation pipeline inputs, verification probes, and frontend setup labels.
+- Applies when changing OpenAI Images API-compatible adapters, provider capability detection, image API verification, or setup options for text-to-image and image-to-image providers.
+
+### 2. Signatures
+- OpenAI Images API-compatible providers use one Base URL and API key, then call provider endpoints through the OpenAI SDK.
+- Text-only `PromptSet` input calls `client.images.generate(model, prompt, response_format="b64_json", n=1)`.
+- `PromptSet.floor_plan` or `PromptSet.reference_image` calls `client.images.edit(model, image, prompt, response_format="b64_json", n=1)`.
+- Frontend setup options must distinguish chat-compatible formats from Images API formats, including `openai_image` and `custom_openai_image`.
+
+### 3. Contracts
+- Do not require users to configure endpoint-specific URLs. Users provide the Base URL; the adapter chooses generate vs edit based on whether image bytes exist.
+- `reference_image` is the preferred edit image when both `reference_image` and `floor_plan` are present, but generation metadata must preserve both `has_reference_image` and `has_floor_plan`.
+- `generation_params.endpoint` must be `images.generate` for text-only calls and `images.edit` for image-input calls.
+- `openai_image` and `custom_openai_image` support image inputs for `gpt-image-*` models because image edits are routed through `/images/edits`.
+- `dall-e-2` and `dall-e-3` remain text-only, even if a config override claims image-input support.
+
+### 4. Validation & Error Matrix
+- Text-to-image verification failure -> report `文生图调用失败` with provider, format, model, Base URL, and original error.
+- Image-input verification failure -> report `图生图/参考图调用失败` with the same adapter context.
+- Image input with a text-only model chain -> return the existing no-compatible-model error before losing the image constraint.
+- Saved `openai_image` / `custom_openai_image` format -> load back as the same UI value, not as generic `openai` / `custom`.
+
+### 5. Good / Base / Bad Cases
+- Good: configure Base URL plus API key with `OpenAI Images API`, set model `gpt-image-2`, verify both text-to-image and reference-image edit probes.
+- Good: edit an existing result; the source result image is passed to `images.edit` and the returned `b64_json` is stored as a new result version.
+- Base: default mode with only text still uses `images.generate`.
+- Bad: route image-input prompts to `chat/completions` when the selected provider format is `openai_image`.
+- Bad: collapse `openai_image` to `openai` when loading saved settings, because that hides the selected endpoint family.
+- Bad: mark DALL-E models as image-input capable through a broad config override.
+
+### 6. Tests Required
+- Adapter test asserting text-only prompts call `images.generate`.
+- Adapter tests asserting `reference_image` and `floor_plan` prompts call `images.edit`, decode `data[0].b64_json`, and set endpoint metadata.
+- Capability tests asserting `openai_image` / `custom_openai_image` support `gpt-image-*` image inputs and reject DALL-E image inputs.
+- Runtime verification tests asserting text and edit probes both run when image inputs are supported.
+- Backend config tests asserting `openai_image` / `custom_openai_image` save and load without value collapse.
+- Frontend build/typecheck covering setup option values.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# This loses the image constraint for Images API providers.
+resp = await client.images.generate(model=model, prompt=prompt_text)
+```
+
+#### Correct
+
+```python
+if prompt.reference_image or prompt.floor_plan:
+    resp = await client.images.edit(model=model, image=image_file, prompt=prompt_text)
+else:
+    resp = await client.images.generate(model=model, prompt=prompt_text)
+```
+
+---
+
 ## Scenario: Account And Legacy Token Namespace Isolation
 
 ### 1. Scope / Trigger

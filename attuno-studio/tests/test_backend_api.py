@@ -263,6 +263,68 @@ def test_config_load_returns_saved_project_config(tmp_path, monkeypatch):
     assert "analysisApiFormat" in payload["config"]
 
 
+def test_image_api_format_save_and_load_preserves_openai_image_option(tmp_path, monkeypatch):
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    client = _auth_client("openai-image-format-user")
+
+    response = client.post(
+        "/api/config/save",
+        data={
+            "analysis_provider_name": "Analysis",
+            "analysis_api_format": "openai",
+            "analysis_base_url": "https://analysis.example/v1",
+            "analysis_api_key": "analysis-key",
+            "analysis_model": "gpt-4o",
+            "img_provider_name": "Image",
+            "img_api_format": "openai_image",
+            "img_base_url": "https://image.example/v1",
+            "img_api_key": "image-key",
+            "img_model": "gpt-image-2",
+        },
+    )
+    load_response = client.get("/api/config")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert load_response.status_code == 200
+    payload = load_response.json()
+    assert payload["ok"] is True
+    assert payload["config"]["analysisApiFormat"] == "openai"
+    assert payload["config"]["imageApiFormat"] == "openai_image"
+
+
+def test_image_api_format_save_and_load_preserves_custom_openai_image_option(tmp_path, monkeypatch):
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    client = _auth_client("custom-openai-image-format-user")
+
+    response = client.post(
+        "/api/config/save",
+        data={
+            "analysis_provider_name": "Analysis",
+            "analysis_api_format": "custom",
+            "analysis_base_url": "https://analysis.example/v1",
+            "analysis_api_key": "analysis-key",
+            "analysis_model": "gpt-4o",
+            "img_provider_name": "Image",
+            "img_api_format": "custom_openai_image",
+            "img_base_url": "https://image.example/v1",
+            "img_api_key": "image-key",
+            "img_model": "gpt-image-2",
+        },
+    )
+    load_response = client.get("/api/config")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert load_response.status_code == 200
+    payload = load_response.json()
+    assert payload["ok"] is True
+    assert payload["config"]["analysisApiFormat"] == "custom"
+    assert payload["config"]["imageApiFormat"] == "custom_openai_image"
+
+
 def test_fresh_token_namespace_load_inherits_default_config_without_exposing_keys(tmp_path, monkeypatch):
     _patch_runtime_files(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)

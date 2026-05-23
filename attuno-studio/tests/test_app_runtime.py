@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 import app_runtime
-from models.schemas import GenerationMode, PipelineResult
+from models.schemas import GenerationMode, NormalizedImage, PipelineResult
 
 
 def test_run_pipeline_allows_floor_plan_with_text_only_image_model(tmp_path, monkeypatch):
@@ -162,10 +162,92 @@ def test_verify_image_api_raises_on_generation_failure(monkeypatch):
         )
 
     message = str(excinfo.value)
-    assert "画图模型调用失败" in message
+    assert "文生图调用失败" in message
     assert "gpt-image-test" in message
     assert "https://image.example.invalid/v1" in message
     assert "image route rejected" in message
+
+
+def test_verify_image_api_runs_text_and_edit_probe_when_supported(monkeypatch):
+    prompts = []
+
+    class RecordingImage:
+        async def generate(self, prompt):
+            prompts.append(prompt)
+            if prompt.reference_image:
+                return NormalizedImage(
+                    image_bytes=b"edit-bytes",
+                    source_model=prompt.model_target,
+                    generation_params={"endpoint": "images.edit"},
+                )
+            return NormalizedImage(
+                image_bytes=b"text-bytes",
+                source_model=prompt.model_target,
+                generation_params={
+                    "endpoint": "images.generate",
+                    "negative_prompt_mode": "embedded_text",
+                },
+            )
+
+    monkeypatch.setattr(app_runtime, "build_adapter", lambda *_args, **_kwargs: RecordingImage())
+
+    message = app_runtime.verify_image_api(
+        "Test Image",
+        "openai_image",
+        "https://image.example.invalid/v1",
+        "image-key",
+        "gpt-image-2",
+    )
+
+    assert len(prompts) == 2
+    assert prompts[0].reference_image is None
+    assert prompts[1].reference_image
+    assert "文生图可用" in message
+    assert "图生图/参考图可用" in message
+    assert "文生图返回图片字节：10" in message
+    assert "图生图/参考图返回图片字节：10" in message
+
+
+def test_verify_image_api_fails_when_supported_edit_probe_fails(monkeypatch):
+    class EditFailingImage:
+        async def generate(self, prompt):
+            if prompt.reference_image:
+                raise RuntimeError("edit route rejected")
+            return NormalizedImage(
+                image_bytes=b"text-bytes",
+                source_model=prompt.model_target,
+                generation_params={"endpoint": "images.generate"},
+            )
+
+    monkeypatch.setattr(app_runtime, "build_adapter", lambda *_args, **_kwargs: EditFailingImage())
+
+    with pytest.raises(RuntimeError) as excinfo:
+        app_runtime.verify_image_api(
+            "Test Image",
+            "openai_image",
+            "https://image.example.invalid/v1",
+            "image-key",
+            "gpt-image-2",
+        )
+
+    message = str(excinfo.value)
+    assert "图生图/参考图调用失败" in message
+    assert "gpt-image-2" in message
+    assert "edit route rejected" in message
+
+
+def test_ui_api_format_preserves_images_api_options():
+    assert app_runtime._ui_api_format("openai_image") == "openai_image"
+    assert app_runtime._ui_api_format("custom_openai_image") == "custom_openai_image"
+    assert app_runtime._ui_api_format("openai_chat") == "openai"
+    assert app_runtime._ui_api_format("custom_openai_chat") == "custom"
+
+
+def test_ui_api_format_choices_expose_openai_image_options():
+    choices = dict(app_runtime.UI_API_FORMAT_CHOICES)
+
+    assert choices["OpenAI Image"] == "openai_image"
+    assert choices["Custom OpenAI Image"] == "custom_openai_image"
 
 
 def test_get_config_inherits_default_runtime_config_without_keys_for_fresh_token_namespace(tmp_path, monkeypatch):

@@ -54,8 +54,8 @@ def _ensure_min_timeout(cfg: AdapterConfig, minimum_seconds: int) -> AdapterConf
 
 API_FORMAT_HELP = (
     "API格式是请求/响应协议，不是供应商名称。当前支持："
-    "OpenAI、OpenAI-Response、Gemini、Anthropic、Azure OpenAI、Ollama、Custom。"
-    "当前实现里，除 Anthropic 外其余常用项均按 OpenAI 兼容方式接入。"
+    "OpenAI、OpenAI Image、OpenAI-Response、Gemini、Anthropic、Azure OpenAI、Ollama、Custom、Custom OpenAI Image。"
+    "OpenAI / Custom 走聊天兼容接口；OpenAI Image / Custom OpenAI Image 走 Images API，gpt-image-2 可验证参考图输入。"
 )
 UI_API_FORMAT_CHOICES = (("使用 config.json", ""), *COMMON_API_FORMAT_CHOICES)
 
@@ -504,9 +504,9 @@ def load_model_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> di
 
 def _ui_api_format(api_format: str) -> str:
     normalized = normalize_api_format(api_format)
-    if normalized in {"openai_chat", "openai_image"}:
+    if normalized == "openai_chat":
         return "openai"
-    if normalized in {"custom_openai_chat", "custom_openai_image"}:
+    if normalized == "custom_openai_chat":
         return "custom"
     return normalized
 
@@ -668,6 +668,19 @@ def _make_vision_probe_image_bytes() -> bytes:
     return buf.getvalue()
 
 
+def _make_image_edit_probe_image_bytes() -> bytes:
+    image = Image.new("RGB", (16, 16), "white")
+    for x in range(3, 13):
+        image.putpixel((x, 3), (220, 0, 0))
+        image.putpixel((x, 12), (220, 0, 0))
+    for y in range(3, 13):
+        image.putpixel((3, y), (220, 0, 0))
+        image.putpixel((12, y), (220, 0, 0))
+    buf = BytesIO()
+    image.save(buf, format="PNG")
+    return buf.getvalue()
+
+
 def _verification_error(prefix: str, cfg: AdapterConfig, exc: Exception) -> RuntimeError:
     return RuntimeError(
         f"{prefix}\n"
@@ -762,6 +775,9 @@ def verify_image_api(
     )
 
     async def _verify():
+        text_bytes = 0
+        text_negative_mode = "unknown"
+        edit_bytes = None
         try:
             img = build_adapter(image_cfg, "image")
             prompt = PromptSet(
@@ -773,19 +789,44 @@ def verify_image_api(
                 img.generate(prompt),
                 timeout=min(int(image_cfg.timeout or 60), 60),
             )
-            return (
-                f"画图模型可用\n"
-                f"供应商：{image_cfg.provider_name}\n"
-                f"格式：{_display_api_format(image_cfg.api_format)}\n"
-                f"模型：{image_cfg.model}\n"
-                f"支持平面图/参考图输入：{'是' if capabilities['supports_image_inputs'] else '否'}\n"
-                f"支持原生负向提示词：{'是' if capabilities['supports_negative_prompt'] else '否'}\n"
-                f"测试提示词：{test_prompt}\n"
-                f"负向提示词处理：{generated.generation_params.get('negative_prompt_mode', 'unknown')}\n"
-                f"返回图片字节：{len(generated.image_bytes)}"
-            )
+            text_bytes = len(generated.image_bytes)
+            text_negative_mode = generated.generation_params.get("negative_prompt_mode", "unknown")
         except Exception as exc:
-            raise _verification_error("画图模型调用失败", image_cfg, exc) from exc
+            raise _verification_error("文生图调用失败", image_cfg, exc) from exc
+
+        if capabilities["supports_image_inputs"]:
+            try:
+                edit_prompt = PromptSet(
+                    positive_prompt="Transform this tiny reference image into a clean simple icon. No text.",
+                    negative_prompt="blurry, text, watermark",
+                    model_target=image_cfg.model,
+                    reference_image=_make_image_edit_probe_image_bytes(),
+                )
+                edited = await asyncio.wait_for(
+                    img.generate(edit_prompt),
+                    timeout=min(int(image_cfg.timeout or 60), 60),
+                )
+                edit_bytes = len(edited.image_bytes)
+            except Exception as exc:
+                raise _verification_error("图生图/参考图调用失败", image_cfg, exc) from exc
+
+        edit_line = (
+            f"图生图/参考图可用；图生图/参考图返回图片字节：{edit_bytes}"
+            if edit_bytes is not None
+            else "图生图/参考图未验证：当前配置声明不支持图片输入"
+        )
+        return (
+            f"画图模型可用\n"
+            f"供应商：{image_cfg.provider_name}\n"
+            f"格式：{_display_api_format(image_cfg.api_format)}\n"
+            f"模型：{image_cfg.model}\n"
+            f"支持平面图/参考图输入：{'是' if capabilities['supports_image_inputs'] else '否'}\n"
+            f"支持原生负向提示词：{'是' if capabilities['supports_negative_prompt'] else '否'}\n"
+            f"测试提示词：{test_prompt}\n"
+            f"负向提示词处理：{text_negative_mode}\n"
+            f"文生图可用；文生图返回图片字节：{text_bytes}\n"
+            f"{edit_line}"
+        )
 
     return _run_async(_verify())
 

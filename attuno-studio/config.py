@@ -52,12 +52,14 @@ API_FORMAT_LABELS = {
 
 COMMON_API_FORMAT_CHOICES = (
     ("OpenAI", "openai_chat"),
+    ("OpenAI Image", "openai_image"),
     ("OpenAI-Response", "openai_responses"),
     ("Gemini", "gemini"),
     ("Anthropic", "anthropic"),
     ("Azure OpenAI", "azure_openai"),
     ("Ollama", "ollama"),
     ("Custom", "custom_openai_chat"),
+    ("Custom OpenAI Image", "custom_openai_image"),
 )
 
 
@@ -202,14 +204,16 @@ def clone_adapter_config(cfg: AdapterConfig, model: Optional[str] = None) -> Ada
 
 
 def adapter_supports_image_inputs(cfg: AdapterConfig, model: Optional[str] = None) -> bool:
-    if cfg.supports_image_inputs is not None:
-        return bool(cfg.supports_image_inputs)
     normalized = normalize_api_format(getattr(cfg, "api_format", "") or cfg.provider or "")
     model_name = (model or cfg.model or "").strip().lower()
     if model_name.startswith(("dall-e-2", "dall-e-3")):
         return False
-    if normalized in ("openai_image", "custom_openai_image", "anthropic"):
+    if cfg.supports_image_inputs is not None:
+        return bool(cfg.supports_image_inputs)
+    if normalized == "anthropic":
         return False
+    if normalized in ("openai_image", "custom_openai_image"):
+        return True
     return normalized in (
         "openai_chat",
         "openai_responses",

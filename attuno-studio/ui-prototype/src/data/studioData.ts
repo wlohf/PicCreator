@@ -120,13 +120,15 @@ export const tools: Array<{ key: ToolKey; label: LocalizedText; icon: "pointer" 
 export const modelOptions = ["gpt-image-2", "dall-e-3", "imagen-preview"];
 export const apiFormatOptions = [
   { value: "", label: "config.json" },
-  { value: "openai", label: "OpenAI compatible" },
+  { value: "openai", label: "OpenAI compatible chat" },
+  { value: "openai_image", label: "OpenAI Images API" },
   { value: "openai_responses", label: "OpenAI Responses" },
   { value: "gemini", label: "Gemini compatible" },
   { value: "anthropic", label: "Anthropic" },
   { value: "azure_openai", label: "Azure OpenAI" },
   { value: "ollama", label: "Ollama" },
-  { value: "custom", label: "Custom" }
+  { value: "custom", label: "Custom OpenAI-compatible chat" },
+  { value: "custom_openai_image", label: "Custom OpenAI Images API" }
 ];
 export const iterationOptions = [3, 4, 5];
 
