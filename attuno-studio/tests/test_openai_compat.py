@@ -39,6 +39,55 @@ async def test_responses_chat_raises_on_empty_response():
         await adapter._responses_chat("gpt-test", [{"role": "user", "content": "hi"}])
 
 
+@pytest.mark.asyncio
+async def test_responses_stream_chat_emits_delta_chunks():
+    adapter = _make_adapter()
+
+    async def fake_stream_lines(endpoint: str, payload: dict):
+        assert endpoint == "/responses"
+        assert payload["stream"] is True
+        yield 'data: {"type":"response.output_text.delta","delta":"he"}'
+        yield 'data: {"type":"response.output_text.delta","delta":"llo"}'
+        yield "data: [DONE]"
+
+    adapter._stream_lines = fake_stream_lines
+
+    chunks = []
+    async for chunk in adapter._responses_stream_chat("gpt-test", [{"role": "user", "content": "hi"}]):
+        chunks.append(chunk)
+
+    assert chunks == ["he", "llo"]
+
+
+@pytest.mark.asyncio
+async def test_responses_stream_chat_falls_back_to_done_text_when_no_delta():
+    adapter = _make_adapter()
+
+    async def fake_stream_lines(_endpoint: str, _payload: dict):
+        yield 'data: {"type":"response.output_text.done","text":"ok"}'
+        yield "data: [DONE]"
+
+    adapter._stream_lines = fake_stream_lines
+
+    chunks = []
+    async for chunk in adapter._responses_stream_chat("gpt-test", [{"role": "user", "content": "hi"}]):
+        chunks.append(chunk)
+
+    assert chunks == ["ok"]
+
+
+def test_extract_chat_completion_delta_text_from_string_content():
+    data = {"choices": [{"delta": {"content": "hello"}}]}
+
+    assert OpenAICompatAdapter._extract_chat_completion_delta_text(data) == "hello"
+
+
+def test_extract_chat_completion_delta_text_from_list_content():
+    data = {"choices": [{"delta": {"content": [{"type": "text", "text": "hello"}]}}]}
+
+    assert OpenAICompatAdapter._extract_chat_completion_delta_text(data) == "hello"
+
+
 def test_retryable_status_code_includes_429():
     assert OpenAICompatAdapter._is_retryable_status_code(429) is True
     assert OpenAICompatAdapter._is_retryable_status_code(400) is False
@@ -46,6 +95,27 @@ def test_retryable_status_code_includes_429():
 
 def test_retry_delay_prefers_retry_after_header():
     assert OpenAICompatAdapter._retry_delay_seconds(1, 7.0) == 7.0
+
+
+def test_messages_to_responses_input_preserves_image_parts():
+    image_url = "data:image/png;base64,AA=="
+    converted = OpenAICompatAdapter._messages_to_responses_input([
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "这图里面讲的什么？"},
+                {"type": "image_url", "image_url": {"url": image_url}},
+            ],
+        }
+    ])
+
+    assert converted == [{
+        "role": "user",
+        "content": [
+            {"type": "input_text", "text": "这图里面讲的什么？"},
+            {"type": "input_image", "image_url": image_url},
+        ],
+    }]
 
 
 def test_should_retry_http_status_error_uses_retry_after():

@@ -45,6 +45,7 @@ class DesignChatAgent:
         "draw",
         "picture",
     )
+    image_question_terms = ("什么", "看", "讲", "描述", "分析", "识别", "里面", "内容", "what", "describe", "analyze")
 
     def respond(self, payload: dict[str, Any]) -> dict[str, Any]:
         message = str(payload.get("message") or "").strip()
@@ -73,6 +74,8 @@ class DesignChatAgent:
         }
 
     def classify_intent(self, message: str, context: dict[str, Any] | None = None) -> str:
+        if self._is_chat_image_question(message, context):
+            return "daily_chat"
         for intent, keywords in self.intent_keywords:
             if any(keyword in message for keyword in keywords):
                 return intent
@@ -81,6 +84,16 @@ class DesignChatAgent:
             if not any(keyword in normalized or keyword in message for keyword in self.image_request_terms):
                 return "daily_chat"
         return "new_generation"
+
+    def _is_chat_image_question(self, message: str, context: dict[str, Any] | None = None) -> bool:
+        if not isinstance(context, dict) or context.get("workspace_mode") != "chat":
+            return False
+        if not _context_has_image_attachment(context):
+            return False
+        normalized = message.lower()
+        if any(term in normalized or term in message for term in self.image_question_terms):
+            return True
+        return not any(term in normalized or term in message for term in ("画", "出图", "生成", "渲染", "改图", "draw", "render", "generate"))
 
     def suggest_action(self, intent: str, active_result_id: str) -> str:
         if intent in {"revise_style", "revise_structure", "revise_furniture"}:
@@ -183,3 +196,14 @@ def _context_bits(context: dict[str, Any]) -> str:
     if context.get("floor"):
         bits.append(f"楼层：{context['floor']}")
     return "；".join(bits)
+
+
+def _context_has_image_attachment(context: dict[str, Any]) -> bool:
+    messages = context.get("messages") if isinstance(context.get("messages"), list) else []
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        attachments = message.get("attachments")
+        if isinstance(attachments, list) and any(isinstance(item, dict) and item.get("dataUrl") for item in attachments):
+            return True
+    return False

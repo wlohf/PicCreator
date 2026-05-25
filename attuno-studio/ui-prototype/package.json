@@ -11,6 +11,7 @@
     "test:chat-sessions": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/chatSessions.test.ts && node .tmp-tests/tests/chatSessions.test.js",
     "test:chat-api": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/chatApi.test.ts && node .tmp-tests/chatApi.test.js",
     "test:api-config-storage": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/apiConfigStorage.test.ts && node .tmp-tests/tests/apiConfigStorage.test.js",
+    "test:image-management-date-range": "tsc --target ES2020 --module ES2020 --jsx react-jsx --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/imageManagementDateRange.test.ts && node .tmp-tests/tests/imageManagementDateRange.test.js",
     "test:result-asset-urls": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/resultAssetUrls.test.ts && node .tmp-tests/tests/resultAssetUrls.test.js",
     "test:composer-layout": "tsc --target ES2020 --module ES2020 --lib DOM,DOM.Iterable,ES2020 --moduleResolution Node --skipLibCheck --outDir .tmp-tests tests/composerLayout.test.ts && node .tmp-tests/composerLayout.test.js"
   },

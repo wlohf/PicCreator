@@ -33,6 +33,24 @@ def _auth_client(username: str = "tester", password: str = "password123"):
     return client
 
 
+def _parse_sse_events(raw: str):
+    events = []
+    for block in raw.split("\n\n"):
+        lines = [line.strip() for line in block.splitlines() if line.strip()]
+        if not lines:
+            continue
+        event_name = "message"
+        data_lines = []
+        for line in lines:
+            if line.startswith("event:"):
+                event_name = line.split(":", 1)[1].strip()
+            elif line.startswith("data:"):
+                data_lines.append(line.split(":", 1)[1].strip())
+        if data_lines:
+            events.append({"event": event_name, "data": json.loads("\n".join(data_lines))})
+    return events
+
+
 def test_register_rejects_reserved_default_user(tmp_path, monkeypatch):
     monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
     client = TestClient(create_app())
@@ -154,6 +172,165 @@ def test_daily_chat_endpoint_uses_configured_analysis_model(tmp_path, monkeypatc
     assert calls[0]["kwargs"]["max_tokens"] == 900
 
 
+def test_daily_chat_endpoint_passes_current_prompt_and_image_attachment(tmp_path, monkeypatch):
+    import app_runtime
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("daily-chat-image-user")
+    calls = []
+
+    class FakeChatAdapter:
+        async def chat(self, messages, **kwargs):
+            calls.append({"messages": messages, "kwargs": kwargs, "cfg": self.cfg})
+            return "这是一张上传图片的说明"
+
+    def fake_build_adapter(cfg, role):
+        assert role == "llm"
+        adapter = FakeChatAdapter()
+        adapter.cfg = cfg
+        return adapter
+
+    monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
+
+    image_data_url = "data:image/png;base64,iVBORw0KGgo="
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "这图里面讲的什么？",
+            "project_id": "p-chat",
+            "context": {
+                "workspace_mode": "chat",
+                "messages": [
+                    {"role": "user", "content": "上一轮问题"},
+                    {"role": "assistant", "content": "上一轮回答"},
+                    {
+                        "role": "user",
+                        "content": "这图里面讲的什么？",
+                        "attachments": [{
+                            "id": "img-1",
+                            "name": "upload.png",
+                            "mimeType": "image/png",
+                            "dataUrl": image_data_url,
+                        }],
+                    },
+                ],
+            },
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "vision-chat-model",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["suggested_action"] == "chat"
+    assert payload["reply"] == "这是一张上传图片的说明"
+    user_messages = [message for message in calls[0]["messages"] if message["role"] == "user"]
+    assert user_messages[-1]["content"][0] == {"type": "text", "text": "这图里面讲的什么？"}
+    assert user_messages[-1]["content"][1] == {"type": "image_url", "image_url": {"url": image_data_url}}
+
+
+def test_daily_chat_endpoint_appends_current_prompt_when_context_is_parent_path(tmp_path, monkeypatch):
+    import app_runtime
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("daily-chat-current-prompt-user")
+    calls = []
+
+    class FakeChatAdapter:
+        async def chat(self, messages, **kwargs):
+            calls.append(messages)
+            return "current prompt reply"
+
+    def fake_build_adapter(cfg, role):
+        assert role == "llm"
+        return FakeChatAdapter()
+
+    monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "这是当前新问题",
+            "project_id": "p-chat",
+            "context": {
+                "workspace_mode": "chat",
+                "messages": [
+                    {"role": "user", "content": "上一轮问题"},
+                    {"role": "assistant", "content": "上一轮回答"},
+                ],
+            },
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert [message["content"] for message in calls[0] if message["role"] == "user"][-1] == "这是当前新问题"
+
+
+def test_daily_chat_stream_endpoint_emits_meta_delta_and_complete(tmp_path, monkeypatch):
+    import app_runtime
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("daily-chat-stream-user")
+    calls = []
+
+    class FakeChatAdapter:
+        async def stream_chat(self, messages, **kwargs):
+            calls.append({"messages": messages, "kwargs": kwargs, "cfg": self.cfg})
+            yield "后端模型"
+            yield "正在流式返回"
+
+    def fake_build_adapter(cfg, role):
+        assert role == "llm"
+        adapter = FakeChatAdapter()
+        adapter.cfg = cfg
+        return adapter
+
+    monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
+
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "今天先正常聊聊项目节奏",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+            "reasoning_effort": "low",
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    ) as response:
+        raw = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    events = _parse_sse_events(raw)
+    assert [event["event"] for event in events] == ["meta", "delta", "delta", "complete"]
+    assert events[0]["data"]["suggested_action"] == "chat"
+    assert events[1]["data"]["text"] == "后端模型"
+    assert events[2]["data"]["text"] == "正在流式返回"
+    assert events[3]["data"]["reply"] == "后端模型正在流式返回"
+    assert calls
+    assert calls[0]["cfg"].provider_name == "Configured Chat"
+    assert calls[0]["cfg"].model == "chat-model"
+    assert calls[0]["kwargs"]["max_tokens"] == 900
+
+
 def test_chat_endpoint_does_not_call_analysis_model_for_image_actions(tmp_path, monkeypatch):
     import app_runtime
 
@@ -186,6 +363,43 @@ def test_chat_endpoint_does_not_call_analysis_model_for_image_actions(tmp_path, 
     assert payload["ok"] is True
     assert payload["suggested_action"] != "chat"
     assert payload["draft_instruction"]
+
+
+def test_chat_stream_endpoint_returns_structured_complete_for_image_actions(tmp_path, monkeypatch):
+    import app_runtime
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("image-chat-stream-router-user")
+
+    def fail_build_adapter(*_args, **_kwargs):
+        raise AssertionError("image intent routing should not call the daily chat model")
+
+    monkeypatch.setattr(app_runtime, "build_adapter", fail_build_adapter)
+
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "把这个空间画成温馨一点的效果图",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    ) as response:
+        raw = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    events = _parse_sse_events(raw)
+    assert [event["event"] for event in events] == ["complete"]
+    assert events[0]["data"]["ok"] is True
+    assert events[0]["data"]["suggested_action"] != "chat"
+    assert events[0]["data"]["draft_instruction"]
 
 
 def test_daily_chat_session_identity_wins_over_namespace_header_for_config(tmp_path, monkeypatch):
@@ -378,6 +592,48 @@ def test_config_verify_analysis_returns_validation_error_for_unsupported_format(
     assert payload["ok"] is False
     assert payload["stage"] == "verify-analysis"
     assert "暂未实现" in payload["error"]
+
+
+def test_config_model_detection_returns_available_models(tmp_path, monkeypatch):
+    import backend.app.routes.config as config_routes
+
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    client = _auth_client("model-detect-user")
+    calls = []
+
+    def fake_list_available_models(role, provider_name, api_format, base_url, api_key, model, user_id):
+        calls.append({
+            "role": role,
+            "provider_name": provider_name,
+            "api_format": api_format,
+            "base_url": base_url,
+            "api_key": api_key,
+            "model": model,
+            "user_id": user_id,
+        })
+        return ["gpt-5.5", "gpt-image-2"]
+
+    monkeypatch.setattr(config_routes, "list_available_models", fake_list_available_models)
+
+    response = client.post(
+        "/api/config/models-analysis",
+        data={
+            "provider_name": "OpenAI",
+            "api_format": "openai",
+            "base_url": "https://api.example/v1",
+            "api_key": "key",
+            "model": "gpt-5.5",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["models"] == ["gpt-5.5", "gpt-image-2"]
+    assert calls[0]["role"] == "analysis"
+    assert calls[0]["model"] == "gpt-5.5"
+    assert calls[0]["user_id"] == "model-detect-user"
 
 
 def test_default_workspace_config_save_persists_analysis_image_config_and_env(tmp_path, monkeypatch):
@@ -674,6 +930,54 @@ def test_authenticated_user_config_save_and_load_are_isolated(tmp_path, monkeypa
     assert cfg.image_gen.model == "alice-image-model"
 
 
+def test_authenticated_chat_history_persists_and_is_isolated(tmp_path, monkeypatch):
+    from backend.app.services.chat_history_store import get_chat_history_path
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    alice_client = _auth_client("alice-chat-history")
+    bob_client = _auth_client("bob-chat-history")
+    payload = {
+        "currentSessionId": "session-alice",
+        "sessions": [
+            {
+                "id": "session-alice",
+                "title": "Alice conversation",
+                "createdAt": "2026-05-24T10:00:00Z",
+                "updatedAt": "2026-05-24T10:01:00Z",
+                "messages": [
+                    {
+                        "id": "m-1",
+                        "role": "user",
+                        "kind": "text",
+                        "content": "hello",
+                    }
+                ],
+                "chatInput": "",
+                "workspaceMode": "chat",
+                "generationMode": "standard",
+                "composerMode": "new-generation",
+                "activeResultId": None,
+            }
+        ],
+    }
+
+    save_response = alice_client.put("/api/chat-history", json=payload)
+    alice_response = alice_client.get("/api/chat-history")
+    bob_response = bob_client.get("/api/chat-history")
+
+    assert save_response.status_code == 200
+    assert save_response.json()["ok"] is True
+    assert alice_response.status_code == 200
+    assert alice_response.json()["history"]["currentSessionId"] == "session-alice"
+    assert alice_response.json()["history"]["sessions"][0]["messages"][0]["content"] == "hello"
+    assert bob_response.status_code == 200
+    assert bob_response.json()["history"]["sessions"] == []
+
+    saved_path = get_chat_history_path("alice-chat-history")
+    saved = json.loads(saved_path.read_text(encoding="utf-8"))
+    assert saved["currentSessionId"] == "session-alice"
+
+
 def test_fresh_non_default_user_cannot_fallback_to_workspace_keys_at_runtime(tmp_path, monkeypatch):
     import app_runtime
 
@@ -783,6 +1087,36 @@ def test_results_endpoints_persist_serve_and_delete_images(tmp_path, monkeypatch
     delete_response = client.delete(f"/api/results/{created['id']}")
     assert delete_response.status_code == 200
     assert client.get("/api/results").json()["results"] == []
+
+
+def test_results_endpoint_returns_full_management_history(tmp_path, monkeypatch):
+    from backend.app.services.result_store import create_result
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    image_path = tmp_path / "render.png"
+    _write_test_png(image_path)
+
+    for index in range(55):
+        create_result(
+            title=f"Render {index}",
+            status="生成成功",
+            image_path=str(image_path),
+            image_label=f"demo-label-{index}",
+            prompt="prompt text",
+            evaluation="",
+            logs="",
+            user_id="management-history-user",
+        )
+    client = _auth_client("management-history-user")
+
+    response = client.get("/api/results")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert len(payload["results"]) == 55
+    assert payload["results"][0]["title"] == "Render 54"
+    assert payload["results"][-1]["title"] == "Render 0"
 
 
 def test_result_notes_can_be_saved_without_blocking_generation_workspace(tmp_path, monkeypatch):
@@ -1156,20 +1490,20 @@ def test_generate_endpoint_passes_project_memory_context_to_runtime(tmp_path, mo
     assert "结构还原优先" in captured["learned_preferences_text"]
 
 
-def test_render3d_mode_requires_floor_plan(tmp_path, monkeypatch):
+def test_colored_floor_plan_mode_requires_floor_plan(tmp_path, monkeypatch):
     monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
-    client = _auth_client("render3d-floor-required-user")
+    client = _auth_client("colored-floor-required-user")
 
     response = client.post(
         "/api/generate",
-        data={"mode": "render3d", "requirement": "现代轻盈客厅"},
+        data={"mode": "colored_floor_plan", "requirement": "清晰分区配色"},
     )
 
     assert response.status_code == 400
     payload = response.json()
     assert payload["ok"] is False
     assert payload["stage"] == "generation"
-    assert "3D 效果图模式请至少上传一张平面图" in payload["error"]
+    assert "彩色平面图模式请至少上传一张平面图" in payload["error"]
 
 
 def test_annotated_edit_persists_annotation_and_version_metadata(tmp_path, monkeypatch):

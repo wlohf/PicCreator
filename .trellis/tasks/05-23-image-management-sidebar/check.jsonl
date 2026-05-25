@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task entrypoint and project language guidance."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Verify result history, account identity, and asset URL behavior stays aligned."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Verify RenderHistoryItem and generation mode types are not loosened."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality checklist for review."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check for avoidable duplicate result-management logic."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check result API/display/delete data flow and edge cases."}

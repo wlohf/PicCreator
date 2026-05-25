@@ -9,7 +9,7 @@ from typing import Any
 from uuid import uuid4
 
 _lock = Lock()
-_MAX_RESULTS = 50
+_MAX_STORED_RESULTS = 500
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
 from backend.app.services.file_service import image_record
@@ -155,8 +155,11 @@ def result_to_response(item: dict[str, Any], user_id: str = "default") -> dict[s
     }
 
 
-def list_results(limit: int = _MAX_RESULTS, user_id: str = "default") -> list[dict[str, Any]]:
-    return [result_to_response(item, user_id=user_id) for item in _read_results_locked(user_id)[:limit]]
+def list_results(limit: int | None = None, user_id: str = "default") -> list[dict[str, Any]]:
+    results = _read_results_locked(user_id)
+    if limit is not None:
+        results = results[:limit]
+    return [result_to_response(item, user_id=user_id) for item in results]
 
 
 def create_result(
@@ -224,7 +227,7 @@ def create_result(
     }
     with _lock:
         results = [item, *_read_results(user_id)]
-        _write_results(results[:_MAX_RESULTS], user_id)
+        _write_results(results[:_MAX_STORED_RESULTS], user_id)
     response = result_to_response(item, user_id=user_id)
     if stored_path:
         record = image_record(stored_path, image_label or title or "render")

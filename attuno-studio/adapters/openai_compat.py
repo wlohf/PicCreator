@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import re
+from typing import AsyncIterator
 import httpx
 from openai import AsyncOpenAI
 from config import AdapterConfig, normalize_api_format
@@ -123,6 +124,18 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
 
         return await self._run_with_retries(operation)
 
+    async def _stream_lines(self, endpoint: str, payload: dict) -> AsyncIterator[str]:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            async with client.stream(
+                "POST",
+                f"{self.base_url}{endpoint}",
+                headers={**self._headers, "Accept": "text/event-stream"},
+                json=payload,
+            ) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    yield line
+
     @staticmethod
     def _guess_mime_type(image_bytes: bytes) -> str:
         if image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -147,6 +160,16 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
         })
         return self._extract_chat_content(data)
 
+    async def stream_chat(self, messages: list, **kwargs) -> AsyncIterator[str]:
+        model = kwargs.pop("model", self.model)
+        if self.api_format == "openai_responses":
+            async for chunk in self._responses_stream_chat(model, messages, **kwargs):
+                yield chunk
+            return
+
+        async for chunk in self._chat_completions_stream(model, messages, **kwargs):
+            yield chunk
+
     @staticmethod
     def _extract_chat_content(data: dict) -> str:
         content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
@@ -159,6 +182,35 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
                     texts.append(part.get("text", ""))
             return "\n".join([t for t in texts if t])
         return str(content)
+
+    @classmethod
+    def _extract_stream_content_text(cls, content) -> str:
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            texts = []
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in ("text", "output_text"):
+                    text = str(part.get("text") or "")
+                    if text:
+                        texts.append(text)
+            return "".join(texts)
+        return ""
+
+    @classmethod
+    def _extract_chat_completion_delta_text(cls, data: dict) -> str:
+        choice = (data.get("choices") or [{}])[0] or {}
+        delta = choice.get("delta") if isinstance(choice, dict) else {}
+        if isinstance(delta, dict):
+            text = cls._extract_stream_content_text(delta.get("content"))
+            if text:
+                return text
+        message = choice.get("message") if isinstance(choice, dict) else {}
+        if isinstance(message, dict):
+            return cls._extract_stream_content_text(message.get("content"))
+        return ""
 
     @staticmethod
     def _extract_responses_payload_text(data: dict) -> str:
@@ -282,6 +334,64 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
         raise ValueError(
             f"Responses API 返回成功但未提取到文本（model={model}, api_format={self.api_format}, raw_len={len(raw or '')}, preview={preview!r})"
         )
+
+    async def _responses_stream_chat(self, model: str, messages: list, **kwargs) -> AsyncIterator[str]:
+        max_tokens = kwargs.pop("max_tokens", None) or kwargs.pop("max_completion_tokens", None)
+        payload = {
+            "model": model,
+            "input": self._messages_to_responses_input(messages),
+            "stream": True,
+            "reasoning": {"effort": "none"},
+            **kwargs,
+        }
+        if max_tokens:
+            payload["max_output_tokens"] = max_tokens
+
+        saw_delta = False
+        async for line in self._stream_lines("/responses", payload):
+            line = str(line or "").strip()
+            if not line.startswith("data:"):
+                continue
+            raw = line[5:].strip()
+            if not raw or raw == "[DONE]":
+                continue
+            data = json.loads(raw)
+            event_type = data.get("type")
+            if event_type == "response.output_text.delta":
+                text = str(data.get("delta") or "")
+                if text:
+                    saw_delta = True
+                    yield text
+                continue
+            if event_type == "response.output_text.done":
+                text = str(data.get("text") or "")
+                if text and not saw_delta:
+                    yield text
+                continue
+            if saw_delta:
+                continue
+            text = self._extract_responses_payload_text(data)
+            if text:
+                yield text
+
+    async def _chat_completions_stream(self, model: str, messages: list, **kwargs) -> AsyncIterator[str]:
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            **kwargs,
+        }
+        async for line in self._stream_lines("/chat/completions", payload):
+            line = str(line or "").strip()
+            if not line.startswith("data:"):
+                continue
+            raw = line[5:].strip()
+            if not raw or raw == "[DONE]":
+                continue
+            data = json.loads(raw)
+            text = self._extract_chat_completion_delta_text(data)
+            if text:
+                yield text
 
     @staticmethod
     def _extract_image_url_from_text(text: str) -> str:

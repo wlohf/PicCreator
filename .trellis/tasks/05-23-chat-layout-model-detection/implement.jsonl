@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend implementation entry point and documentation language guidance."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Composer, chat session, and API config state conventions."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Type safety guidance for API-facing frontend data shapes."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality expectations and test guidance."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend implementation entry point."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Backend API error response conventions for detection failures."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guides index."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature spans frontend API client, backend route, and runtime helper."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Avoid duplicating model/config parsing across handlers."}

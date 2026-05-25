@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "聊天流式输出会改变后端与前端之间的事件契约，需要沿用当前 generation contracts 的记录方式。"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "该任务同时修改聊天路由、SSE 事件格式和前端消息渲染，需先明确跨层数据边界。"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "前端已存在 generation SSE 解析逻辑，应避免再次复制一套解析实现。"}

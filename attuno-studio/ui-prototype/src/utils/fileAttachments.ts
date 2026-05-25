@@ -6,6 +6,13 @@ export function filesFromList(files: FileList | File[]) {
   return Array.from(files);
 }
 
+export function imageFilesFromClipboardItems(items: DataTransferItemList) {
+  return Array.from(items)
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+}
+
 export function mergeFloorPlanFiles(current: File[], incoming: readonly File[], append = false, limit = 8) {
   const imageFiles = imageFilesFromFiles(incoming);
   const next = append ? [...current, ...imageFiles] : imageFiles;

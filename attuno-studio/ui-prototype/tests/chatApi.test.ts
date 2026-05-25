@@ -12,8 +12,9 @@ const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8
 
 assert(
   chatApiSource.includes('api_config?: ApiConfig') &&
-  chatApiSource.includes('reasoning_effort?: ChatReasoningEffort'),
-  "chat API request type should carry active provider/model config and selected effort",
+  chatApiSource.includes('reasoning_effort?: ChatReasoningEffort') &&
+  chatApiSource.includes('attachments?: ChatImageAttachment[]'),
+  "chat API request type should carry active provider/model config, selected effort, and image attachments",
 );
 
 const sendDesignChatBlock = chatApiSource.match(/export async function sendDesignChat[\s\S]*?export async function applyChatMemory/m)?.[0] ?? "";
@@ -30,17 +31,34 @@ assert(
   "sendDesignChat should surface backend errors instead of synthesizing a fixed fallback reply",
 );
 
+const streamDesignChatBlock = chatApiSource.match(/export async function streamDesignChat[\s\S]*?export async function applyChatMemory/m)?.[0] ?? "";
+assert(
+  streamDesignChatBlock.includes('apiPath = "/api/chat/stream"') &&
+  streamDesignChatBlock.includes("iterateSseEvents(") &&
+  streamDesignChatBlock.includes('parsed.eventName === "delta"') &&
+  streamDesignChatBlock.includes('parsed.eventName === "complete"'),
+  "streamDesignChat should consume /api/chat/stream SSE events and surface delta/complete handlers",
+);
+
 const dailyChatFlowBlock = appSource.match(/async function runDailyChatFlow[\s\S]*?async function runConversationFlow/m)?.[0] ?? "";
 assert(
-  dailyChatFlowBlock.includes("sendDesignChat({") &&
-  dailyChatFlowBlock.includes("api_config: apiConfig") &&
+  dailyChatFlowBlock.includes("streamDesignChat({") &&
+  dailyChatFlowBlock.includes("api_config: requestApiConfig") &&
   dailyChatFlowBlock.includes("reasoning_effort: chatReasoningEffort"),
-  "daily chat submit should call the backend chat API with active config and effort",
+  "daily chat submit should call the backend chat stream API with active config and effort",
 );
 
 assert(
-  dailyChatFlowBlock.includes("content: response.reply") &&
+  dailyChatFlowBlock.includes("assistantMessageId") &&
+  dailyChatFlowBlock.includes("onDelta: (delta)") &&
+  dailyChatFlowBlock.includes("buildChatImageAttachments(submittedFiles)") &&
+  dailyChatFlowBlock.includes("attachments: chatAttachments") &&
+  dailyChatFlowBlock.includes("retryAttachments?: ChatImageAttachment[]") &&
+  dailyChatFlowBlock.includes("buildLinearChatContext([...messages, nextPatch[0]], userMessageId)") &&
+  dailyChatFlowBlock.includes("messages: requestMessages") &&
+  dailyChatFlowBlock.includes("content: response.reply || streamedReply") &&
   dailyChatFlowBlock.includes('kind: "error"') &&
-  !dailyChatFlowBlock.includes("response.reply ||"),
-  "daily chat should render backend reply or an explicit error message without repeating a local fallback",
+  !dailyChatFlowBlock.includes('content: response.reply || "收到。"') &&
+  !dailyChatFlowBlock.includes('content: response.reply || "Got it."'),
+  "daily chat should stream assistant text in place and still surface explicit errors without a fixed fallback reply",
 );

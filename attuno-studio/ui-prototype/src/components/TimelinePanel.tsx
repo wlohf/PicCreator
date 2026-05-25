@@ -51,8 +51,8 @@ export function TimelinePanel({
     {
       step: "completed",
       title: { zh: "结果返回", en: "Result returned" },
-      model: { zh: "结果库", en: "Result library" },
-      notes: { zh: ["生成结果会进入结果库"], en: ["Generated output is saved to the result library"] }
+      model: { zh: "图片管理", en: "Image management" },
+      notes: { zh: ["生成结果会进入历史图片"], en: ["Generated output is saved to image history"] }
     }
   ];
   const stepOrder = steps.map((step) => step.step);
@@ -109,7 +109,7 @@ export function TimelinePanel({
             </div>
             <ul>
               {(isCurrentFailure
-                ? [locale === "zh" ? "后端返回错误，结果库不会写入本次结果" : "Backend returned an error; no result was saved"]
+                ? [locale === "zh" ? "后端返回错误，本次结果不会保存到历史图片" : "Backend returned an error; no result was saved"]
                 : isStopped
                   ? [locale === "zh" ? "前序步骤失败后不会继续执行" : "Skipped because an earlier step failed"]
                   : run.notes[locale]

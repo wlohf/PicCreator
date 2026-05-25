@@ -1,4 +1,5 @@
-import { apiFetch, buildApiUrl, parseApiJson } from "./client";
+import { apiFetch, parseApiJson } from "./client";
+import { iterateSseEvents } from "./sse";
 import type { GenerateResponse, GenerationProgress, GenerationRequest } from "../types/domain";
 
 function buildGenerationFormData({
@@ -74,56 +75,23 @@ export async function requestGenerationStream(
     throw new Error(data.error || data.status || response.statusText);
   }
 
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  function parseEvent(rawEvent: string) {
-    let eventName = "message";
-    const dataLines: string[] = [];
-    for (const line of rawEvent.split(/\r?\n/)) {
-      if (line.startsWith("event:")) eventName = line.slice(6).trim();
-      if (line.startsWith("data:")) dataLines.push(line.slice(5).trimStart());
+  for await (const parsed of iterateSseEvents(
+    response,
+    "生成连接已中断，后端可能在长时间图片生成中退出/不可达。请检查 API 窗口日志"
+  )) {
+    if (parsed.eventName === "progress") {
+      onProgress(parsed.data as GenerationProgress);
+      continue;
     }
-    if (dataLines.length === 0) return null;
-    const data = JSON.parse(dataLines.join("\n")) as GenerateResponse | GenerationProgress;
-    return { eventName, data };
-  }
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read().catch((error) => {
-        throw new Error(
-          `生成连接已中断，后端可能在长时间图片生成中退出/不可达。请检查 API 窗口日志；原始错误：${error instanceof Error ? error.message : String(error)}`
-        );
-      });
-      buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done });
-      const parts = buffer.split(/\r?\n\r?\n/);
-      buffer = parts.pop() ?? "";
-
-      for (const part of parts) {
-        if (!part.trim()) continue;
-        const parsed = parseEvent(part);
-        if (!parsed) continue;
-        if (parsed.eventName === "progress") {
-          onProgress(parsed.data as GenerationProgress);
-          continue;
-        }
-        if (parsed.eventName === "complete") {
-          const data = parsed.data as GenerateResponse;
-          if (!data.ok) throw new Error(data.error || data.status || "Generation failed");
-          return data;
-        }
-        if (parsed.eventName === "error") {
-          const data = parsed.data as GenerateResponse;
-          throw new Error(data.error || data.status || "Generation failed");
-        }
-      }
-
-      if (done) break;
+    if (parsed.eventName === "complete") {
+      const data = parsed.data as GenerateResponse;
+      if (!data.ok) throw new Error(data.error || data.status || "Generation failed");
+      return data;
     }
-  } finally {
-    reader.releaseLock();
+    if (parsed.eventName === "error") {
+      const data = parsed.data as GenerateResponse;
+      throw new Error(data.error || data.status || "Generation failed");
+    }
   }
 
   throw new Error("Generation stream ended without a final result");

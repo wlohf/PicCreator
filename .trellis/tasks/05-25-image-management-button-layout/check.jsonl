@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for final review."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Review component structure and accessibility."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Review quality and verification expectations."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Confirm TSX changes preserve typing."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Confirm no unnecessary duplicated abstractions were introduced."}

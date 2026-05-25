@@ -44,8 +44,9 @@ export type PreferenceEventRequest = {
 
 export type ShortcutPreference = {
   id: string;
-  zh: string;
-  en: string;
+  text: string;
+  zh?: string;
+  en?: string;
 };
 
 type StyleProfileResponse = {

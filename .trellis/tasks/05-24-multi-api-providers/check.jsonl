@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend review"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "State persistence review"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Backend config error handling review"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer contract review"}

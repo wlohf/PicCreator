@@ -92,7 +92,29 @@ def build_config_from_dict(data: dict, env_values: Mapping[str, str] | None = No
     """Build an AppConfig from already-loaded JSON plus resolved env values."""
     env = os.environ if env_values is None else env_values
 
+    def active_provider_overlay(d: dict) -> dict:
+        section = dict(d or {})
+        providers = section.get("providers")
+        active_id = str(section.get("active_provider_id") or "").strip()
+        if isinstance(providers, list) and active_id:
+            for item in providers:
+                if not isinstance(item, dict) or str(item.get("id") or "").strip() != active_id:
+                    continue
+                for source_key, target_key in (
+                    ("provider_name", "provider_name"),
+                    ("api_format", "api_format"),
+                    ("base_url", "base_url"),
+                    ("api_key", "api_key"),
+                    ("model", "model"),
+                ):
+                    value = item.get(source_key)
+                    if isinstance(value, str) and value.strip():
+                        section[target_key] = value
+                break
+        return section
+
     def build(d: dict) -> AdapterConfig:
+        d = active_provider_overlay(d)
         # 支持从环境变量读取 api_key
         env_name = str(d.get("api_key_env", "") or "").strip()
         key = env.get(env_name, d.get("api_key", "")) if env_name else d.get("api_key", "")

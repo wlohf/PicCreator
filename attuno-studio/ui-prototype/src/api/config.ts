@@ -16,7 +16,10 @@ export type ConfigLoadResponse = {
   stage?: string;
 };
 
-type ConfigRole = "analysis" | "image";
+export type ConfigRole = "analysis" | "image";
+export type ConfigModelsResponse = ConfigVerifyResponse & {
+  models?: string[];
+};
 
 function appendConfig(formData: FormData, apiConfig: ApiConfig, role: ConfigRole) {
   if (role === "analysis") {
@@ -57,6 +60,20 @@ export async function verifyConfig(role: ConfigRole, apiConfig: ApiConfig): Prom
   return data;
 }
 
+export async function detectConfigModels(role: ConfigRole, apiConfig: ApiConfig): Promise<string[]> {
+  const formData = new FormData();
+  appendConfig(formData, apiConfig, role);
+  const response = await apiFetch(`/api/config/models-${role}`, {
+    method: "POST",
+    body: formData
+  });
+  const data = await parseApiJson<ConfigModelsResponse>(response);
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || data.message || response.statusText);
+  }
+  return Array.isArray(data.models) ? data.models : [];
+}
+
 export async function saveConfig(apiConfig: ApiConfig): Promise<ConfigSaveResponse> {
   const formData = new FormData();
   formData.append("analysis_provider_name", apiConfig.analysisProviderName);
@@ -64,11 +81,15 @@ export async function saveConfig(apiConfig: ApiConfig): Promise<ConfigSaveRespon
   formData.append("analysis_base_url", apiConfig.analysisBaseUrl);
   formData.append("analysis_api_key", apiConfig.analysisApiKey);
   formData.append("analysis_model", apiConfig.analysisModel);
+  formData.append("analysis_providers_json", JSON.stringify(apiConfig.analysisProviders));
+  formData.append("active_analysis_provider_id", apiConfig.activeAnalysisProviderId);
   formData.append("img_provider_name", apiConfig.imageProviderName);
   formData.append("img_api_format", apiConfig.imageApiFormat);
   formData.append("img_base_url", apiConfig.imageBaseUrl);
   formData.append("img_api_key", apiConfig.imageApiKey);
   formData.append("img_model", apiConfig.imageModel);
+  formData.append("image_providers_json", JSON.stringify(apiConfig.imageProviders));
+  formData.append("active_image_provider_id", apiConfig.activeImageProviderId);
   formData.append("floor_analysis_system_prompt", apiConfig.floorAnalysisSystemPrompt);
   formData.append("prompt_gen_system_3d_cn", apiConfig.promptGenSystem3dCn);
   formData.append("fallback_models_text", apiConfig.fallbackModels);

@@ -1,0 +1,6 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer data flow for frontend path context to backend model payload"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend guidelines index for chat state/UI work"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend guidelines index for chat API changes"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Conversation state, retry, history ordering, and chat view contracts"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing chat session helpers instead of scattering tree logic"}

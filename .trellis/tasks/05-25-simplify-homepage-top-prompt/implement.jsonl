@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task; establishes applicable frontend guideline index."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component markup and composition conventions for UI changes."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality expectations and verification requirements."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared pre-modification thinking guide for scoped UI edits."}

@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend check entry point and documentation language guidance."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Verify composer/API config state remains consistent."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check typed API response/request additions."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality and test expectations."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend check entry point."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify model detection errors are surfaced clearly."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guides index."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check frontend-backend model list contract."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check config parsing is reused rather than forked."}

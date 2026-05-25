@@ -150,6 +150,79 @@ else:
 
 ---
 
+## Scenario: API Config Model Detection
+
+### 1. Scope / Trigger
+- Trigger: model detection crosses frontend API setup state, FastAPI config routes, per-account config namespaces, remote provider `/models` responses, and composer model dropdown options.
+- Applies when changing API config forms, model picker UI, config route signatures, account-specific API key behavior, or remote model-list parsing.
+
+### 2. Signatures
+- `POST /api/config/models-analysis` accepts form fields `provider_name`, `api_format`, `base_url`, `api_key`, and `model`.
+- `POST /api/config/models-image` accepts the same form fields for image provider detection.
+- Response success shape: `{"ok": true, "models": string[], "message": string}`.
+- Response failure shape: `{"ok": false, "stage": "models-analysis" | "models-image", "error": string}`.
+- Frontend client signature: `detectConfigModels(role: "analysis" | "image", apiConfig: ApiConfig): Promise<string[]>`.
+
+### 3. Contracts
+- The backend resolves the same authenticated/default config namespace as save/verify routes before merging form overrides.
+- Detection must not require a non-empty model name; current model is only an override hint.
+- OpenAI-compatible formats use the configured Base URL plus `/models` and bearer API key authentication.
+- Anthropic uses `/v1/models` with `x-api-key` and `anthropic-version`.
+- Model extraction accepts common response shapes: `data[]`, `models[]`, or `items[]`, and item keys `id`, `name`, or `model`.
+- The returned list must be de-duplicated and sorted, and Gemini-style `models/<id>` names may be normalized to `<id>`.
+
+### 4. Validation & Error Matrix
+- Missing API format -> return a config error before any remote call.
+- Unsupported API format -> return an explicit “暂未实现 ... 模型列表检测” error.
+- Missing API key -> return the same account-aware key guidance as config verification.
+- Azure OpenAI -> return a manual-entry guidance error because model listing depends on resource-specific API versions.
+- Remote HTTP failure -> return `ok=false` with stage `models-analysis` or `models-image`.
+- Empty or unrecognized response -> return a clear “模型列表接口返回为空” style error.
+
+### 5. Good / Base / Bad Cases
+- Good: user fills OpenAI-compatible Base URL and API key, clicks detect, and receives `["gpt-5.5", "gpt-image-2"]`.
+- Good: authenticated user with saved API key can detect without exposing the key in `GET /api/config`.
+- Base: provider does not support model listing; user can still manually type a model and verify/save it.
+- Bad: frontend hard-codes `gpt-4o`/Claude/Gemini fallback options into the chat dropdown when the user only configured one model.
+- Bad: detection mutates saved config; it should only return options until the user saves.
+
+### 6. Tests Required
+- Backend API test asserting `models-analysis` returns the model array and resolved user namespace.
+- Unit test for model-id extraction covering duplicate ids and `models/<id>` normalization.
+- Frontend/static test asserting composer options come from configured/detected models, not hard-coded chat defaults.
+- Build/typecheck covering `ConfigRole`, `ConfigModelsResponse`, and model picker state.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+const defaultChatModelOptions = ["gpt-4o", "claude-3-5-sonnet", "gemini-pro"];
+const options = [apiConfig.analysisModel, ...defaultChatModelOptions];
+```
+
+#### Correct
+
+```typescript
+const options = modelSelectOptions(apiConfig.analysisModel, detectedModels.analysis);
+```
+
+#### Wrong
+
+```python
+# This forces users to enter a model before they can discover models.
+_validate_adapter_config("分析模型", cfg)
+```
+
+#### Correct
+
+```python
+# Model listing validates provider format and key, but does not require cfg.model.
+_validate_model_list_config("分析模型", cfg)
+```
+
+---
+
 ## Scenario: Account And Legacy Token Namespace Isolation
 
 ### 1. Scope / Trigger
@@ -396,4 +469,154 @@ content: response.reply || "收到。"
 
 ```typescript
 content: response.reply
+```
+
+---
+
+## Scenario: Configured Daily Chat Streaming
+
+### 1. Scope / Trigger
+- Trigger: daily chat crosses frontend message rendering, `/api/chat/stream`, configured llm adapters, and the existing deterministic intent router.
+- Applies when changing chat streaming UX, SSE event contracts, incremental reply rendering, or how non-chat intents behave in the chat workspace.
+
+### 2. Signatures
+- `POST /api/chat/stream` accepts the same JSON shape as `POST /api/chat`.
+- `POST /api/chat/stream` returns `text/event-stream` with these events:
+  - `meta`
+  - repeated `delta`
+  - terminal `complete`
+  - terminal `error`
+- Frontend chat mode calls `streamDesignChat({ api_config: apiConfig, reasoning_effort, context: { workspace_mode: "chat", ... } })`.
+
+### 3. Contracts
+- `DesignChatAgent` still routes first. Streaming does not bypass intent classification.
+- If `suggested_action == "chat"`, the backend must stream the configured analysis-model reply through SSE and emit a final `complete` event containing the assembled `reply`.
+- If `suggested_action != "chat"`, `/api/chat/stream` must not call the daily-chat model. It should emit a single `complete` event carrying the same structured routing payload shape as `/api/chat`.
+- Frontend should append an assistant placeholder message immediately, then mutate that same message as `delta` chunks arrive.
+- `complete` must carry the final assistant `reply` plus existing structured fields such as `draft_instruction`, `memory_candidate`, `context_summary`, and `ui_hints`.
+- Errors must surface explicitly through `error` events and the frontend must show an error state/message instead of silently keeping an empty assistant bubble.
+- Existing provider badge, chat-model switching, and reasoning-effort controls remain the source of truth for streamed chat requests.
+
+### 4. Validation & Error Matrix
+- Streamed `daily_chat` with valid config -> `meta`, one or more `delta`, then `complete`.
+- Streamed `daily_chat` with missing current-user API key -> `error` event with `stage: "chat"`.
+- Streamed `daily_chat` model returns no text -> `error` event with `聊天模型返回为空`.
+- Streamed image/generation intent in chat workspace -> one `complete` event, no llm stream call.
+- Client stream closes without `complete` -> frontend treats as failure and shows an explicit error.
+
+### 5. Good / Base / Bad Cases
+- Good: user types a normal project chat message and sees one assistant bubble fill in incrementally.
+- Good: user types “把这个空间画成温馨一点的效果图” in chat mode and still gets a draft instruction without spending a chat-model call.
+- Base: a provider without native stream support may still be chunked server-side, but the frontend contract stays SSE-based.
+- Bad: `/api/chat/stream` calls the model before route classification; this wastes spend and breaks structured draft behavior.
+- Bad: frontend appends multiple assistant bubbles for one streamed response.
+- Bad: empty stream failures leave a blank assistant message with no explicit error.
+
+### 6. Tests Required
+- Backend API test proving streamed daily chat emits `meta` / `delta` / `complete`.
+- Backend API test proving non-chat intents through `/api/chat/stream` do not call the daily-chat model and end with `complete`.
+- Adapter/unit test proving stream parsers extract text deltas from supported OpenAI-compatible SSE payloads.
+- Frontend test proving `runDailyChatFlow` uses the streaming chat client and updates one assistant message incrementally.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+# This breaks draft routing by forcing all chat-workspace messages into the llm stream.
+async for chunk in llm.stream_chat(messages):
+    yield chunk
+```
+
+#### Correct
+
+```python
+routed = DesignChatAgent().respond(payload)
+if routed["suggested_action"] != "chat":
+    yield complete_event(routed)
+else:
+    async for chunk in llm.stream_chat(messages):
+        yield delta_event(chunk)
+```
+
+---
+
+## Scenario: API Config Provider Profiles
+
+### 1. Scope / Trigger
+- Trigger: API provider setup crosses browser-local `ApiConfig`, FastAPI config routes, per-account config JSON, environment-key fallback, runtime adapter selection, chat, generation, image edit, model verification, and model detection.
+- Applies when changing provider setup fields, config save/load payloads, account namespacing, or adapter config loading.
+
+### 2. Signatures
+- `GET /api/config` returns the legacy flat fields plus provider profile fields:
+  - `activeAnalysisProviderId: string`
+  - `analysisProviders: ApiProviderProfile[]`
+  - `activeImageProviderId: string`
+  - `imageProviders: ApiProviderProfile[]`
+- `ApiProviderProfile` fields are `id`, `providerName`, `apiFormat`, `baseUrl`, `apiKey`, and `model`.
+- `POST /api/config/save` accepts existing flat form fields plus:
+  - `analysis_providers_json`
+  - `active_analysis_provider_id`
+  - `image_providers_json`
+  - `active_image_provider_id`
+- Runtime config JSON stores profiles under adapter sections as `providers` plus `active_provider_id`.
+
+### 3. Contracts
+- The selected provider profile is mirrored into the existing flat fields (`analysisProviderName`, `analysisBaseUrl`, `imageApiKey`, etc.) before chat/generation/image-edit requests are sent.
+- Backend save must preserve legacy section fields (`llm`, `vision`, `image_gen`) as the current selected profile for backwards compatibility.
+- `vision` mirrors the active analysis provider; image generation keeps its own profile list.
+- `config.py` must apply `active_provider_id` before building `AdapterConfig`, otherwise runtime calls ignore saved profile switching.
+- Legacy config files with only flat adapter sections must load as a one-item provider profile list.
+- Non-default users must not inherit default workspace keys. If they have no explicit key, both flat `api_key` and nested provider `api_key` values are cleared in effective config.
+
+### 4. Validation & Error Matrix
+- Invalid provider JSON -> return `/api/config/save` failure with a clear JSON format error.
+- Provider list is absent or empty -> keep legacy flat behavior and synthesize one profile for UI load.
+- Active provider id missing from list -> fall back to the first provider profile.
+- Duplicate provider ids in save payload -> keep the first occurrence and ignore later duplicates.
+- Non-dict provider entries -> ignore them instead of crashing config load.
+
+### 5. Good / Base / Bad Cases
+- Good: user saves two analysis providers and two image providers, selects provider B, reloads, and all calls use B without retyping key/Base URL/model.
+- Good: old `config.json` without `providers` still appears as one editable provider profile.
+- Base: user only changes the current provider fields; flat fields and active profile remain synchronized.
+- Bad: storing profiles only in frontend localStorage; the backend then loses them on another browser or after reload.
+- Bad: changing the profile selector without syncing flat fields; generation/chat requests would still use the previous provider.
+- Bad: applying nested default-user provider keys to a logged-in user namespace that has not saved its own key.
+
+### 6. Tests Required
+- Backend unit test for legacy section -> one UI provider profile.
+- Backend unit test for save round-trip with multiple provider profiles and active id.
+- Backend config test proving `active_provider_id` affects `build_config_from_dict`.
+- Frontend build/typecheck covering `ApiProviderProfile` and `ApiConfig` additions.
+- Frontend/API client test or static assertion that save sends both profile JSON and active ids.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+// This changes visible state but leaves requests using the old flat fields.
+setApiConfig({ ...apiConfig, activeAnalysisProviderId: nextId });
+```
+
+#### Correct
+
+```typescript
+const provider = apiConfig.analysisProviders.find((item) => item.id === nextId);
+setApiConfig(applyProviderProfile(apiConfig, "analysis", provider));
+```
+
+#### Wrong
+
+```python
+# This ignores active_provider_id during runtime config loading.
+api_format = d.get("api_format")
+```
+
+#### Correct
+
+```python
+d = active_provider_overlay(d)
+api_format = d.get("api_format")
 ```

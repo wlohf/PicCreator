@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task entry point and relevant guideline index"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Composer attachment state and empty chat layout constraints"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component and styling conventions for frontend changes"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Quality expectations and verification checklist"}

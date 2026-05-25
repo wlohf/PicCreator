@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task entry point and documentation language conventions."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Composer state, durable conversation content, and chat view behavior constraints."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Chat message and generation/result metadata type alignment guidance."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component, props, styling, and accessibility guidance for UI changes."}
+{"file": ".trellis/tasks/05-24-chat-output-actions-clear-input/notes.md", "reason": "Task-specific implementation notes from code inspection."}

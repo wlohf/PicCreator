@@ -9,6 +9,8 @@ from threading import Thread
 import time
 import traceback
 from typing import Optional, Any, List
+from urllib.parse import urlsplit, urlunsplit
+import httpx
 from PIL import Image
 
 if os.name == "nt":
@@ -141,6 +143,12 @@ def _strip_sensitive_default_key_refs(config_json: dict[str, Any], user_id: str 
             continue
         section["api_key"] = ""
         section["api_key_env"] = ""
+        providers = section.get("providers")
+        if isinstance(providers, list):
+            for provider in providers:
+                if isinstance(provider, dict):
+                    provider["api_key"] = ""
+                    provider["apiKey"] = ""
     return sanitized
 
 
@@ -257,6 +265,170 @@ def _merge_adapter_override(
 def _display_api_format(api_format: str) -> str:
     normalized = normalize_api_format(api_format)
     return API_FORMAT_LABELS.get(normalized, api_format or "Unknown")
+
+
+def _validate_model_list_config(name: str, cfg: AdapterConfig, *, allow_env_fallback: bool = True):
+    api_format = normalize_api_format(getattr(cfg, "api_format", "") or cfg.provider or "")
+    if not api_format:
+        raise RuntimeError(f"{name} 配置缺少 API 格式")
+    if api_format not in SUPPORTED_API_FORMATS:
+        label = API_FORMAT_LABELS.get(api_format, api_format)
+        raise RuntimeError(f"{name} 暂未实现 {label} 模型列表检测。")
+    if api_format == "ollama":
+        return
+    if not (cfg.api_key or "").strip():
+        if allow_env_fallback:
+            raise RuntimeError(f"{name} 配置缺少 API Key。请在 UI 中填写，或在 .env 中设置对应变量。")
+        raise RuntimeError(
+            f"{name} 配置缺少 API Key。请先为当前用户保存自己的 API Key，默认工作区 Key 不会自动继承。"
+        )
+
+
+def _strip_model_namespace(model_name: str) -> str:
+    value = str(model_name or "").strip()
+    if value.startswith("models/"):
+        return value.split("/", 1)[1]
+    return value
+
+
+def _extract_model_ids(data: Any) -> list[str]:
+    if isinstance(data, list):
+        raw_items = data
+    elif isinstance(data, dict):
+        raw_items = data.get("data") or data.get("models") or data.get("items") or []
+    else:
+        raw_items = []
+
+    models: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        if isinstance(item, str):
+            candidate = item
+        elif isinstance(item, dict):
+            candidate = item.get("id") or item.get("name") or item.get("model")
+        else:
+            candidate = ""
+        model_name = _strip_model_namespace(str(candidate or "").strip())
+        if not model_name or model_name in seen:
+            continue
+        seen.add(model_name)
+        models.append(model_name)
+    return sorted(models, key=lambda item: item.lower())
+
+
+def _url_with_path(url: str, path: str) -> str:
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        return f"{url.rstrip('/')}/{path.lstrip('/')}"
+    normalized_path = "/" + "/".join([parts.path.strip("/"), path.strip("/")]).strip("/")
+    return urlunsplit((parts.scheme, parts.netloc, normalized_path, "", ""))
+
+
+def _remove_url_path_suffix(url: str, suffix: str) -> str:
+    parts = urlsplit(url)
+    if not parts.scheme or not parts.netloc:
+        lowered = url.lower().rstrip("/")
+        return url[: -len(suffix)].rstrip("/") if lowered.endswith(suffix) else url.rstrip("/")
+    path = parts.path.rstrip("/")
+    if path.lower().endswith(suffix):
+        path = path[: -len(suffix)].rstrip("/") or "/"
+    return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+def _openai_compatible_model_urls(base_url: str) -> list[str]:
+    root = (base_url or "https://api.openai.com/v1").rstrip("/")
+    for suffix in ("/chat/completions", "/responses", "/images/generations", "/images/edits", "/completions"):
+        root = _remove_url_path_suffix(root, suffix)
+
+    candidates = [_url_with_path(root, "models")]
+    parts = urlsplit(root)
+    if parts.scheme and parts.netloc:
+        path_segments = [segment for segment in parts.path.split("/") if segment]
+        if "v1" not in path_segments:
+            candidates.append(_url_with_path(root, "v1/models"))
+
+    unique: list[str] = []
+    for item in candidates:
+        if item not in unique:
+            unique.append(item)
+    return unique
+
+
+def _model_list_requests(cfg: AdapterConfig) -> list[tuple[str, dict[str, str]]]:
+    api_format = normalize_api_format(getattr(cfg, "api_format", "") or cfg.provider or "")
+    api_key = (cfg.api_key or "").strip()
+    if api_format == "anthropic":
+        base_url = (cfg.base_url or "https://api.anthropic.com/v1").rstrip("/")
+        return [(f"{base_url}/models", {
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        })]
+    if api_format == "azure_openai":
+        raise RuntimeError("Azure OpenAI 的模型列表接口依赖资源和 api-version，请先手动填写模型名。")
+    if api_format == "gemini":
+        base_url = (cfg.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+        return [(_url_with_path(base_url, "models"), {"x-goog-api-key": api_key})]
+    if api_format == "ollama":
+        base_url = (cfg.base_url or "http://localhost:11434").rstrip("/")
+        return [(_url_with_path(base_url, "api/tags"), {})]
+
+    return [(url, {"Authorization": f"Bearer {api_key}"}) for url in _openai_compatible_model_urls(cfg.base_url or "https://api.openai.com/v1")]
+
+
+def _model_list_request(cfg: AdapterConfig) -> tuple[str, dict[str, str]]:
+    return _model_list_requests(cfg)[0]
+
+
+def _summarize_model_list_error(url: str, exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        body = exc.response.text.strip().replace("\n", " ")[:300]
+        detail = f"HTTP {exc.response.status_code}"
+        if body:
+            detail = f"{detail}: {body}"
+        return f"{url} -> {detail}"
+    return f"{url} -> {type(exc).__name__}: {exc}"
+
+
+async def _list_available_models_async(cfg: AdapterConfig) -> list[str]:
+    timeout = min(max(int(cfg.timeout or 30), 10), 45)
+    errors: list[str] = []
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        for url, headers in _model_list_requests(cfg):
+            try:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                data = response.json()
+                models = _extract_model_ids(data)
+                if not models:
+                    raise RuntimeError("接口返回为空，或响应中没有可识别的 id/name/model 字段。")
+                return models
+            except Exception as exc:
+                errors.append(_summarize_model_list_error(url, exc))
+    raise RuntimeError("模型列表检测失败：" + "；".join(errors))
+
+
+def list_available_models(
+    role: str,
+    provider_name,
+    api_format,
+    base_url,
+    api_key,
+    model,
+    user_id: str | None = DEFAULT_CONFIG_USER_ID,
+) -> list[str]:
+    cfg = get_config(user_id)
+    base_cfg = cfg.image_gen if role == "image" else cfg.llm
+    merged_cfg = _merge_adapter_override(
+        base_cfg,
+        provider_name or "",
+        api_format or "",
+        base_url or "",
+        api_key or "",
+        model or "",
+    )
+    label = "画图模型" if role == "image" else "分析模型"
+    _validate_model_list_config(label, merged_cfg, allow_env_fallback=_is_default_config_user(user_id))
+    return _run_async(_list_available_models_async(merged_cfg))
 
 
 def _validate_adapter_config(name: str, cfg: AdapterConfig, *, allow_env_fallback: bool = True):
@@ -393,6 +565,96 @@ def _update_adapter_json(
     data[section_name] = section
 
 
+def _adapter_section_to_provider_profile(section: dict[str, Any], provider_id: str = "") -> dict[str, str]:
+    return {
+        "id": str(provider_id or section.get("active_provider_id") or section.get("id") or "").strip(),
+        "providerName": str(section.get("provider_name") or "").strip(),
+        "apiFormat": _ui_api_format(str(section.get("api_format") or section.get("provider") or "")),
+        "baseUrl": str(section.get("base_url") or "").strip(),
+        "apiKey": str(section.get("api_key") or "").strip(),
+        "model": str(section.get("model") or "").strip(),
+    }
+
+
+def _profile_to_adapter_json(profile: dict[str, Any]) -> dict[str, str]:
+    return {
+        "id": str(profile.get("id") or "").strip(),
+        "provider_name": str(profile.get("providerName") or profile.get("provider_name") or "").strip(),
+        "api_format": normalize_api_format(str(profile.get("apiFormat") or profile.get("api_format") or "")),
+        "base_url": str(profile.get("baseUrl") or profile.get("base_url") or "").strip(),
+        "api_key": str(profile.get("apiKey") or profile.get("api_key") or "").strip(),
+        "model": str(profile.get("model") or "").strip(),
+    }
+
+
+def _parse_provider_profiles_json(raw: str) -> list[dict[str, str]]:
+    if not str(raw or "").strip():
+        return []
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"供应商列表 JSON 格式错误：{exc}") from exc
+    if not isinstance(parsed, list):
+        raise RuntimeError("供应商列表 JSON 必须是数组。")
+
+    profiles: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(parsed, start=1):
+        if not isinstance(item, dict):
+            continue
+        profile = _profile_to_adapter_json(item)
+        if not profile["id"]:
+            profile["id"] = f"provider-{index}"
+        if profile["id"] in seen:
+            continue
+        seen.add(profile["id"])
+        profiles.append(profile)
+    return profiles
+
+
+def _providers_for_ui(section: dict[str, Any], default_id: str) -> tuple[list[dict[str, str]], str]:
+    active_id = str(section.get("active_provider_id") or default_id).strip() or default_id
+    raw_providers = section.get("providers")
+    providers: list[dict[str, str]] = []
+    if isinstance(raw_providers, list):
+        for index, item in enumerate(raw_providers, start=1):
+            if not isinstance(item, dict):
+                continue
+            profile = _adapter_section_to_provider_profile(item, f"{default_id}-{index}")
+            if not profile["id"]:
+                profile["id"] = f"{default_id}-{index}"
+            providers.append(profile)
+    if not providers:
+        providers = [_adapter_section_to_provider_profile(section, active_id)]
+    if not any(provider["id"] == active_id for provider in providers):
+        active_id = providers[0]["id"]
+    return providers, active_id
+
+
+def _write_provider_profiles_to_sections(
+    data: dict[str, Any],
+    section_names: tuple[str, ...],
+    profiles_json: str,
+    active_provider_id: str,
+):
+    profiles = _parse_provider_profiles_json(profiles_json)
+    if not profiles:
+        return
+    active_id = str(active_provider_id or "").strip() or profiles[0]["id"]
+    if not any(profile["id"] == active_id for profile in profiles):
+        active_id = profiles[0]["id"]
+    active_profile = next(profile for profile in profiles if profile["id"] == active_id)
+    for section_name in section_names:
+        section = dict(data.get(section_name) or {})
+        section["providers"] = profiles
+        section["active_provider_id"] = active_id
+        for key in ("provider_name", "api_format", "base_url", "api_key", "model"):
+            value = active_profile.get(key, "")
+            if value or key == "api_key":
+                section[key] = value
+        data[section_name] = section
+
+
 def save_model_config_to_files(
     analysis_provider_name,
     analysis_api_format,
@@ -409,6 +671,11 @@ def save_model_config_to_files(
     fallback_models_text="",
     model_switch_after_failures=2,
     stop_after_last_model_failures=2,
+    *,
+    analysis_providers_json: str = "",
+    active_analysis_provider_id: str = "",
+    image_providers_json: str = "",
+    active_image_provider_id: str = "",
     user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ):
     is_default_user = _is_default_config_user(user_id)
@@ -444,6 +711,18 @@ def save_model_config_to_files(
         model=img_model or "",
         api_key_env="IMAGE_API_KEY" if is_default_user else "",
         api_key=None if is_default_user else (img_api_key or ""),
+    )
+    _write_provider_profiles_to_sections(
+        data,
+        ("llm", "vision"),
+        analysis_providers_json,
+        active_analysis_provider_id,
+    )
+    _write_provider_profiles_to_sections(
+        data,
+        ("image_gen",),
+        image_providers_json,
+        active_image_provider_id,
     )
 
     fallback_models = []
@@ -483,17 +762,43 @@ def load_model_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> di
     config_data = _load_effective_config_json(user_id)
     prompt_overrides = _apply_prompt_overrides_from_json(config_data)
     cfg = get_config(user_id)
+    analysis_providers, active_analysis_provider_id = _providers_for_ui(config_data.get("llm") or {}, "analysis-default")
+    image_providers, active_image_provider_id = _providers_for_ui(config_data.get("image_gen") or {}, "image-default")
+    analysis_api_key = cfg.llm.api_key if _namespace_has_explicit_api_key(user_id, "llm") else ""
+    image_api_key = cfg.image_gen.api_key if _namespace_has_explicit_api_key(user_id, "image_gen") else ""
+    for provider in analysis_providers:
+        if provider["id"] == active_analysis_provider_id:
+            provider.update({
+                "providerName": cfg.llm.provider_name or "",
+                "apiFormat": _ui_api_format(cfg.llm.api_format or cfg.llm.provider),
+                "baseUrl": cfg.llm.base_url or "",
+                "apiKey": analysis_api_key,
+                "model": cfg.llm.model or "",
+            })
+    for provider in image_providers:
+        if provider["id"] == active_image_provider_id:
+            provider.update({
+                "providerName": cfg.image_gen.provider_name or "",
+                "apiFormat": _ui_api_format(cfg.image_gen.api_format or cfg.image_gen.provider),
+                "baseUrl": cfg.image_gen.base_url or "",
+                "apiKey": image_api_key,
+                "model": cfg.image_gen.model or "",
+            })
     return {
         "analysisProviderName": cfg.llm.provider_name or "",
         "analysisApiFormat": _ui_api_format(cfg.llm.api_format or cfg.llm.provider),
         "analysisBaseUrl": cfg.llm.base_url or "",
-        "analysisApiKey": cfg.llm.api_key if _namespace_has_explicit_api_key(user_id, "llm") else "",
+        "analysisApiKey": analysis_api_key,
         "analysisModel": cfg.llm.model or "",
+        "activeAnalysisProviderId": active_analysis_provider_id,
+        "analysisProviders": analysis_providers,
         "imageProviderName": cfg.image_gen.provider_name or "",
         "imageApiFormat": _ui_api_format(cfg.image_gen.api_format or cfg.image_gen.provider),
         "imageBaseUrl": cfg.image_gen.base_url or "",
-        "imageApiKey": cfg.image_gen.api_key if _namespace_has_explicit_api_key(user_id, "image_gen") else "",
+        "imageApiKey": image_api_key,
         "imageModel": cfg.image_gen.model or "",
+        "activeImageProviderId": active_image_provider_id,
+        "imageProviders": image_providers,
         "fallbackModels": "\n".join(cfg.image_model_fallbacks or []),
         "modelSwitchAfterFailures": cfg.model_switch_after_failures,
         "stopAfterLastModelFailures": cfg.stop_after_last_model_failures,
@@ -932,9 +1237,8 @@ def run_pipeline(
         yield None, [], error, "", "", "", error
         return
 
-    if generation_mode in {GenerationMode.RENDER3D, GenerationMode.COLORED_FLOOR_PLAN} and not floor_plan_paths:
-        mode_label = "3D 效果图模式" if generation_mode == GenerationMode.RENDER3D else "彩色平面图模式"
-        error = f"执行失败：{mode_label}请至少上传一张平面图"
+    if generation_mode == GenerationMode.COLORED_FLOOR_PLAN and not floor_plan_paths:
+        error = "执行失败：彩色平面图模式请至少上传一张平面图"
         yield None, [], error, "", "", "", error
         return
 

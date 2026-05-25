@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend guideline index and documentation language convention."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component and accessibility conventions for UI changes."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality expectations and forbidden patterns."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "TypeScript/domain type constraints relevant to App.tsx changes."}

@@ -10,17 +10,30 @@ export type ChatMemoryCandidate = {
   evaluation_standards?: string[];
 };
 
+export type ApiProviderProfile = {
+  id: string;
+  providerName: string;
+  apiFormat: string;
+  baseUrl: string;
+  apiKey: string;
+  model: string;
+};
+
 export type ApiConfig = {
   analysisProviderName: string;
   analysisApiFormat: string;
   analysisBaseUrl: string;
   analysisApiKey: string;
   analysisModel: string;
+  activeAnalysisProviderId: string;
+  analysisProviders: ApiProviderProfile[];
   imageProviderName: string;
   imageApiFormat: string;
   imageBaseUrl: string;
   imageApiKey: string;
   imageModel: string;
+  activeImageProviderId: string;
+  imageProviders: ApiProviderProfile[];
   floorAnalysisSystemPrompt: string;
   promptGenSystem3dCn: string;
   fallbackModels: string;
@@ -35,8 +48,31 @@ export type FilePreview = {
   url: string;
 };
 
+export type ChatImageAttachment = {
+  id: string;
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+};
+
+export type ChatMessageVariant = {
+  id: string;
+  content: LocalizedText | string;
+  bullets?: Record<Locale, string[]>;
+  promptText?: string;
+  imageUrl?: string;
+  imageLabel?: string;
+  attachments?: ChatImageAttachment[];
+  sourceResultId?: string;
+  draftInstruction?: string;
+  memoryCandidate?: ChatMemoryCandidate;
+  model?: string;
+  createdAt?: string;
+};
+
 export type ChatMessage = {
   id: string;
+  parentId?: string | null;
   role: "user" | "assistant";
   kind: "text" | "analysis" | "render" | "error";
   content: LocalizedText | string;
@@ -44,9 +80,13 @@ export type ChatMessage = {
   promptText?: string;
   imageUrl?: string;
   imageLabel?: string;
+  attachments?: ChatImageAttachment[];
   sourceResultId?: string;
   draftInstruction?: string;
   memoryCandidate?: ChatMemoryCandidate;
+  feedback?: "like" | "dislike";
+  variants?: ChatMessageVariant[];
+  activeVariantIndex?: number;
 };
 
 export type ApiImage = {

@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task entry point and documentation language conventions."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Validate composer state and durable conversation behavior."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Validate type changes for chat message feedback/actions."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Validate UI component and accessibility behavior."}

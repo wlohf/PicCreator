@@ -1,0 +1,6 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend settings UI and ApiConfig shape"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "ApiConfig local state and localStorage persistence"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Typed provider profile additions"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend config API and runtime config changes"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Config save/load validation error handling"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Cross-layer config data flow"}

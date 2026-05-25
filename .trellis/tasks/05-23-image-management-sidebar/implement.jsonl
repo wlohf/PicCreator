@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task entrypoint and project language guidance."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Result history, workspace mode, account identity, and result asset URL state constraints."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "RenderHistoryItem and generation mode type contracts used by image management UI."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality checklist for implementation."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index for reuse and cross-layer checks."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Avoid duplicating existing result-library logic when adding management UI."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Map existing result API data through frontend display and mutations."}

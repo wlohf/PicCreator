@@ -1,4 +1,4 @@
-import { imageFilesFromFiles, mergeFloorPlanFiles } from "../src/utils/fileAttachments.js";
+import { imageFilesFromClipboardItems, imageFilesFromFiles, mergeFloorPlanFiles } from "../src/utils/fileAttachments.js";
 
 function assert(condition: unknown, message: string) {
   if (!condition) {
@@ -18,6 +18,16 @@ const pdf = makeFile("brief.pdf", "application/pdf", 3);
 const filtered = imageFilesFromFiles([floorA, pdf, floorB]);
 assert(filtered.length === 2, "imageFilesFromFiles should discard non-image files");
 assert(filtered[0] === floorA && filtered[1] === floorB, "imageFilesFromFiles should preserve image order");
+
+const clipboardItems = [
+  { kind: "file", type: "image/png", getAsFile: () => floorA },
+  { kind: "file", type: "application/pdf", getAsFile: () => pdf },
+  { kind: "string", type: "text/plain", getAsFile: () => null },
+] as unknown as DataTransferItemList;
+
+const clipboardImages = imageFilesFromClipboardItems(clipboardItems);
+assert(clipboardImages.length === 1, "imageFilesFromClipboardItems should only return image file items");
+assert(clipboardImages[0] === floorA, "imageFilesFromClipboardItems should preserve the pasted image file");
 
 const merged = mergeFloorPlanFiles([floorA], [duplicateFloorA, floorB, pdf], true);
 assert(merged.length === 2, "mergeFloorPlanFiles should dedupe floor plans by name and size");

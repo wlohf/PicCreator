@@ -117,7 +117,7 @@ export const tools: Array<{ key: ToolKey; label: LocalizedText; icon: "pointer" 
   { key: "select", label: { zh: "需求", en: "Brief" }, icon: "pointer" }
 ];
 
-export const modelOptions = ["gpt-image-2", "dall-e-3", "imagen-preview"];
+export const modelOptions = ["gpt-image-2"];
 export const apiFormatOptions = [
   { value: "", label: "config.json" },
   { value: "openai", label: "OpenAI compatible chat" },
@@ -138,11 +138,15 @@ export const defaultApiConfig: ApiConfig = {
   analysisBaseUrl: "",
   analysisApiKey: "",
   analysisModel: "",
+  activeAnalysisProviderId: "",
+  analysisProviders: [],
   imageProviderName: "",
   imageApiFormat: "",
   imageBaseUrl: "",
   imageApiKey: "",
   imageModel: "gpt-image-2",
+  activeImageProviderId: "",
+  imageProviders: [],
   floorAnalysisSystemPrompt: "",
   promptGenSystem3dCn: "",
   fallbackModels: "",

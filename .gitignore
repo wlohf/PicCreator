@@ -27,6 +27,12 @@ output/
 .venv/
 .agent-night/
 .tmp-*.png
+fix.patch
+.codex/*.bak-*
+attuno-studio/.tmp-pydeps/
+attuno-studio/.tmp-pytest-cache/
+attuno-studio/.tmp-pytest-temp/
+attuno-studio/ui-prototype/.tmp-dev-server/
 
 # Trellis local runtime state
 .trellis/.developer

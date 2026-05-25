@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Form
 from fastapi.responses import JSONResponse
 
-from app_runtime import load_model_config_for_ui, save_model_config_to_files, verify_analysis_api, verify_image_api
+from app_runtime import load_model_config_for_ui, list_available_models, save_model_config_to_files, verify_analysis_api, verify_image_api
 from backend.app.services.auth_service import get_current_or_default_user, resolve_config_user_id
 
 router = APIRouter(prefix="/api/config", tags=["config"])
@@ -35,6 +35,30 @@ def load_config(user=Depends(get_current_or_default_user)):
         return error_response("load", str(exc))
 
 
+@router.post("/models-analysis")
+def detect_analysis_models(
+    user=Depends(get_current_or_default_user),
+    provider_name: str = Form(""),
+    api_format: str = Form(""),
+    base_url: str = Form(""),
+    api_key: str = Form(""),
+    model: str = Form(""),
+):
+    try:
+        models = list_available_models(
+            "analysis",
+            provider_name,
+            api_format,
+            base_url,
+            api_key,
+            model,
+            user_id=resolve_config_user_id(user),
+        )
+        return {"ok": True, "models": models, "message": f"检测到 {len(models)} 个分析模型"}
+    except Exception as exc:
+        return error_response("models-analysis", str(exc))
+
+
 @router.post("/verify-image")
 def verify_image(
     user=Depends(get_current_or_default_user),
@@ -51,6 +75,30 @@ def verify_image(
         return error_response("verify-image", str(exc))
 
 
+@router.post("/models-image")
+def detect_image_models(
+    user=Depends(get_current_or_default_user),
+    provider_name: str = Form(""),
+    api_format: str = Form(""),
+    base_url: str = Form(""),
+    api_key: str = Form(""),
+    model: str = Form(""),
+):
+    try:
+        models = list_available_models(
+            "image",
+            provider_name,
+            api_format,
+            base_url,
+            api_key,
+            model,
+            user_id=resolve_config_user_id(user),
+        )
+        return {"ok": True, "models": models, "message": f"检测到 {len(models)} 个画图模型"}
+    except Exception as exc:
+        return error_response("models-image", str(exc))
+
+
 @router.post("/save")
 def save_config(
     user=Depends(get_current_or_default_user),
@@ -59,11 +107,15 @@ def save_config(
     analysis_base_url: str = Form(""),
     analysis_api_key: str = Form(""),
     analysis_model: str = Form(""),
+    analysis_providers_json: str = Form(""),
+    active_analysis_provider_id: str = Form(""),
     img_provider_name: str = Form(""),
     img_api_format: str = Form(""),
     img_base_url: str = Form(""),
     img_api_key: str = Form(""),
     img_model: str = Form(""),
+    image_providers_json: str = Form(""),
+    active_image_provider_id: str = Form(""),
     floor_analysis_system_prompt: str = Form(""),
     prompt_gen_system_3d_cn: str = Form(""),
     fallback_models_text: str = Form(""),
@@ -87,6 +139,10 @@ def save_config(
             fallback_models_text,
             model_switch_after_failures,
             stop_after_last_model_failures,
+            analysis_providers_json=analysis_providers_json,
+            active_analysis_provider_id=active_analysis_provider_id,
+            image_providers_json=image_providers_json,
+            active_image_provider_id=active_image_provider_id,
             user_id=resolve_config_user_id(user),
         )
         return {"ok": True, "message": message}

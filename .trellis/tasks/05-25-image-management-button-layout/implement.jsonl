@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for UI component/style work."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component conventions for React UI changes."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Quality expectations and verification scope."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Type-safety constraints while touching TSX."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check existing patterns before adding new UI styling."}

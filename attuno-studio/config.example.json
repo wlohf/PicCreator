@@ -31,9 +31,7 @@
     "promptGenSystem3dCn": "",
     "promptGenSystemStandardCn": ""
   },
-  "image_model_fallbacks": [
-    "dall-e-3"
-  ],
+  "image_model_fallbacks": [],
   "model_switch_after_failures": 2,
   "stop_after_last_model_failures": 2
 }

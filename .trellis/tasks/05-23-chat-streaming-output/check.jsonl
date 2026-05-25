@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "检查聊天 SSE 最终契约是否与文档一致，并保证非聊天意图兼容。"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "复核 SSE 事件、前端消息状态和错误处理是否在边界处保持一致。"}
