@@ -258,6 +258,16 @@ npm run test:composer-layout
 现阶段更适合两种方式：
 
 - 本地源码运行：最方便调试模型、API Key 和提示词行为
-- VPS 部署：更适合团队共用浏览器访问
+- Ubuntu VPS 部署：更适合团队共用浏览器访问，推荐使用 systemd 运行后端、Nginx 托管前端并反代 `/api`
 
-如果后续再做面向非技术用户的单机交付，再考虑 EXE 打包会更稳。
+服务器部署与后续更新已经整理为脚本和文档：
+
+```bash
+# 首次部署/补依赖/构建前端
+bash deploy/install.sh
+
+# 后续更新：git pull、刷新依赖、构建、重启 API、reload Nginx
+bash deploy/update.sh
+```
+
+详细步骤见 [Ubuntu 部署与更新](attuno-studio/docs/deployment.md)。如果后续再做面向非技术用户的单机交付，再考虑 EXE 打包会更稳。
