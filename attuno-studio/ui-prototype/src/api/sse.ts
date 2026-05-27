@@ -3,6 +3,10 @@ export type ParsedSseEvent = {
   data: unknown;
 };
 
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 export function parseSseEventBlock(rawEvent: string): ParsedSseEvent | null {
   let eventName = "message";
   const dataLines: string[] = [];
@@ -32,6 +36,9 @@ export async function* iterateSseEvents(
   try {
     while (true) {
       const { value, done } = await reader.read().catch((error) => {
+        if (isAbortError(error)) {
+          throw error;
+        }
         throw new Error(
           `${disconnectMessage}；原始错误：${error instanceof Error ? error.message : String(error)}`
         );

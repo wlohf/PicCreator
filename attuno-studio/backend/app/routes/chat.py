@@ -10,6 +10,7 @@ import app_runtime
 from backend.app.services.auth_service import get_current_or_default_user, resolve_config_user_id
 from backend.app.services.design_chat_agent import DesignChatAgent
 from backend.app.services.preferences_store import apply_chat_memory
+from backend.app.services.web_search import build_web_search_context, should_use_web_search
 from config import adapter_supports_image_inputs
 
 router = APIRouter(prefix="/api/chat", tags=["chat"])
@@ -63,6 +64,11 @@ def _effort_instruction(effort: str) -> str:
     if normalized == "low":
         return "回答保持简洁，直接给出可执行结论。"
     return "回答保持清晰、有条理，并优先回应用户当前问题。"
+
+
+def _payload_web_search_context(payload: ChatPayload) -> str:
+    context = payload.context if isinstance(payload.context, dict) else {}
+    return str(context.get("web_search_context") or "").strip()
 
 
 def _chat_image_attachments(value: Any) -> list[dict[str, str]]:
@@ -128,6 +134,12 @@ def _daily_chat_messages(payload: ChatPayload, routed: dict[str, Any]) -> list[d
         messages.append({
             "role": "system",
             "content": "\n".join(context_bits),
+        })
+    web_search_context = _payload_web_search_context(payload)
+    if web_search_context:
+        messages.append({
+            "role": "system",
+            "content": web_search_context,
         })
     for item in linear_messages:
         if not isinstance(item, dict):
@@ -221,6 +233,26 @@ async def _stream_configured_daily_chat(payload: ChatPayload, routed: dict[str, 
         await asyncio.sleep(0)
 
 
+async def _with_web_search_context(payload: ChatPayload, routed: dict[str, Any]) -> tuple[ChatPayload, dict[str, Any]]:
+    if routed.get("suggested_action") != "chat":
+        return payload, routed
+    if not should_use_web_search(payload.message, payload.context):
+        return payload, routed
+
+    query, results, search_context = await build_web_search_context(payload.message)
+    next_context = dict(payload.context or {})
+    next_context["web_search_context"] = search_context
+    next_context["web_search_query"] = query
+    next_payload = payload.model_copy(update={"context": next_context})
+    next_routed = dict(routed)
+    next_routed["web_search"] = {
+        "query": query,
+        "results": results,
+        "ok": bool(results),
+    }
+    return next_payload, next_routed
+
+
 def _chat_sse_event(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -236,6 +268,7 @@ def chat(payload: ChatPayload, user=Depends(get_current_or_default_user)):
     result = _route_chat_payload(payload, user)
     if result.get("suggested_action") == "chat":
         try:
+            payload, result = app_runtime._run_async(_with_web_search_context(payload, result))
             result["reply"] = _run_configured_daily_chat(payload, result, user)
         except Exception as exc:
             return _chat_error_response("chat", str(exc))
@@ -257,13 +290,14 @@ async def chat_stream(payload: ChatPayload, user=Depends(get_current_or_default_
                 yield _chat_sse_event("complete", result)
                 return
 
-            yield _chat_sse_event("meta", {**routed, "reply": ""})
+            stream_payload, stream_routed = await _with_web_search_context(payload, routed)
+            yield _chat_sse_event("meta", {**stream_routed, "reply": ""})
             chunks: list[str] = []
-            async for chunk in _stream_configured_daily_chat(payload, routed, user):
+            async for chunk in _stream_configured_daily_chat(stream_payload, stream_routed, user):
                 chunks.append(chunk)
                 yield _chat_sse_event("delta", {"text": chunk})
 
-            result = dict(routed)
+            result = dict(stream_routed)
             result["reply"] = "".join(chunks).strip()
             if not result["reply"]:
                 raise RuntimeError("聊天模型返回为空")

@@ -28,6 +28,7 @@ import {
   PanelLeftOpen,
   Pin,
   Search,
+  Square,
   PlugZap,
   Play,
   Plus,
@@ -45,7 +46,7 @@ import {
 
 import { loadAuthMe, login, logout, register, type AuthUser } from "./api/auth";
 import { detectConfigModels, loadConfig, saveConfig, verifyConfig, type ConfigRole } from "./api/config";
-import { applyChatMemory, streamDesignChat } from "./api/chat";
+import { applyChatMemory, isChatStreamAbortedError, streamDesignChat } from "./api/chat";
 import { loadChatHistory, saveChatHistory } from "./api/chatHistory";
 import { requestGenerationStream } from "./api/generation";
 import { requestAnnotatedImageEdit, requestImageEdit } from "./api/imageEdits";
@@ -1035,8 +1036,7 @@ function App() {
   const [generationElapsedMs, setGenerationElapsedMs] = useState(0);
   const [floorPlanPreviews, setFloorPlanPreviews] = useState<FilePreview[]>([]);
   const [toast, setToast] = useState<string | null>(null);
-  const [isChatResponding, setIsChatResponding] = useState(false);
-  const [respondingSessionId, setRespondingSessionId] = useState("");
+  const [chatRespondingSessionIds, setChatRespondingSessionIds] = useState<string[]>([]);
   const [retryPopover, setRetryPopover] = useState<RetryPopoverState | null>(null);
   const [editingMessage, setEditingMessage] = useState<MessageEditState | null>(null);
   const [rememberingMessageId, setRememberingMessageId] = useState<string | null>(null);
@@ -1055,6 +1055,7 @@ function App() {
   const conversationEpochRef = useRef(0);
   const isBootstrappingSessionRef = useRef(false);
   const lastSavedChatHistoryRef = useRef("");
+  const chatAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   const t = copy[locale];
   const isImageWorkspace = workspaceMode === "image";
@@ -1131,9 +1132,9 @@ function App() {
   );
   const conversationGenerationRecordCount = countGenerationRecords(activePathMessages);
   const isVisibleRendering = isRendering && renderingSessionId === currentSessionId;
-  const isVisibleChatResponding = isChatResponding && respondingSessionId === currentSessionId;
-  const isConversationBusy = isRendering || isChatResponding;
+  const isVisibleChatResponding = chatRespondingSessionIds.includes(currentSessionId);
   const isVisibleConversationBusy = isVisibleRendering || isVisibleChatResponding;
+  const isConversationBusy = isRendering || isVisibleChatResponding;
   const visibleLiveGeneration = isVisibleRendering ? liveGeneration : null;
   const visibleActiveStep = isVisibleRendering ? renderingStep : activeStep;
   const hasWorkspaceContent = hasPromptText || floorPlanFiles.length > 0 || activePathMessages.length > 0 || workspaceMode !== "image";
@@ -1347,12 +1348,27 @@ function App() {
     setGenerationElapsedMs(0);
     setIsRendering(false);
     setRenderingSessionId("");
-    setIsChatResponding(false);
-    setRespondingSessionId("");
+    clearChatRespondingSessions();
     setRetryPopover(null);
     setEditingMessage(null);
     setRememberingMessageId(null);
     setIsSubmittingAnnotation(false);
+  }
+
+  function addChatRespondingSession(sessionId: string) {
+    if (!sessionId) return;
+    setChatRespondingSessionIds((current) => current.includes(sessionId) ? current : [...current, sessionId]);
+  }
+
+  function removeChatRespondingSession(sessionId: string) {
+    if (!sessionId) return;
+    setChatRespondingSessionIds((current) => current.filter((id) => id !== sessionId));
+  }
+
+  function clearChatRespondingSessions() {
+    chatAbortControllersRef.current.forEach((controller) => controller.abort());
+    chatAbortControllersRef.current.clear();
+    setChatRespondingSessionIds([]);
   }
 
   function selectCurrentSession(sessionId: string) {
@@ -1361,6 +1377,7 @@ function App() {
   }
 
   function beginNamespaceSwitch(nextUserId: string) {
+    clearChatRespondingSessions();
     conversationEpochRef.current += 1;
     currentUserIdRef.current = nextUserId;
     selectCurrentSession("");
@@ -1593,8 +1610,8 @@ function App() {
       ? floorPlanFiles.length > 0
       : hasPromptText;
   const canGenerate = composerMode === "edit-selected-result" ? canEditSelectedResult : canGenerateNew;
-  const canSubmitChat = hasAuthenticatedUser && isChatWorkspace && hasPromptText && !isConversationBusy;
-  const canSubmitComposer = !isConversationBusy && (isChatWorkspace ? canSubmitChat : canGenerate);
+  const canSubmitChat = hasAuthenticatedUser && isChatWorkspace && hasPromptText && !isVisibleChatResponding;
+  const canSubmitComposer = isChatWorkspace ? canSubmitChat : !isConversationBusy && canGenerate;
   const chatProviderLabel = apiConfig.analysisProviderName || apiFormatDisplayName(apiConfig.analysisApiFormat) || (locale === "zh" ? "聊天供应商" : "Chat provider");
   const imageProviderLabel = apiConfig.imageProviderName || apiFormatDisplayName(apiConfig.imageApiFormat) || (locale === "zh" ? "图像供应商" : "Image provider");
   const chatModelValue = apiConfig.analysisModel || "";
@@ -2608,13 +2625,13 @@ function App() {
     return hasConversationContent({
       messages: activePathMessages,
       generationRecordCount: conversationGenerationRecordCount,
-      isRendering: isRendering || isChatResponding,
+      isRendering: isVisibleRendering || isVisibleChatResponding,
       liveGenerationHasContent: Boolean(liveGeneration?.hasImages || liveGeneration?.floorDesc || liveGeneration?.prompt || liveGeneration?.logs),
     });
   }
 
   function handleResetWorkspace() {
-    if (isRendering || isChatResponding) return;
+    if (isRendering) return;
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
     if (!currentConversationHasContent()) {
@@ -2635,8 +2652,6 @@ function App() {
     setConfigStatus(null);
     setConfigAction(null);
     setIsSubmittingAnnotation(false);
-    setIsChatResponding(false);
-    setRespondingSessionId("");
     setRememberingMessageId(null);
     clearAttachments(true);
     applySession(nextSession);
@@ -2658,6 +2673,13 @@ function App() {
     clearAttachments(true);
     applySession(target);
     showToast(locale === "zh" ? "已切换聊天记录" : "Chat session switched");
+  }
+
+  function stopCurrentChatResponse() {
+    const sessionId = currentSessionIdRef.current;
+    const controller = chatAbortControllersRef.current.get(sessionId);
+    if (!controller) return;
+    controller.abort();
   }
 
   function handleToggleHistoryMenu(sessionId: string, anchor: HTMLElement) {
@@ -2763,7 +2785,7 @@ function App() {
   }
 
   function switchWorkspaceMode(nextMode: WorkspaceMode) {
-    if (isRendering || isChatResponding || workspaceMode === nextMode) return;
+    if (isRendering || isVisibleChatResponding || workspaceMode === nextMode) return;
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
     setWorkspaceMode(nextMode);
@@ -2882,7 +2904,7 @@ function App() {
   }
 
   function handleOpenRetryPopover(message: ChatMessage) {
-    if (isRendering || isChatResponding) {
+    if (isRendering || isVisibleChatResponding) {
       showToast(locale === "zh" ? "当前仍有请求在进行中" : "A request is already running");
       return;
     }
@@ -2905,7 +2927,7 @@ function App() {
   }
 
   function handleRegenerateMessage(message: ChatMessage, retryModel = retryPopover?.model || apiConfig.analysisModel) {
-    if (isRendering || isChatResponding) {
+    if (isRendering || isVisibleChatResponding) {
       showToast(locale === "zh" ? "当前仍有请求在进行中" : "A request is already running");
       return;
     }
@@ -3688,9 +3710,9 @@ function App() {
     retryAttachments?: ChatImageAttachment[];
     submittedAttachments?: ChatImageAttachment[];
   }) {
-    if (isChatResponding || isRendering) return;
     const flowOptions = typeof options === "string" ? { userPrompt: options } : options ?? {};
     const { userPrompt, retryTargetMessageId, retryParentUserMessageId, editParentId, retryModel, retryAttachments, submittedAttachments } = flowOptions;
+    if (isRendering || chatRespondingSessionIds.includes(currentSessionIdRef.current)) return;
     const userBrief = (userPrompt ?? chatInput).trim();
     if (!userBrief) {
       showToast(chatBlocker || (locale === "zh" ? "请先输入聊天内容" : "Type a chat message first"));
@@ -3745,11 +3767,12 @@ function App() {
         clearAttachments(true);
       }
     }
-    setRespondingSessionId(runGuard.sessionId);
-    setIsChatResponding(true);
+    const abortController = new AbortController();
+    chatAbortControllersRef.current.set(runGuard.sessionId, abortController);
+    addChatRespondingSession(runGuard.sessionId);
 
+    let streamedReply = "";
     try {
-      let streamedReply = "";
       const requestMessages = buildLinearChatContext([...messages, nextPatch[0]], userMessageId);
       const updateAssistantMessage = (patch: Partial<ChatMessage>) => {
         updateRunSessionMessage(runGuard, assistantMessageId, (message) => ({
@@ -3757,51 +3780,55 @@ function App() {
           ...patch,
         }));
       };
-      const response = await streamDesignChat({
-        message: userBrief,
-        user_id: currentUserId || DEFAULT_PROJECT_ID,
-        project_id: DEFAULT_PROJECT_ID,
-        active_result_id: activeResult?.id || "",
-        api_config: requestApiConfig,
-        reasoning_effort: chatReasoningEffort,
-        context: {
-          workspace_mode: "chat",
-          chatInput: userBrief,
-          retry_target_message_id: retryTargetMessageId || "",
-          messages: requestMessages,
-          activeResult: activeResult ? {
-            id: activeResult.id,
-            prompt: activeResult.prompt,
-            evaluation: activeResult.evaluation,
-            floorDesc: activeResult.floorDesc,
-            logs: activeResult.logs
-          } : null
-        }
-      }, {
-        onDelta: (delta) => {
-          if (!isActiveConversationRun(runGuard)) return;
-          streamedReply += delta;
-          updateAssistantMessage({
-            kind: "text",
-            content: streamedReply,
-          });
+      const response = await streamDesignChat(
+        {
+          message: userBrief,
+          user_id: currentUserId || DEFAULT_PROJECT_ID,
+          project_id: DEFAULT_PROJECT_ID,
+          active_result_id: activeResult?.id || "",
+          api_config: requestApiConfig,
+          reasoning_effort: chatReasoningEffort,
+          context: {
+            workspace_mode: "chat",
+            chatInput: userBrief,
+            retry_target_message_id: retryTargetMessageId || "",
+            messages: requestMessages,
+            activeResult: activeResult ? {
+              id: activeResult.id,
+              prompt: activeResult.prompt,
+              evaluation: activeResult.evaluation,
+              floorDesc: activeResult.floorDesc,
+              logs: activeResult.logs
+            } : null
+          }
         },
-        onComplete: (streamResponse) => {
-          if (!isActiveConversationRun(runGuard)) return;
-          streamedReply = streamResponse.reply || streamedReply;
-          const extras = buildDailyChatMessageExtras(
-            streamResponse.draft_instruction || "",
-            streamResponse.memory_candidate
-          );
-          updateAssistantMessage({
-            kind: "text",
-            content: streamedReply,
-            bullets: extras.bullets,
-            draftInstruction: extras.draftInstruction || undefined,
-            memoryCandidate: extras.memoryCandidate,
-          });
-        }
-      });
+        {
+          onDelta: (delta) => {
+            if (!isActiveConversationRun(runGuard)) return;
+            streamedReply += delta;
+            updateAssistantMessage({
+              kind: "text",
+              content: streamedReply,
+            });
+          },
+          onComplete: (streamResponse) => {
+            if (!isActiveConversationRun(runGuard)) return;
+            streamedReply = streamResponse.reply || streamedReply;
+            const extras = buildDailyChatMessageExtras(
+              streamResponse.draft_instruction || "",
+              streamResponse.memory_candidate
+            );
+            updateAssistantMessage({
+              kind: "text",
+              content: streamedReply,
+              bullets: extras.bullets,
+              draftInstruction: extras.draftInstruction || undefined,
+              memoryCandidate: extras.memoryCandidate,
+            });
+          }
+        },
+        { signal: abortController.signal }
+      );
       if (!isActiveConversationRun(runGuard)) return;
       const extras = buildDailyChatMessageExtras(response.draft_instruction || "", response.memory_candidate);
       updateAssistantMessage({
@@ -3813,6 +3840,17 @@ function App() {
       });
     } catch (error) {
       if (!isActiveConversationRun(runGuard)) return;
+      if (isChatStreamAbortedError(error)) {
+        updateRunSessionMessage(runGuard, assistantMessageId, (message) => ({
+          ...message,
+          kind: streamedReply ? "text" : "error",
+          content: streamedReply || (locale === "zh" ? "已停止输出。" : "Response stopped."),
+          bullets: undefined,
+          draftInstruction: undefined,
+          memoryCandidate: undefined,
+        }));
+        return;
+      }
       const errorText = `${t.requestFailed}: ${error instanceof Error ? error.message : String(error)}`;
       updateRunSessionMessage(runGuard, assistantMessageId, (message) => ({
         ...message,
@@ -3824,8 +3862,8 @@ function App() {
       }));
     } finally {
       if (isActiveConversationRun(runGuard)) {
-        setIsChatResponding(false);
-        setRespondingSessionId("");
+        chatAbortControllersRef.current.delete(runGuard.sessionId);
+        removeChatRespondingSession(runGuard.sessionId);
       }
     }
   }
@@ -4298,7 +4336,7 @@ function App() {
             type="button"
             className={`chatgpt-sidebar__new-chat ${isSidebarCollapsed ? "is-collapsed" : ""} ${canStartNewConversation ? "" : "is-empty-session"} ${!isImageManagementView && activeUtilityPanel === null ? "is-active" : ""}`}
             onClick={handleResetWorkspace}
-            disabled={isConversationBusy}
+            disabled={isRendering}
             title={!canStartNewConversation
               ? (locale === "zh" ? "当前已经是空白新对话；点击可清空草稿并聚焦输入框" : "Current chat is already blank; click to clear draft state and focus the composer")
               : (locale === "zh" ? "新建对话" : "Start a new chat")}
@@ -4551,7 +4589,7 @@ function App() {
                 className={workspaceMode === "chat" ? "is-active" : ""}
                 aria-pressed={workspaceMode === "chat"}
                 onClick={() => switchWorkspaceMode("chat")}
-                disabled={isConversationBusy}
+                disabled={isVisibleConversationBusy}
               >
                 <MessageCircle size={14} />
                 {locale === "zh" ? "聊天" : "Chat"}
@@ -4561,7 +4599,7 @@ function App() {
                 className={workspaceMode === "image" ? "is-active" : ""}
                 aria-pressed={workspaceMode === "image"}
                 onClick={() => switchWorkspaceMode("image")}
-                disabled={isConversationBusy}
+                disabled={isVisibleConversationBusy}
               >
                 <Camera size={14} />
                 {locale === "zh" ? "图像" : "Image"}
@@ -5027,7 +5065,7 @@ function App() {
                       className="chatgpt-composer__model-select"
                       value={composerModelValue}
                       onChange={(event) => handleComposerModelChange(event.target.value)}
-                      disabled={isConversationBusy}
+                      disabled={isVisibleConversationBusy}
                       aria-label={isChatWorkspace ? (locale === "zh" ? "聊天模型" : "Chat model") : (locale === "zh" ? "图像模型" : "Image model")}
                       title={isChatWorkspace ? (locale === "zh" ? "切换聊天模型" : "Switch chat model") : (locale === "zh" ? "切换图像模型" : "Switch image model")}
                     >
@@ -5043,7 +5081,7 @@ function App() {
                         className="chatgpt-composer__effort-select"
                         value={chatReasoningEffort}
                         onChange={(event) => setChatReasoningEffort(event.target.value as ChatReasoningEffort)}
-                        disabled={isChatResponding}
+                        disabled={isVisibleChatResponding}
                         aria-label={locale === "zh" ? "思考强度" : "Reasoning effort"}
                         title={locale === "zh" ? "切换回复深度" : "Switch response depth"}
                       >
@@ -5062,13 +5100,14 @@ function App() {
                       <Mic size={18} />
                     </button>
                     <button
-                      type="submit"
+                      type={isVisibleChatResponding ? "button" : "submit"}
                       className="chatgpt-composer__send"
-                      disabled={!canSubmitComposer}
+                      disabled={isVisibleChatResponding ? false : !canSubmitComposer}
                       aria-busy={isVisibleConversationBusy}
-                      title={(isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
+                      onClick={isVisibleChatResponding ? stopCurrentChatResponse : undefined}
+                      title={isVisibleChatResponding ? (locale === "zh" ? "停止当前回复" : "Stop current response") : (isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
                     >
-                      <AudioLines size={18} />
+                      {isVisibleChatResponding ? <Square size={16} /> : <AudioLines size={18} />}
                     </button>
                   </>
                 ) : (
@@ -5077,7 +5116,7 @@ function App() {
                       className="chatgpt-composer__model-select"
                       value={composerModelValue}
                       onChange={(event) => handleComposerModelChange(event.target.value)}
-                      disabled={isConversationBusy}
+                      disabled={isVisibleConversationBusy}
                       aria-label={isChatWorkspace ? (locale === "zh" ? "聊天模型" : "Chat model") : (locale === "zh" ? "图像模型" : "Image model")}
                       title={isChatWorkspace ? (locale === "zh" ? "切换聊天模型" : "Switch chat model") : (locale === "zh" ? "切换图像模型" : "Switch image model")}
                     >
@@ -5093,7 +5132,7 @@ function App() {
                         className="chatgpt-composer__effort-select"
                         value={chatReasoningEffort}
                         onChange={(event) => setChatReasoningEffort(event.target.value as ChatReasoningEffort)}
-                        disabled={isChatResponding}
+                        disabled={isVisibleChatResponding}
                         aria-label={locale === "zh" ? "思考强度" : "Reasoning effort"}
                         title={locale === "zh" ? "切换回复深度" : "Switch response depth"}
                       >
@@ -5105,13 +5144,14 @@ function App() {
                       </select>
                     )}
                     <button
-                      type="submit"
+                      type={isVisibleChatResponding ? "button" : "submit"}
                       className="chatgpt-composer__send"
-                      disabled={!canSubmitComposer}
+                      disabled={isVisibleChatResponding ? false : !canSubmitComposer}
                       aria-busy={isVisibleConversationBusy}
-                      title={(isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
+                      onClick={isVisibleChatResponding ? stopCurrentChatResponse : undefined}
+                      title={isVisibleChatResponding ? (locale === "zh" ? "停止当前回复" : "Stop current response") : (isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
                     >
-                      <Send size={16} />
+                      {isVisibleChatResponding ? <Square size={15} /> : <Send size={16} />}
                     </button>
                   </>
                 )}

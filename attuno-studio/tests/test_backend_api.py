@@ -172,6 +172,61 @@ def test_daily_chat_endpoint_uses_configured_analysis_model(tmp_path, monkeypatc
     assert calls[0]["kwargs"]["max_tokens"] == 900
 
 
+def test_daily_chat_endpoint_injects_web_search_context(tmp_path, monkeypatch):
+    import app_runtime
+    from backend.app.routes import chat as chat_route
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("daily-chat-search-user")
+    calls = []
+
+    async def fake_search_context(message):
+        assert "联网搜索" in message
+        return (
+            "Attuno latest references",
+            [{"title": "Attuno reference", "url": "https://example.com/ref", "snippet": "fresh context"}],
+            "联网搜索结果：Attuno reference https://example.com/ref fresh context",
+        )
+
+    class FakeChatAdapter:
+        async def chat(self, messages, **kwargs):
+            calls.append({"messages": messages, "kwargs": kwargs, "cfg": self.cfg})
+            return "根据联网搜索结果，参考资料是 example.com。"
+
+    def fake_build_adapter(cfg, role):
+        assert role == "llm"
+        adapter = FakeChatAdapter()
+        adapter.cfg = cfg
+        return adapter
+
+    monkeypatch.setattr(chat_route, "build_web_search_context", fake_search_context)
+    monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "联网搜索 Attuno 最新参考资料",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["web_search"]["ok"] is True
+    assert payload["web_search"]["query"] == "Attuno latest references"
+    assert payload["reply"] == "根据联网搜索结果，参考资料是 example.com。"
+    system_messages = [message["content"] for message in calls[0]["messages"] if message["role"] == "system"]
+    assert any("联网搜索结果" in content and "example.com/ref" in content for content in system_messages)
+
+
 def test_daily_chat_endpoint_passes_current_prompt_and_image_attachment(tmp_path, monkeypatch):
     import app_runtime
 
@@ -329,6 +384,60 @@ def test_daily_chat_stream_endpoint_emits_meta_delta_and_complete(tmp_path, monk
     assert calls[0]["cfg"].provider_name == "Configured Chat"
     assert calls[0]["cfg"].model == "chat-model"
     assert calls[0]["kwargs"]["max_tokens"] == 900
+
+
+def test_daily_chat_stream_endpoint_emits_web_search_meta(tmp_path, monkeypatch):
+    import app_runtime
+    from backend.app.routes import chat as chat_route
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("daily-chat-stream-search-user")
+
+    async def fake_search_context(message):
+        assert "搜索" in message
+        return (
+            "current design news",
+            [{"title": "Design news", "url": "https://example.com/news", "snippet": "new material"}],
+            "联网搜索结果：Design news https://example.com/news new material",
+        )
+
+    class FakeChatAdapter:
+        async def stream_chat(self, messages, **kwargs):
+            assert any("联网搜索结果" in message["content"] for message in messages if message["role"] == "system")
+            yield "搜索"
+            yield "完成"
+
+    def fake_build_adapter(cfg, role):
+        assert role == "llm"
+        return FakeChatAdapter()
+
+    monkeypatch.setattr(chat_route, "build_web_search_context", fake_search_context)
+    monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
+
+    with client.stream(
+        "POST",
+        "/api/chat/stream",
+        json={
+            "message": "帮我搜索当前设计新闻",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    ) as response:
+        raw = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    events = _parse_sse_events(raw)
+    assert events[0]["event"] == "meta"
+    assert events[0]["data"]["web_search"]["query"] == "current design news"
+    assert events[0]["data"]["web_search"]["results"][0]["url"] == "https://example.com/news"
+    assert events[-1]["data"]["reply"] == "搜索完成"
 
 
 def test_chat_endpoint_does_not_call_analysis_model_for_image_actions(tmp_path, monkeypatch):

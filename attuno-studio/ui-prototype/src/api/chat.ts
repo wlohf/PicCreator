@@ -56,6 +56,17 @@ export type DesignChatStreamHandlers = {
   onComplete?: (response: DesignChatResponse) => void;
 };
 
+export class ChatStreamAbortedError extends Error {
+  constructor(message = "Chat stream aborted") {
+    super(message);
+    this.name = "ChatStreamAbortedError";
+  }
+}
+
+export function isChatStreamAbortedError(error: unknown) {
+  return error instanceof ChatStreamAbortedError;
+}
+
 export type ApplyChatMemoryResponse = {
   ok: boolean;
   profile?: unknown;
@@ -85,11 +96,15 @@ export async function sendDesignChat(request: DesignChatRequest): Promise<Design
 export async function streamDesignChat(
   request: DesignChatRequest,
   handlers: DesignChatStreamHandlers = {},
-  apiPath = "/api/chat/stream"
+  apiPathOrOptions: string | { apiPath?: string; signal?: AbortSignal } = "/api/chat/stream",
+  signal?: AbortSignal
 ): Promise<DesignChatResponse> {
+  const apiPath = typeof apiPathOrOptions === "string" ? apiPathOrOptions : apiPathOrOptions.apiPath || "/api/chat/stream";
+  const abortSignal = typeof apiPathOrOptions === "string" ? signal : apiPathOrOptions.signal;
   const response = await apiFetch(apiPath, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    signal: abortSignal,
     body: JSON.stringify({
       user_id: "default",
       project_id: "default",
@@ -98,6 +113,9 @@ export async function streamDesignChat(
       ...request
     })
   }).catch((error) => {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ChatStreamAbortedError();
+    }
     throw new Error(
       `无法连接后端聊天流 ${apiPath}。请确认前端开发服务器已代理 /api，且 API 服务正在运行；原始错误：${error instanceof Error ? error.message : String(error)}`
     );
@@ -108,28 +126,35 @@ export async function streamDesignChat(
     throw new Error(data.error || response.statusText);
   }
 
-  for await (const parsed of iterateSseEvents(
-    response,
-    "聊天流连接已中断，后端可能已退出或不可达。请检查 API 服务日志"
-  )) {
-    if (parsed.eventName === "meta") {
-      handlers.onMeta?.(parsed.data as DesignChatStreamMeta);
-      continue;
+  try {
+    for await (const parsed of iterateSseEvents(
+      response,
+      "聊天流连接已中断，后端可能已退出或不可达。请检查 API 服务日志"
+    )) {
+      if (parsed.eventName === "meta") {
+        handlers.onMeta?.(parsed.data as DesignChatStreamMeta);
+        continue;
+      }
+      if (parsed.eventName === "delta") {
+        handlers.onDelta?.(String((parsed.data as { text?: string }).text || ""));
+        continue;
+      }
+      if (parsed.eventName === "complete") {
+        const data = parsed.data as DesignChatResponse;
+        if (!data.ok) throw new Error(data.error || "Chat failed");
+        handlers.onComplete?.(data);
+        return data;
+      }
+      if (parsed.eventName === "error") {
+        const data = parsed.data as Partial<DesignChatResponse>;
+        throw new Error(data.error || "Chat failed");
+      }
     }
-    if (parsed.eventName === "delta") {
-      handlers.onDelta?.(String((parsed.data as { text?: string }).text || ""));
-      continue;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new ChatStreamAbortedError();
     }
-    if (parsed.eventName === "complete") {
-      const data = parsed.data as DesignChatResponse;
-      if (!data.ok) throw new Error(data.error || "Chat failed");
-      handlers.onComplete?.(data);
-      return data;
-    }
-    if (parsed.eventName === "error") {
-      const data = parsed.data as Partial<DesignChatResponse>;
-      throw new Error(data.error || "Chat failed");
-    }
+    throw error;
   }
 
   throw new Error("Chat stream ended without a final result");

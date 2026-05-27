@@ -541,6 +541,80 @@ else:
 
 ---
 
+## Scenario: Daily Chat Web Search And Stop
+
+### 1. Scope / Trigger
+- Trigger: daily chat crosses frontend streaming controls, `/api/chat` and `/api/chat/stream`, backend web search context injection, and configured analysis-model prompts.
+- Applies when changing chat cancellation UX, chat SSE request options, search intent detection, or `web_search` response metadata.
+
+### 2. Signatures
+- `streamDesignChat(request, handlers, { signal })` accepts an optional `AbortSignal`.
+- `POST /api/chat` and `POST /api/chat/stream` may include `web_search` in the response payload when the user explicitly asks to search.
+- `web_search` shape: `{ query: string, results: { title: string, url: string, snippet: string }[], ok: boolean }`.
+- Chat SSE keeps the existing event sequence and may include `web_search` on `meta` and terminal `complete`.
+
+### 3. Contracts
+- Chat busy state is scoped by session id. A streaming response in session A must not block creating, switching to, or sending chat in session B.
+- The visible session's composer send button becomes a stop button while that same session is streaming.
+- Stopping a chat uses `AbortController.abort()`, preserves already streamed text, clears that session's busy state, and must not show a backend failure message.
+- Search is triggered only by explicit search/current-info intent such as “联网”, “搜索”, “查找”, “最新”, or “新闻”. Plain daily-chat phrases such as “今天聊聊” must not trigger web search.
+- Search context is injected as a system message before calling the configured analysis adapter. Non-chat image/draft intents must not run web search.
+- Search failure should surface as a chat/search failure or explicit degraded context; do not silently claim search was performed.
+
+### 4. Validation & Error Matrix
+- User aborts current stream -> frontend throws/handles `ChatStreamAbortedError`, keeps partial text or shows “已停止输出”.
+- Session A streaming, session B visible -> session B send controls are not disabled by A.
+- Search intent with results -> adapter receives system context containing search result title, URL, and snippet.
+- Search intent with empty results -> model receives an explicit “联网搜索没有返回可用结果” context.
+- Non-chat routed intent -> no search request and no analysis-model call.
+
+### 5. Good / Base / Bad Cases
+- Good: ask “联网搜索 Attuno 最新参考资料”; `meta.web_search.results` contains source URLs and the model receives the search summary.
+- Good: stop a partially streamed answer; the partial answer remains and the same session can submit again.
+- Base: ask “今天先正常聊聊项目节奏”; no search occurs.
+- Bad: a global `isChatResponding` boolean disables all sessions while one chat streams.
+- Bad: aborting a user-stopped stream renders a generic “聊天流连接已中断” error bubble.
+
+### 6. Tests Required
+- Frontend/static test asserting per-session responding state, `AbortController`, and stop-button wiring.
+- Frontend/API test asserting `streamDesignChat` accepts abort options and normalizes abort errors.
+- Backend API test asserting `/api/chat` injects web search context into adapter messages.
+- Backend SSE test asserting `/api/chat/stream` emits `web_search` metadata in `meta` and preserves final reply.
+- Existing daily-chat tests proving ordinary chat does not accidentally trigger search.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+// This blocks every conversation tab/window.
+const [isChatResponding, setIsChatResponding] = useState(false);
+const canSubmitComposer = !isChatResponding && hasPromptText;
+```
+
+#### Correct
+
+```typescript
+const [chatRespondingSessionIds, setChatRespondingSessionIds] = useState<string[]>([]);
+const isVisibleChatResponding = chatRespondingSessionIds.includes(currentSessionId);
+const canSubmitChat = hasPromptText && !isVisibleChatResponding;
+```
+
+#### Wrong
+
+```python
+# Too broad: ordinary daily chat should not search.
+SEARCH_INTENT_MARKERS = ("今天", "现在", "current")
+```
+
+#### Correct
+
+```python
+SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
+```
+
+---
+
 ## Scenario: API Config Provider Profiles
 
 ### 1. Scope / Trigger

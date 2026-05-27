@@ -33,19 +33,41 @@ assert(
 
 const streamDesignChatBlock = chatApiSource.match(/export async function streamDesignChat[\s\S]*?export async function applyChatMemory/m)?.[0] ?? "";
 assert(
-  streamDesignChatBlock.includes('apiPath = "/api/chat/stream"') &&
+  streamDesignChatBlock.includes('apiPathOrOptions: string | { apiPath?: string; signal?: AbortSignal } = "/api/chat/stream"') &&
+  streamDesignChatBlock.includes('apiPathOrOptions.apiPath || "/api/chat/stream"') &&
+  streamDesignChatBlock.includes("ChatStreamAbortedError") &&
+  streamDesignChatBlock.includes("signal: abortSignal") &&
   streamDesignChatBlock.includes("iterateSseEvents(") &&
   streamDesignChatBlock.includes('parsed.eventName === "delta"') &&
   streamDesignChatBlock.includes('parsed.eventName === "complete"'),
-  "streamDesignChat should consume /api/chat/stream SSE events and surface delta/complete handlers",
+  "streamDesignChat should consume /api/chat/stream SSE events, support abort signals, and surface delta/complete handlers",
 );
 
 const dailyChatFlowBlock = appSource.match(/async function runDailyChatFlow[\s\S]*?async function runConversationFlow/m)?.[0] ?? "";
 assert(
-  dailyChatFlowBlock.includes("streamDesignChat({") &&
+  dailyChatFlowBlock.includes("streamDesignChat(") &&
   dailyChatFlowBlock.includes("api_config: requestApiConfig") &&
-  dailyChatFlowBlock.includes("reasoning_effort: chatReasoningEffort"),
-  "daily chat submit should call the backend chat stream API with active config and effort",
+  dailyChatFlowBlock.includes("reasoning_effort: chatReasoningEffort") &&
+  dailyChatFlowBlock.includes("new AbortController()") &&
+  dailyChatFlowBlock.includes("{ signal: abortController.signal }") &&
+  dailyChatFlowBlock.includes("isChatStreamAbortedError(error)"),
+  "daily chat submit should call the backend chat stream API with active config, effort, and abort control",
+);
+
+assert(
+  appSource.includes("const [chatRespondingSessionIds, setChatRespondingSessionIds]") &&
+  appSource.includes("chatRespondingSessionIds.includes(currentSessionId)") &&
+  appSource.includes("stopCurrentChatResponse") &&
+  appSource.includes("<Square size=") &&
+  !appSource.includes("const [isChatResponding, setIsChatResponding]") &&
+  !appSource.includes("respondingSessionId"),
+  "chat responding state should be tracked per session and expose a stop button instead of a single global lock",
+);
+
+assert(
+  appSource.includes("disabled={isRendering}") &&
+  appSource.includes("const isConversationBusy = isRendering || isVisibleChatResponding"),
+  "new conversations should not be blocked by another session's in-flight chat response",
 );
 
 assert(
