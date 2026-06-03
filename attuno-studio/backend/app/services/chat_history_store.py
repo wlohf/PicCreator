@@ -54,6 +54,7 @@ def _normalize_session(value: Any, index: int) -> dict[str, Any] | None:
         "chatInput": str(value.get("chatInput") or value.get("chat_input") or ""),
         "workspaceMode": str(value.get("workspaceMode") or "chat"),
         "generationMode": str(value.get("generationMode") or "standard"),
+        "promptModeId": str(value.get("promptModeId") or value.get("prompt_mode_id") or ""),
         "composerMode": str(value.get("composerMode") or "new-generation"),
         "activeResultId": value.get("activeResultId") if value.get("activeResultId") is None else str(value.get("activeResultId") or ""),
         "pinnedAt": str(value.get("pinnedAt")) if value.get("pinnedAt") else None,

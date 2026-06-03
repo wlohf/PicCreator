@@ -129,7 +129,7 @@ Chat-like workspace pages should keep the app shell fixed to the viewport and pu
 - Keep composer-side provider/model controls compact. Advanced or quality controls should not be added beside the send button once they have a drawer home.
 - Strict review belongs under the settings menu's Advanced drawer together with run-stage diagnostics and floor-plan analysis. Do not duplicate it as a composer quick action.
 - Treat `render3d` as a 3D prompt-enhancement mode rather than a separate image workflow. It accepts prompt-only generation; attached floor plans are optional structure references. `colored_floor_plan` remains a floor-plan tool and should keep requiring at least one image attachment.
-- Compare analysis for generated images should prefer the current visible chat path. Build image options from render messages in `getActiveMessagePath(...)`, label them uniquely for the current conversation, and only fall back to floor-plan-vs-render comparison when fewer than two current-chat generated images exist.
+- Compare analysis for generated images should use A/B slots. Build current-chat options from render messages in `getActiveMessagePath(...)`, label them uniquely for the current conversation, default A/B to the two latest current-chat images, then merge non-duplicate image-library options from `renderHistory` so either slot can be manually replaced. Only fall back to floor-plan-vs-render comparison when there are fewer than two distinct generated images across the current chat and image library.
 - Workspace-level drag-and-drop of image files should be accepted from any primary view, switch back into the image workspace, and append files to the current floor-plan attachments.
 - Mobile layout may scroll the sidebar section, but the main conversation area should still preserve a fixed-height thread + composer structure.
 - Regression checks should assert that the page shell uses viewport height and that `.chatgpt-thread` owns `overflow-y: auto`.
@@ -169,6 +169,8 @@ The app has two top-level workspace modes:
 Persist `workspaceMode` alongside session state so reopening a saved session restores the right composer behavior and empty-state copy.
 
 If chat returns a reusable image draft, store it as a reversible suggestion and let the user switch into image mode explicitly. Do not auto-enter image generation from ordinary chat.
+
+Daily chat image-draft routing must require an explicit image action such as drawing, rendering, or editing an image. Brainstorming requests about logo ideas, naming, style preference, or design direction remain ordinary chat even when an active generated result exists.
 
 ### Primary Views vs Workspace Modes
 
@@ -212,7 +214,9 @@ Model dropdowns should reflect the user's configured and detected models, not pr
 - Image composer options may include current image model, fallback models, added detected image models, and the small built-in image-model starter list for empty/default setups.
 - Detected analysis models may be multi-selected as composer candidates and saved in a browser-local, account-scoped list; `apiConfig.analysisModel` remains the single default model sent with a chat request.
 - Multi-selecting detected image models should keep the first selected model as `imageModel` and serialize the remaining selected models into `fallbackModels`.
+- Added model candidates must remain user-removable from the settings surface. Removing the current default model should promote the next selected candidate; removing image models should rewrite `imageModel` plus `fallbackModels` from the remaining ordered list.
 - Detection failure is a status message, not a state reset; preserve the user's current typed values.
+- Free-typed model fields are draft/default inputs. Do not persist every intermediate keystroke into composer model options; only store names that pass model-name validation or were explicitly selected from detected models. Filter obvious placeholders and partial fragments such as `g`, `gpt-`, `gpt-5.`, and `your-*-model` before writing browser-local model option lists, while preserving valid complete names such as `gpt-5`.
 
 ### Shortcut Phrase State
 

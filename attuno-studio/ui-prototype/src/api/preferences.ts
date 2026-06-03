@@ -49,6 +49,14 @@ export type ShortcutPreference = {
   en?: string;
 };
 
+export type PromptSkillPreference = {
+  id: string;
+  name: string;
+  description?: string;
+  prompt: string;
+  template?: string;
+};
+
 type StyleProfileResponse = {
   ok: boolean;
   profile: StyleProfile;
@@ -66,6 +74,12 @@ type MemoryResponse = {
 type ShortcutPreferencesResponse = {
   ok: boolean;
   shortcuts: ShortcutPreference[];
+  error?: string;
+};
+
+type PromptSkillPreferencesResponse = {
+  ok: boolean;
+  prompt_skills: PromptSkillPreference[];
   error?: string;
 };
 
@@ -89,6 +103,28 @@ export async function saveShortcutPreferences(shortcuts: ShortcutPreference[], u
     throw new Error(data.error || response.statusText);
   }
   return Array.isArray(data.shortcuts) ? data.shortcuts : shortcuts;
+}
+
+export async function loadPromptSkillPreferences(userId = "default"): Promise<PromptSkillPreference[]> {
+  const response = await apiFetch(`/api/preferences/prompt-skills?user_id=${encodeURIComponent(userId)}`);
+  const data = await parseApiJson<PromptSkillPreferencesResponse>(response);
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || response.statusText);
+  }
+  return Array.isArray(data.prompt_skills) ? data.prompt_skills : [];
+}
+
+export async function savePromptSkillPreferences(promptSkills: PromptSkillPreference[], userId = "default"): Promise<PromptSkillPreference[]> {
+  const response = await apiFetch("/api/preferences/prompt-skills", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, prompt_skills: promptSkills }),
+  });
+  const data = await parseApiJson<PromptSkillPreferencesResponse>(response);
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || response.statusText);
+  }
+  return Array.isArray(data.prompt_skills) ? data.prompt_skills : promptSkills;
 }
 
 export async function loadStyleProfile(projectId = "default", userId = "default"): Promise<StyleProfile> {

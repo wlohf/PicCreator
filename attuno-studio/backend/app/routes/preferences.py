@@ -5,9 +5,11 @@ from backend.app.services.auth_service import get_current_or_default_user
 from backend.app.services.preferences_store import (
     delete_memory_item,
     load_memory_view,
+    load_prompt_skills,
     load_shortcuts,
     load_style_profile,
     record_behavior_signal,
+    save_prompt_skills,
     save_shortcuts,
     save_style_profile,
     update_memory_item,
@@ -19,6 +21,11 @@ router = APIRouter(prefix="/api/preferences", tags=["preferences"])
 class ShortcutPreferences(BaseModel):
     user_id: str = "default"
     shortcuts: list[dict[str, str]] = Field(default_factory=list)
+
+
+class PromptSkillPreferences(BaseModel):
+    user_id: str = "default"
+    prompt_skills: list[dict[str, str]] = Field(default_factory=list)
 
 
 class StyleProfilePayload(BaseModel):
@@ -49,6 +56,16 @@ def get_shortcuts(user=Depends(get_current_or_default_user)):
 @router.put("/shortcuts")
 def put_shortcuts(payload: ShortcutPreferences, user=Depends(get_current_or_default_user)):
     return {"ok": True, "shortcuts": save_shortcuts(payload.shortcuts, user["user_id"])}
+
+
+@router.get("/prompt-skills")
+def get_prompt_skills(user=Depends(get_current_or_default_user)):
+    return {"ok": True, "prompt_skills": load_prompt_skills(user["user_id"])}
+
+
+@router.put("/prompt-skills")
+def put_prompt_skills(payload: PromptSkillPreferences, user=Depends(get_current_or_default_user)):
+    return {"ok": True, "prompt_skills": save_prompt_skills(payload.prompt_skills, user["user_id"])}
 
 
 @router.get("/style-profile")

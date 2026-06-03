@@ -37,6 +37,12 @@ def _floor_plan_for_label(label: str, floor_plan_paths: list[str] | None) -> str
     return paths[0]
 
 
+def _split_uploaded_image_inputs(mode: str, uploaded_paths: list[str]) -> tuple[list[str], str | None]:
+    if mode == "standard":
+        return [], uploaded_paths[0] if uploaded_paths else None
+    return uploaded_paths, None
+
+
 def build_generation_payload(
     snapshot,
     mode: str = "",
@@ -172,7 +178,8 @@ def sse_event(event: str, data: dict) -> str:
 async def generate_render(form: GenerateForm, style_profile: dict | None = None):
     temp_dir = tempfile.TemporaryDirectory(prefix="attuno-studio-api-")
     try:
-        floor_plan_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
+        uploaded_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
+        floor_plan_paths, reference_image_path = _split_uploaded_image_inputs(form.mode, uploaded_paths)
         learned_preferences_text = format_style_profile_context(style_profile)
 
         def _run_sync():
@@ -180,7 +187,7 @@ async def generate_render(form: GenerateForm, style_profile: dict | None = None)
             for snapshot in run_pipeline(
                 form.mode,
                 floor_plan_paths,
-                None,
+                reference_image_path,
                 form.requirement,
                 form.direction_stack_text,
                 form.manual_prompt,
@@ -235,7 +242,8 @@ async def stream_generate_render(form: GenerateForm, style_profile: dict | None 
         last_progress_payload = None
         latest = None
         try:
-            floor_plan_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
+            uploaded_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
+            floor_plan_paths, reference_image_path = _split_uploaded_image_inputs(form.mode, uploaded_paths)
             learned_preferences_text = format_style_profile_context(style_profile)
 
             initial_progress = {
@@ -259,7 +267,7 @@ async def stream_generate_render(form: GenerateForm, style_profile: dict | None 
                     for snapshot in run_pipeline(
                         form.mode,
                         floor_plan_paths,
-                        None,
+                        reference_image_path,
                         form.requirement,
                         form.direction_stack_text,
                         form.manual_prompt,

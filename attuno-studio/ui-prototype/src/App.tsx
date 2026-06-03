@@ -14,6 +14,7 @@ import {
   Download,
   Edit3,
   Eye,
+  EyeOff,
   FileText,
   GitBranch,
   ImagePlus,
@@ -48,9 +49,9 @@ import { loadAuthMe, login, logout, register, type AuthUser } from "./api/auth";
 import { detectConfigModels, loadConfig, saveConfig, verifyConfig, type ConfigRole } from "./api/config";
 import { applyChatMemory, isChatStreamAbortedError, streamDesignChat } from "./api/chat";
 import { loadChatHistory, saveChatHistory } from "./api/chatHistory";
-import { requestGenerationStream } from "./api/generation";
+import { isGenerationStreamAbortedError, requestGenerationStream } from "./api/generation";
 import { requestAnnotatedImageEdit, requestImageEdit } from "./api/imageEdits";
-import { deleteMemoryItem, loadMemoryView, loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, saveShortcutPreferences, updateMemoryItem, type MemoryItem, type MemorySection, type MemoryView, type StyleProfile } from "./api/preferences";
+import { deleteMemoryItem, loadMemoryView, loadPromptSkillPreferences, loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, savePromptSkillPreferences, saveShortcutPreferences, updateMemoryItem, type MemoryItem, type MemorySection, type MemoryView, type PromptSkillPreference, type StyleProfile } from "./api/preferences";
 import { deleteResult, listResults, normalizeApiResult } from "./api/results";
 import { ConfigStatus, type ConfigStatusState } from "./components/ConfigStatus";
 import { AnnotationEditor } from "./components/AnnotationEditor";
@@ -59,6 +60,7 @@ import { StatusBadge } from "./components/StatusBadge";
 import {
   apiFormatOptions,
   copy,
+  defaultApiBaseUrl,
   defaultApiConfig,
   directionItems,
   modelOptions
@@ -74,6 +76,7 @@ const CHAT_HISTORY_STORAGE_KEY = "attuno-chat-history-v1";
 const LEGACY_CHAT_HISTORY_STORAGE_KEY = "render-director-chat-history-v1";
 const SHORTCUT_PHRASES_STORAGE_KEY = "attuno-shortcut-phrases-v1";
 const LEGACY_SHORTCUT_PHRASES_STORAGE_KEY = "render-director-shortcut-phrases-v1";
+const PROMPT_SKILLS_STORAGE_KEY = "attuno-prompt-skills-v1";
 const ANALYSIS_MODEL_OPTIONS_STORAGE_KEY = "attuno-analysis-model-options-v1";
 const LAYOUT_SIDEBAR_WIDTH_STORAGE_KEY = "attuno-sidebar-width-v1";
 const LEGACY_LAYOUT_SIDEBAR_WIDTH_STORAGE_KEY = "render-director-sidebar-width-v1";
@@ -94,6 +97,21 @@ type ShortcutPhrase = {
   id: string;
   text: string;
 };
+
+type PromptSkill = {
+  id: string;
+  name: string;
+  description: string;
+  prompt: string;
+};
+
+type PromptSkillDraft = {
+  name: string;
+  description: string;
+  prompt: string;
+};
+
+type PromptModeId = "builtin-standard" | "builtin-render3d" | `skill-${string}`;
 
 type PreviewImage = {
   url: string;
@@ -138,6 +156,7 @@ type ChatSessionRecord = {
   chatInput: string;
   workspaceMode: WorkspaceMode;
   generationMode: GenerationMode;
+  promptModeId?: PromptModeId;
   composerMode: ComposerMode;
   activeResultId: string | null;
   pinnedAt?: string | null;
@@ -169,6 +188,10 @@ function shortcutPhrasesStorageKey(userId: string) {
 
 function legacyShortcutPhrasesStorageKey(userId: string) {
   return `${LEGACY_SHORTCUT_PHRASES_STORAGE_KEY}:${userId || "default"}`;
+}
+
+function promptSkillsStorageKey(userId: string) {
+  return `${PROMPT_SKILLS_STORAGE_KEY}:${userId || "default"}`;
 }
 
 function analysisModelOptionsStorageKey(userId: string) {
@@ -273,14 +296,29 @@ type ComparisonImage =
       rightResultId: string;
     };
 
-type ConversationComparisonCandidate = {
+type ImageComparisonCandidateSource = "conversation" | "library";
+
+type ImageComparisonCandidate = {
   id: string;
   imageUrl: string;
   label: string;
   alt: string;
+  source: ImageComparisonCandidateSource;
   sourceResultId?: string;
   result?: RenderHistoryItem;
 };
+
+function areSameImageComparisonCandidate(left: ImageComparisonCandidate, right: ImageComparisonCandidate) {
+  return left.id === right.id ||
+    (Boolean(left.sourceResultId) && left.sourceResultId === right.sourceResultId) ||
+    left.imageUrl === right.imageUrl;
+}
+
+function uniqueImageComparisonCandidates(candidates: ImageComparisonCandidate[]) {
+  return candidates.filter((candidate, index) => (
+    candidates.findIndex((item) => areSameImageComparisonCandidate(item, candidate)) === index
+  ));
+}
 
 const generationModeLabels: Record<GenerationMode, { zh: string; en: string }> = {
   standard: { zh: "默认模式", en: "Default" },
@@ -292,6 +330,14 @@ const generationModeOptions: { value: "standard" | "render3d"; zh: string; en: s
   { value: "standard", zh: "默认模式", en: "Default" },
   { value: "render3d", zh: "3D 提示词增强", en: "3D prompt boost" },
 ];
+
+const BUILTIN_STANDARD_PROMPT_MODE_ID: PromptModeId = "builtin-standard";
+const BUILTIN_RENDER3D_PROMPT_MODE_ID: PromptModeId = "builtin-render3d";
+const DEFAULT_PROMPT_SKILL_DRAFT: PromptSkillDraft = {
+  name: "",
+  description: "",
+  prompt: "",
+};
 
 const chatReasoningEffortOptions: Array<{ value: ChatReasoningEffort; zh: string; en: string }> = [
   { value: "low", zh: "低", en: "Low" },
@@ -305,14 +351,44 @@ function parseModelListText(value: string) {
     .replace(/,/g, "\n")
     .split("\n")
     .map((item) => item.trim())
-    .filter(Boolean);
+    .filter(isUsableModelName);
+}
+
+function isUsableModelName(value: string) {
+  const model = String(value || "").trim();
+  if (!model || model.length < 3) {
+    return false;
+  }
+  const normalized = model.toLowerCase();
+  if (/^your-.+-model$/.test(normalized)) {
+    return false;
+  }
+  if (/^(?:g|gp|gpt|gpt[-.]?|gpt-\d+\.)$/.test(normalized)) {
+    return false;
+  }
+  return /^[-._:/+a-z0-9]+$/i.test(model);
 }
 
 function modelSelectOptions(primaryModel: string, ...modelGroups: string[][]) {
   const options = [primaryModel, ...modelGroups.flat()]
     .map((item) => String(item || "").trim())
-    .filter(Boolean);
+    .filter(isUsableModelName);
   return Array.from(new Set(options));
+}
+
+function removeStoredModelFragments(models: string[], hadInvalidFragments: boolean) {
+  if (!hadInvalidFragments) {
+    return models;
+  }
+  return models.filter((model) => {
+    const normalized = model.toLowerCase();
+    return !models.some((other) => {
+      const otherNormalized = other.toLowerCase();
+      return otherNormalized !== normalized &&
+        otherNormalized.startsWith(normalized) &&
+        /^gpt-\d+$/.test(normalized);
+    });
+  });
 }
 
 function loadStoredAnalysisModelOptions(userId: string) {
@@ -325,7 +401,12 @@ function loadStoredAnalysisModelOptions(userId: string) {
       return [];
     }
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? modelSelectOptions("", parsed) : [];
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    const rawModels = parsed.map((item) => String(item || "").trim()).filter(Boolean);
+    const hadInvalidFragments = rawModels.some((item) => !isUsableModelName(item));
+    return removeStoredModelFragments(modelSelectOptions("", rawModels), hadInvalidFragments);
   } catch {
     return [];
   }
@@ -549,12 +630,21 @@ function buildMessageClipboardText(message: ChatMessage, locale: Locale) {
   const activeMessage = withActiveMessageVariant(message);
   const parts = [
     localized(activeMessage.content, locale),
-    activeMessage.bullets?.[locale]?.join("\n"),
+    (activeMessage.bullets?.[locale] ?? []).join("\n"),
     activeMessage.promptText ? `${locale === "zh" ? "最终提示词" : "Final prompt"}:\n${activeMessage.promptText}` : ""
   ]
     .map((item) => String(item || "").trim())
     .filter(Boolean);
   return parts.join("\n\n");
+}
+
+function promptSkillStorageShape(skill: PromptSkill): PromptSkillPreference {
+  return {
+    id: skill.id,
+    name: skill.name,
+    description: skill.description,
+    prompt: skill.prompt,
+  };
 }
 
 function buildRetryApiConfig(config: ApiConfig, model: string): ApiConfig {
@@ -660,6 +750,14 @@ function buildSessionTitle(messages: ChatMessage[], chatInput: string, generatio
   return "新对话";
 }
 
+function promptModeIdForGenerationMode(generationMode: GenerationMode): PromptModeId {
+  return generationMode === "render3d" ? "builtin-render3d" : "builtin-standard";
+}
+
+function generationModeForPromptMode(promptModeId: PromptModeId): GenerationMode {
+  return promptModeId === "builtin-render3d" ? "render3d" : "standard";
+}
+
 function createEmptySession(): ChatSessionRecord {
   const timestamp = new Date().toISOString();
   const random = Math.random().toString(36).slice(2, 8);
@@ -673,6 +771,7 @@ function createEmptySession(): ChatSessionRecord {
     chatInput: "",
     workspaceMode: DEFAULT_WORKSPACE_MODE,
     generationMode: "standard",
+    promptModeId: BUILTIN_STANDARD_PROMPT_MODE_ID,
     composerMode: "new-generation",
     activeResultId: null,
     pinnedAt: null,
@@ -691,6 +790,12 @@ function normalizeStoredSession(value: unknown, fallbackId = ""): ChatSessionRec
   const generationMode = session.generationMode === "render3d" || session.generationMode === "standard"
     ? session.generationMode
     : "standard";
+  const rawPromptModeId = String(session.promptModeId || "").trim();
+  const promptModeId = rawPromptModeId === BUILTIN_STANDARD_PROMPT_MODE_ID ||
+    rawPromptModeId === BUILTIN_RENDER3D_PROMPT_MODE_ID ||
+    rawPromptModeId.startsWith("skill-")
+    ? rawPromptModeId as PromptModeId
+    : promptModeIdForGenerationMode(generationMode);
   const workspaceMode = session.workspaceMode === "chat" || session.workspaceMode === "image"
     ? session.workspaceMode
     : "image";
@@ -705,6 +810,7 @@ function normalizeStoredSession(value: unknown, fallbackId = ""): ChatSessionRec
     chatInput: String(session.chatInput || ""),
     workspaceMode,
     generationMode,
+    promptModeId,
     composerMode,
     activeResultId: session.activeResultId ? String(session.activeResultId) : null,
     pinnedAt: typeof session.pinnedAt === "string" ? session.pinnedAt : null,
@@ -889,7 +995,7 @@ function sessionSearchText(session: ChatSessionRecord) {
       return [
         localized(activeMessage.content, "zh"),
         localized(activeMessage.content, "en"),
-        activeMessage.bullets ? [...activeMessage.bullets.zh, ...activeMessage.bullets.en].join(" ") : "",
+        activeMessage.bullets ? [...(activeMessage.bullets.zh ?? []), ...(activeMessage.bullets.en ?? [])].join(" ") : "",
         activeMessage.promptText || "",
         activeMessage.imageLabel || "",
       ].join(" ");
@@ -966,6 +1072,60 @@ function loadStoredShortcutPhrases(userId: string): ShortcutPhrase[] {
   }
 }
 
+function normalizePromptSkill(value: unknown): PromptSkill | null {
+  if (!value || typeof value !== "object") return null;
+  const skill = value as Partial<PromptSkillPreference>;
+  const id = String(skill.id || "").trim();
+  const name = String(skill.name || "").trim();
+  const prompt = String(skill.prompt || skill.template || "").trim();
+  const description = String(skill.description || "").trim();
+  if (!id || id.startsWith("builtin-") || !name || !prompt) return null;
+  return {
+    id,
+    name,
+    description,
+    prompt,
+  };
+}
+
+function normalizePromptSkills(value: unknown): PromptSkill[] {
+  const rawItems = Array.isArray(value) ? value : [];
+  const normalized: PromptSkill[] = [];
+  const seen = new Set<string>();
+  for (const item of rawItems) {
+    const skill = normalizePromptSkill(item);
+    if (!skill || seen.has(skill.id)) continue;
+    seen.add(skill.id);
+    normalized.push(skill);
+  }
+  return normalized.slice(0, 20);
+}
+
+function loadStoredPromptSkills(userId: string): PromptSkill[] {
+  if (typeof window === "undefined") {
+    return [];
+  }
+  try {
+    const raw = window.localStorage.getItem(promptSkillsStorageKey(userId));
+    return raw ? normalizePromptSkills(JSON.parse(raw)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function applyPromptSkillTemplate(template: string, userPrompt: string) {
+  const prompt = userPrompt.trim();
+  const normalizedTemplate = template.trim();
+  if (!normalizedTemplate) return prompt;
+  if (/\{\{\s*prompt\s*\}\}/i.test(normalizedTemplate)) {
+    return normalizedTemplate.replace(/\{\{\s*prompt\s*\}\}/gi, prompt);
+  }
+  if (/\{\s*prompt\s*\}/i.test(normalizedTemplate)) {
+    return normalizedTemplate.replace(/\{\s*prompt\s*\}/gi, prompt);
+  }
+  return prompt ? `${normalizedTemplate}\n\n用户输入：${prompt}` : normalizedTemplate;
+}
+
 const DEFAULT_PROJECT_ID = "default";
 const initialApiConfig = loadSavedApiConfig("");
 function App() {
@@ -997,6 +1157,7 @@ function App() {
   const [configAction, setConfigAction] = useState<ConfigAction | null>(null);
   const [detectedModels, setDetectedModels] = useState<DetectedModelState>({ analysis: [], image: [] });
   const [addedDetectedModels, setAddedDetectedModels] = useState<DetectedModelState>({ analysis: [], image: [] });
+  const [visibleApiKeys, setVisibleApiKeys] = useState<Record<ConfigRole, boolean>>({ analysis: false, image: false });
   const [learnedProfile, setLearnedProfile] = useState<StyleProfile | null>(null);
   const [memoryView, setMemoryView] = useState<MemoryView | null>(null);
   const [editingMemoryItemId, setEditingMemoryItemId] = useState<string | null>(null);
@@ -1029,6 +1190,10 @@ function App() {
   const [isQuickPhraseCardOpen, setIsQuickPhraseCardOpen] = useState(false);
   const [editingShortcutId, setEditingShortcutId] = useState<string | null>(null);
   const [shortcutDraft, setShortcutDraft] = useState({ text: "" });
+  const [promptSkills, setPromptSkills] = useState<PromptSkill[]>([]);
+  const [selectedPromptModeId, setSelectedPromptModeId] = useState<PromptModeId>(BUILTIN_STANDARD_PROMPT_MODE_ID);
+  const [editingPromptSkillId, setEditingPromptSkillId] = useState<string | null>(null);
+  const [promptSkillDraft, setPromptSkillDraft] = useState<PromptSkillDraft>(DEFAULT_PROMPT_SKILL_DRAFT);
   const [isComparisonOpen, setIsComparisonOpen] = useState(false);
   const [showPromptConfig, setShowPromptConfig] = useState(true);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
@@ -1056,6 +1221,7 @@ function App() {
   const isBootstrappingSessionRef = useRef(false);
   const lastSavedChatHistoryRef = useRef("");
   const chatAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const generationAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   const t = copy[locale];
   const isImageWorkspace = workspaceMode === "image";
@@ -1090,9 +1256,9 @@ function App() {
     [activeResultId, renderHistory]
   );
   const activePathMessages = getActiveMessagePath(messages, activeMessageId);
-  const conversationComparisonCandidates = useMemo<ConversationComparisonCandidate[]>(() => {
+  const conversationComparisonCandidates = useMemo<ImageComparisonCandidate[]>(() => {
     const seen = new Set<string>();
-    return activePathMessages.reduce<ConversationComparisonCandidate[]>((items, message) => {
+    return activePathMessages.reduce<ImageComparisonCandidate[]>((items, message) => {
       const activeMessage = withActiveMessageVariant(message);
       if (activeMessage.kind !== "render" || !activeMessage.imageUrl) {
         return items;
@@ -1115,6 +1281,7 @@ function App() {
         imageUrl: activeMessage.imageUrl,
         label: labelParts.join(" · "),
         alt: baseLabel || labelPrefix,
+        source: "conversation",
         sourceResultId: activeMessage.sourceResultId,
         result,
       });
@@ -1125,9 +1292,40 @@ function App() {
   const activePrompt = activeResult?.prompt || (chatInput.trim() ? buildGenerationPrompt() : "");
   const hasPromptText = Boolean(chatInput.trim());
   const isStructuredGenerationMode = generationMode !== "standard";
-  const comparisonCandidates = conversationComparisonCandidates;
+  const comparisonCandidates = useMemo<ImageComparisonCandidate[]>(() => {
+    const seen = new Set<string>();
+    const seenImageUrls = new Set<string>();
+    const combined: ImageComparisonCandidate[] = [];
+    conversationComparisonCandidates.forEach((candidate) => {
+      seen.add(candidate.sourceResultId || candidate.id);
+      seenImageUrls.add(candidate.imageUrl);
+      combined.push(candidate);
+    });
+    renderHistory.forEach((item, index) => {
+      if (!item.imageUrl || seen.has(item.id) || seenImageUrls.has(item.imageUrl)) {
+        return;
+      }
+      seen.add(item.id);
+      seenImageUrls.add(item.imageUrl);
+      const baseLabel = (item.imageLabel || item.title || "").trim();
+      const labelPrefix = locale === "zh" ? `图片库 图 ${index + 1}` : `Library image ${index + 1}`;
+      const modeLabel = item.generationMode ? generationModeLabels[item.generationMode][locale] : "";
+      const labelParts = [labelPrefix, baseLabel, modeLabel].filter(Boolean);
+      combined.push({
+        id: item.id,
+        imageUrl: item.imageUrl,
+        label: labelParts.join(" · "),
+        alt: baseLabel || labelPrefix,
+        source: "library",
+        sourceResultId: item.id,
+        result: item,
+      });
+    });
+    return combined;
+  }, [conversationComparisonCandidates, locale, renderHistory]);
   const activeResultMode = activeResult?.generationMode || generationMode;
-  const canCompareActiveResult = comparisonCandidates.length >= 2 || (
+  const comparableImageCount = uniqueImageComparisonCandidates(comparisonCandidates).length;
+  const canCompareActiveResult = comparableImageCount >= 2 || (
     activeResultMode !== "standard" && Boolean(activeResult?.imageUrl) && Boolean(activeResult?.floorPlanUrl || floorPlanPreviews[0]?.url)
   );
   const conversationGenerationRecordCount = countGenerationRecords(activePathMessages);
@@ -1142,8 +1340,8 @@ function App() {
   const onboardingSteps = [
     {
       done: floorPlanFiles.length > 0,
-      label: locale === "zh" ? "添加平面图" : "Add floor plan",
-      detail: locale === "zh" ? (floorPlanFiles.length ? `已选择 ${floorPlanFiles.length} 张` : "可粘贴或拖拽图片到工作台") : (floorPlanFiles.length ? `${floorPlanFiles.length} selected` : "Paste or drag images into the workspace")
+      label: locale === "zh" ? "添加图片" : "Add image",
+      detail: locale === "zh" ? (floorPlanFiles.length ? `已选择 ${floorPlanFiles.length} 张` : "可粘贴或拖拽参考图/平面图到工作台") : (floorPlanFiles.length ? `${floorPlanFiles.length} selected` : "Paste or drag reference images or floor plans into the workspace")
     },
     {
       done: Boolean(chatInput.trim()),
@@ -1171,7 +1369,7 @@ function App() {
     preferences: locale === "zh" ? "查看、编辑或删除聊天记忆和生图偏好。" : "Review, edit, or delete chat memory and image preferences.",
     generation: locale === "zh" ? "调整下一次出图使用的模型、备用模型和轮数。" : "Tune the model, fallbacks, and pass count for the next image run.",
     setup: locale === "zh" ? "保存供应商、地址、密钥与默认模型。" : "Save providers, endpoints, keys, and default models.",
-    prompts: locale === "zh" ? "覆盖分析提示词与 3D 提示词。" : "Override analysis and 3D prompt instructions."
+    prompts: locale === "zh" ? "管理自定义图像模式，或覆盖分析与 3D 提示词。" : "Manage custom image modes or override analysis and 3D prompts."
   };
   const settingsPanelItems: Array<{
     panel: SettingsUtilityPanel;
@@ -1294,12 +1492,19 @@ function App() {
   }
 
   function applySession(session: ChatSessionRecord) {
-    const displaySession = normalizeSessionForDisplay(session);
+    const displayCandidate = normalizeSessionForDisplay(session);
+    const normalizedTree = normalizeMessageTree(displayCandidate.messages, displayCandidate.activeMessageId);
+    const displaySession = normalizeSessionForDisplay({
+      ...displayCandidate,
+      messages: normalizedTree.messages,
+      activeMessageId: normalizedTree.activeMessageId,
+    });
     setMessages(displaySession.messages);
     setActiveMessageId(displaySession.activeMessageId);
     setChatInput(displaySession.chatInput);
     setWorkspaceMode(displaySession.workspaceMode);
     setGenerationMode(displaySession.generationMode);
+    setSelectedPromptModeId(displaySession.promptModeId || promptModeIdForGenerationMode(displaySession.generationMode));
     setComposerMode(displaySession.composerMode);
     setActiveResultId(displaySession.activeResultId);
     setFloorPlanFiles([]);
@@ -1329,6 +1534,7 @@ function App() {
     setChatInput("");
     setWorkspaceMode(DEFAULT_WORKSPACE_MODE);
     setGenerationMode("standard");
+    setSelectedPromptModeId(BUILTIN_STANDARD_PROMPT_MODE_ID);
     setComposerMode("new-generation");
     setFloorPlanFiles([]);
     setLiveGeneration(null);
@@ -1368,6 +1574,8 @@ function App() {
   function clearChatRespondingSessions() {
     chatAbortControllersRef.current.forEach((controller) => controller.abort());
     chatAbortControllersRef.current.clear();
+    generationAbortControllersRef.current.forEach((controller) => controller.abort());
+    generationAbortControllersRef.current.clear();
     setChatRespondingSessionIds([]);
   }
 
@@ -1391,7 +1599,15 @@ function App() {
     setDetectedModels({ analysis: [], image: [] });
     setAddedDetectedModels({ analysis: [], image: [] });
     setActiveResultId(null);
+    resetPromptSkillState();
     resetVisibleConversationState();
+  }
+
+  function resetPromptSkillState() {
+    setPromptSkills([]);
+    setSelectedPromptModeId(BUILTIN_STANDARD_PROMPT_MODE_ID);
+    setEditingPromptSkillId(null);
+    setPromptSkillDraft(DEFAULT_PROMPT_SKILL_DRAFT);
   }
 
   function applyAuthenticatedUser(user: AuthUser) {
@@ -1416,6 +1632,7 @@ function App() {
     setConfigAction(null);
     setDetectedModels({ analysis: [], image: [] });
     setAddedDetectedModels({ analysis: [], image: [] });
+    setVisibleApiKeys({ analysis: false, image: false });
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(analysisModelOptionsStorageKey(previousUserId));
     }
@@ -1423,6 +1640,7 @@ function App() {
     setIsQuickPhraseCardOpen(false);
     setEditingShortcutId(null);
     setShortcutDraft({ text: "" });
+    resetPromptSkillState();
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
     setShowUserDialog(showDialog);
@@ -1448,16 +1666,18 @@ function App() {
     const id = String(sessionId || "").trim();
     if (!id) return null;
     const existing = chatSessions.find((session) => session.id === id);
+    const normalizedTree = normalizeMessageTree(messages, activeMessageId);
     return {
       id,
-      title: existing?.titleLocked ? existing.title : buildSessionTitle(messages, chatInput, generationMode, workspaceMode),
+      title: existing?.titleLocked ? existing.title : buildSessionTitle(normalizedTree.messages, chatInput, generationMode, workspaceMode),
       createdAt: existing?.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-      messages,
-      activeMessageId,
+      messages: normalizedTree.messages,
+      activeMessageId: normalizedTree.activeMessageId,
       chatInput,
       workspaceMode,
       generationMode,
+      promptModeId: selectedPromptModeId,
       composerMode,
       activeResultId,
       pinnedAt: existing?.pinnedAt ?? null,
@@ -1472,8 +1692,9 @@ function App() {
   function appendMessagesToRunSession(guard: ConversationRunGuard, patch: ChatMessage[]) {
     if (!isActiveConversationRun(guard)) return;
     if (currentSessionIdRef.current === guard.sessionId) {
-      setMessages((current) => mergeMessageTreeById(current, patch, patch[patch.length - 1]?.id ?? activeMessageId).messages);
-      setActiveMessageId(patch[patch.length - 1]?.id ?? null);
+      const nextActiveMessageId = patch[patch.length - 1]?.id ?? activeMessageId;
+      setMessages((current) => mergeMessageTreeById(current, patch, nextActiveMessageId).messages);
+      setActiveMessageId(nextActiveMessageId);
       return;
     }
     setChatSessions((current) => mergeMessagesIntoSessionSnapshot(current, guard.sessionId, patch, new Date().toISOString()));
@@ -1508,7 +1729,12 @@ function App() {
   function removeRunSessionMessage(guard: ConversationRunGuard, messageId: string) {
     if (!isActiveConversationRun(guard)) return;
     if (currentSessionIdRef.current === guard.sessionId) {
-      setMessages((current) => current.filter((message) => message.id !== messageId));
+      setMessages((current) => {
+        const nextMessages = current.filter((message) => message.id !== messageId);
+        const nextTree = normalizeMessageTree(nextMessages, activeMessageId === messageId ? null : activeMessageId);
+        setActiveMessageId(nextTree.activeMessageId);
+        return nextTree.messages;
+      });
       return;
     }
     setChatSessions((current) => {
@@ -1601,7 +1827,8 @@ function App() {
     }
     return "";
   }
-  const canEditSelectedResult = hasAuthenticatedUser && isImageWorkspace && composerMode === "edit-selected-result" && Boolean(activeResult?.imageUrl) && hasPromptText;
+  const hasUploadedImageReference = floorPlanFiles.length > 0;
+  const canEditSelectedResult = hasAuthenticatedUser && isImageWorkspace && composerMode === "edit-selected-result" && (Boolean(activeResult?.imageUrl) || hasUploadedImageReference) && hasPromptText;
   const canGenerateNew = !isImageWorkspace || !hasAuthenticatedUser
     ? false
     : generationMode === "standard"
@@ -1620,6 +1847,25 @@ function App() {
   const composerModelOptions = isChatWorkspace
     ? modelSelectOptions(chatModelValue, addedDetectedModels.analysis)
     : modelSelectOptions(selectedModel, parseModelListText(apiConfig.fallbackModels), addedDetectedModels.image, modelOptions);
+  const promptModeOptions: Array<{ id: PromptModeId; zh: string; en: string; description?: string }> = [
+    ...generationModeOptions.map((option) => ({
+      id: (option.value === "render3d" ? BUILTIN_RENDER3D_PROMPT_MODE_ID : BUILTIN_STANDARD_PROMPT_MODE_ID) as PromptModeId,
+      zh: option.zh,
+      en: option.en,
+    })),
+    ...promptSkills.map((skill) => ({
+      id: `skill-${skill.id}` as PromptModeId,
+      zh: skill.name,
+      en: skill.name,
+      description: skill.description,
+    })),
+  ];
+  const selectedPromptSkill = selectedPromptModeId.startsWith("skill-")
+    ? promptSkills.find((skill) => skill.id === selectedPromptModeId.slice("skill-".length)) ?? null
+    : null;
+  const visibleSelectedPromptModeId: PromptModeId = selectedPromptModeId.startsWith("skill-") && !selectedPromptSkill
+    ? BUILTIN_STANDARD_PROMPT_MODE_ID
+    : selectedPromptModeId;
   const selectedAnalysisModelOptions = modelSelectOptions(apiConfig.analysisModel, addedDetectedModels.analysis);
   const retryModelOptions = modelSelectOptions(apiConfig.analysisModel, addedDetectedModels.analysis, detectedModels.analysis);
   const selectedImageModelOptions = modelSelectOptions(apiConfig.imageModel, parseModelListText(apiConfig.fallbackModels));
@@ -1642,8 +1888,8 @@ function App() {
         : "Sign in or create an account first"
       : !activeResult?.imageUrl
       ? locale === "zh"
-        ? "请先选择一张已有结果"
-        : "Select an existing result first"
+        ? "请先选择一张已有结果，或上传一张参考图"
+        : "Select an existing result or upload a reference image first"
       : !hasPromptText
         ? locale === "zh"
           ? "请输入要修改的内容"
@@ -1655,7 +1901,11 @@ function App() {
       ? "彩色平面图工具只在新生成模式下可用"
       : "Colored plan is only available for new generation"
     : getGenerationBlocker("colored_floor_plan");
-  const selectedEditSourceLabel = isImageWorkspace && composerMode === "edit-selected-result" && activeResult
+  const selectedEditSourceLabel = isImageWorkspace && composerMode === "edit-selected-result" && floorPlanFiles.length > 0
+    ? locale === "zh"
+      ? `源图：上传图片 ${floorPlanFiles.length} 张`
+      : `Source: ${floorPlanFiles.length} uploaded image(s)`
+    : isImageWorkspace && composerMode === "edit-selected-result" && activeResult
     ? locale === "zh"
       ? `源图：${activeResult.title} · v${activeResult.versionIndex || 1}`
       : `Source: ${activeResult.title} · v${activeResult.versionIndex || 1}`
@@ -1675,6 +1925,7 @@ function App() {
   const composerSubmitLabel = isChatWorkspace
     ? locale === "zh" ? "发送聊天" : "Send chat"
     : composerMode === "edit-selected-result" ? (locale === "zh" ? "提交改图" : "Edit image") : t.sendPrompt;
+  const composerIsStopping = isVisibleChatResponding || isVisibleRendering;
   const composerHint = isChatWorkspace
     ? chatBlocker || (locale === "zh" ? "日常对话不会触发画图；需要出图时切换到图像模式。" : "Daily chat does not generate images; switch to image mode when ready to draw.")
     : generationBlocker || (composerMode === "edit-selected-result"
@@ -1683,8 +1934,8 @@ function App() {
       : "The selected result is used as the source image; only the described changes are requested."
     : generationMode === "standard"
       ? locale === "zh"
-        ? "默认模式不会解析需求或生成内置提示词，只把输入框文本直接交给画图模型。"
-        : "Default mode skips parsing and built-in prompts; the composer text is sent directly to the image model."
+        ? (floorPlanFiles.length > 0 ? "默认模式会把上传图片作为参考图，配合输入框提示词进行图生图/二次创作。" : "默认模式可直接文生图；上传图片后会作为参考图进行图生图。")
+        : (floorPlanFiles.length > 0 ? "Default mode uses uploaded images as references for image-to-image generation." : "Default mode supports text-to-image; upload images to use them as references.")
       : generationMode === "colored_floor_plan"
         ? locale === "zh"
         ? "添加平面图后可生成彩色平面图，输入框文字只作为补充偏好。"
@@ -1692,9 +1943,17 @@ function App() {
         : locale === "zh"
           ? "3D 提示词增强会在你的输入上追加效果图表达；平面图可选，拖入后作为结构参考。"
           : "3D prompt boost adds render-oriented wording to your prompt. A floor plan is optional structure reference.");
+  const promptModeHint = selectedPromptSkill
+    ? locale === "zh"
+      ? `当前自定义模式：${selectedPromptSkill.name}。提交时会把模板套用到输入内容。`
+      : `Custom mode: ${selectedPromptSkill.name}. The template is applied to your composer text.`
+    : composerHint;
   const composerSubmitShortcutHint = locale === "zh"
     ? `${composerSubmitLabel}（Enter 发送，Shift+Enter 换行）`
     : `${composerSubmitLabel} (Enter to send, Shift+Enter for a new line)`;
+  const composerStopTitle = isVisibleChatResponding
+    ? locale === "zh" ? "停止当前回复" : "Stop current response"
+    : locale === "zh" ? "停止当前生成" : "Stop current generation";
   const latestResult = activeResult;
   const progressAnalysisText = buildFloorPlanAnalysisText(visibleLiveGeneration?.floorDesc);
   const latestAnalysisText = buildFloorPlanAnalysisText(latestResult?.floorDesc);
@@ -1969,6 +2228,7 @@ function App() {
       setEditingMessage(null);
       setWorkspaceMode(DEFAULT_WORKSPACE_MODE);
       setGenerationMode("standard");
+      setSelectedPromptModeId(BUILTIN_STANDARD_PROMPT_MODE_ID);
       setComposerMode("new-generation");
       finishBootstrapping();
       return () => {
@@ -2057,7 +2317,7 @@ function App() {
     const nextSession = snapshotCurrentSession();
     if (!nextSession) return;
     setChatSessions((current) => upsertSession(current, nextSession));
-  }, [currentSessionId, messages, activeMessageId, chatInput, workspaceMode, generationMode, composerMode, activeResultId]);
+  }, [currentSessionId, messages, activeMessageId, chatInput, workspaceMode, generationMode, selectedPromptModeId, composerMode, activeResultId]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !currentUserId || chatSessions.length === 0) return;
@@ -2079,12 +2339,22 @@ function App() {
       setShortcutPhrases(cloneDefaultShortcutPhrases());
       setEditingShortcutId(null);
       setShortcutDraft({ text: "" });
+      resetPromptSkillState();
       return;
     }
     const localPhrases = loadStoredShortcutPhrases(currentUserId);
     setShortcutPhrases(localPhrases);
     setEditingShortcutId(null);
     setShortcutDraft({ text: "" });
+    const localPromptSkills = loadStoredPromptSkills(currentUserId);
+    setPromptSkills(localPromptSkills);
+    setSelectedPromptModeId((current) => {
+      if (!current.startsWith("skill-")) return current;
+      const skillId = current.slice("skill-".length);
+      return localPromptSkills.some((skill) => skill.id === skillId) ? current : BUILTIN_STANDARD_PROMPT_MODE_ID;
+    });
+    setEditingPromptSkillId(null);
+    setPromptSkillDraft(DEFAULT_PROMPT_SKILL_DRAFT);
     let isMounted = true;
     withStartupRetry(() => loadShortcutPreferences(currentUserId))
       .then((items) => {
@@ -2096,6 +2366,21 @@ function App() {
       })
       .catch(() => {
         // Browser-local shortcut phrases remain usable if the backend is offline.
+      });
+    withStartupRetry(() => loadPromptSkillPreferences(currentUserId))
+      .then((items) => {
+        if (!isMounted) return;
+        const normalized = normalizePromptSkills(items);
+        setPromptSkills(normalized);
+        window.localStorage.setItem(promptSkillsStorageKey(currentUserId), JSON.stringify(normalized));
+        setSelectedPromptModeId((current) => {
+          if (!current.startsWith("skill-")) return current;
+          const skillId = current.slice("skill-".length);
+          return normalized.some((skill) => skill.id === skillId) ? current : BUILTIN_STANDARD_PROMPT_MODE_ID;
+        });
+      })
+      .catch(() => {
+        // Browser-local prompt skills remain usable if the backend is offline.
       });
     return () => {
       isMounted = false;
@@ -2304,7 +2589,7 @@ function App() {
       setActivePrimaryView("workspace");
     }
     setFloorPlanFiles((current) => mergeFloorPlanFiles(current, imageFiles, append));
-    showToast(locale === "zh" ? `已导入 ${imageFiles.length} 张平面图` : `${imageFiles.length} floor plan image(s) imported`);
+    showToast(locale === "zh" ? `已导入 ${imageFiles.length} 张图片` : `${imageFiles.length} image(s) imported`);
   }
 
   function setComposerImageAttachments(files: FileList | File[], append = false) {
@@ -2316,7 +2601,7 @@ function App() {
     setFloorPlanFiles((current) => mergeFloorPlanFiles(current, imageFiles, append));
     showToast(isChatWorkspace
       ? locale === "zh" ? `已添加 ${imageFiles.length} 张聊天图片` : `${imageFiles.length} chat image(s) attached`
-      : locale === "zh" ? `已导入 ${imageFiles.length} 张平面图` : `${imageFiles.length} floor plan image(s) imported`);
+      : locale === "zh" ? `已添加 ${imageFiles.length} 张参考图/平面图` : `${imageFiles.length} reference image(s) or floor plan(s) attached`);
   }
 
   function containsFiles(event: DragEvent<HTMLElement>) {
@@ -2378,6 +2663,82 @@ function App() {
           showToast(`${locale === "zh" ? "快捷短语已保存在本机，后端同步失败" : "Phrase saved locally, backend sync failed"}: ${error instanceof Error ? error.message : String(error)}`);
         });
     }
+  }
+
+  function persistPromptSkills(nextSkills: PromptSkill[]) {
+    const normalized = normalizePromptSkills(nextSkills);
+    setPromptSkills(normalized);
+    if (typeof window !== "undefined" && currentUserId) {
+      window.localStorage.setItem(promptSkillsStorageKey(currentUserId), JSON.stringify(normalized));
+      void savePromptSkillPreferences(normalized.map(promptSkillStorageShape), currentUserId)
+        .then((saved) => {
+          const savedSkills = normalizePromptSkills(saved);
+          setPromptSkills(savedSkills);
+          window.localStorage.setItem(promptSkillsStorageKey(currentUserId), JSON.stringify(savedSkills));
+        })
+        .catch((error) => {
+          showToast(`${locale === "zh" ? "图像模式已保存在本机，后端同步失败" : "Image mode saved locally, backend sync failed"}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+    }
+  }
+
+  function startNewPromptSkill() {
+    setEditingPromptSkillId(null);
+    setPromptSkillDraft(DEFAULT_PROMPT_SKILL_DRAFT);
+    setActiveUtilityPanel("prompts");
+  }
+
+  function startEditingPromptSkill(skill: PromptSkill) {
+    setEditingPromptSkillId(skill.id);
+    setPromptSkillDraft({
+      name: skill.name,
+      description: skill.description,
+      prompt: skill.prompt,
+    });
+    setActiveUtilityPanel("prompts");
+  }
+
+  function savePromptSkill() {
+    const name = promptSkillDraft.name.trim();
+    const prompt = promptSkillDraft.prompt.trim();
+    if (!name || !prompt) {
+      showToast(locale === "zh" ? "请填写模式名称和提示词模板" : "Add a mode name and prompt template");
+      return;
+    }
+    const nextSkill: PromptSkill = {
+      id: editingPromptSkillId || `prompt-skill-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      name,
+      description: promptSkillDraft.description.trim(),
+      prompt,
+    };
+    const nextSkills = editingPromptSkillId
+      ? promptSkills.map((item) => item.id === editingPromptSkillId ? nextSkill : item)
+      : [...promptSkills, nextSkill];
+    persistPromptSkills(nextSkills);
+    setSelectedPromptModeId(`skill-${nextSkill.id}`);
+    setGenerationMode("standard");
+    setEditingPromptSkillId(null);
+    setPromptSkillDraft(DEFAULT_PROMPT_SKILL_DRAFT);
+    showToast(locale === "zh" ? "图像模式已保存" : "Image mode saved");
+  }
+
+  function removePromptSkill(id: string) {
+    const nextSkills = promptSkills.filter((item) => item.id !== id);
+    persistPromptSkills(nextSkills);
+    if (selectedPromptModeId === `skill-${id}`) {
+      setSelectedPromptModeId(BUILTIN_STANDARD_PROMPT_MODE_ID);
+      setGenerationMode("standard");
+    }
+    if (editingPromptSkillId === id) {
+      setEditingPromptSkillId(null);
+      setPromptSkillDraft(DEFAULT_PROMPT_SKILL_DRAFT);
+    }
+    showToast(locale === "zh" ? "图像模式已删除" : "Image mode removed");
+  }
+
+  function selectPromptMode(modeId: PromptModeId) {
+    setSelectedPromptModeId(modeId);
+    setGenerationMode(generationModeForPromptMode(modeId));
   }
 
   function startNewShortcutPhrase() {
@@ -2503,9 +2864,14 @@ function App() {
     document.body.classList.add("is-resizing-layout");
   }
 
-  function buildGenerationPrompt(userPrompt?: string, mode: GenerationMode = generationMode) {
+  function buildGenerationPrompt(userPrompt?: string, mode: GenerationMode = generationMode, promptModeId: PromptModeId = selectedPromptModeId) {
     const basePrompt = (userPrompt ?? chatInput).trim();
     if (mode === "standard") {
+      if (promptModeId.startsWith("skill-")) {
+        const skillId = promptModeId.slice("skill-".length);
+        const skill = promptSkills.find((item) => item.id === skillId);
+        return skill ? applyPromptSkillTemplate(skill.prompt, basePrompt) : basePrompt;
+      }
       return basePrompt;
     }
     return basePrompt ? (locale === "zh" ? `设计需求：${basePrompt}` : `Design brief: ${basePrompt}`) : "";
@@ -2517,6 +2883,13 @@ function App() {
 
   function updateImageProvider(patch: Partial<ApiProviderProfile>) {
     setApiConfig((current) => syncActiveProvider(current, "image", patch));
+  }
+
+  function toggleApiKeyVisibility(role: ConfigRole) {
+    setVisibleApiKeys((current) => ({
+      ...current,
+      [role]: !current[role]
+    }));
   }
 
   function selectProviderProfile(role: "analysis" | "image", providerId: string) {
@@ -2536,7 +2909,7 @@ function App() {
         id: createProviderId(role),
         providerName: locale === "zh" ? "新供应商" : "New provider",
         apiFormat: role === "image" ? "openai_image" : "openai",
-        baseUrl: "",
+        baseUrl: defaultApiBaseUrl,
         apiKey: "",
         model: role === "image" ? modelOptions[0] : ""
       };
@@ -2581,16 +2954,6 @@ function App() {
   function handleChatModelChange(value: string) {
     const model = value.trim();
     updateAnalysisProvider({ model });
-    if (model) {
-      setAddedDetectedModels((current) => {
-        const analysis = modelSelectOptions("", [model], current.analysis);
-        storeAnalysisModelOptions(currentUserId, analysis);
-        return {
-          ...current,
-          analysis
-        };
-      });
-    }
   }
 
   function handleComposerModelChange(value: string) {
@@ -2677,7 +3040,7 @@ function App() {
 
   function stopCurrentChatResponse() {
     const sessionId = currentSessionIdRef.current;
-    const controller = chatAbortControllersRef.current.get(sessionId);
+    const controller = chatAbortControllersRef.current.get(sessionId) ?? generationAbortControllersRef.current.get(sessionId);
     if (!controller) return;
     controller.abort();
   }
@@ -2820,10 +3183,14 @@ function App() {
   }
 
   function updateMessageById(messageId: string, updater: (message: ChatMessage) => ChatMessage) {
-    setMessages((current) => normalizeMessageTree(
-      current.map((message) => message.id === messageId ? updater(message) : message),
-      activeMessageId
-    ).messages);
+    setMessages((current) => {
+      const normalized = normalizeMessageTree(
+        current.map((message) => message.id === messageId ? updater(message) : message),
+        activeMessageId
+      );
+      setActiveMessageId(normalized.activeMessageId);
+      return normalized.messages;
+    });
   }
 
   function buildDailyChatMessageExtras(draftInstructionRaw: string, memoryCandidateRaw?: ChatMemoryCandidate) {
@@ -2945,7 +3312,8 @@ function App() {
       setWorkspaceMode("image");
       setComposerMode("new-generation");
       setGenerationMode(nextMode);
-      void runConversationFlow(prompt, nextMode, "new-generation");
+      setSelectedPromptModeId(promptModeIdForGenerationMode(nextMode));
+      void runConversationFlow(prompt, nextMode, "new-generation", promptModeIdForGenerationMode(nextMode));
       return;
     }
     setWorkspaceMode("chat");
@@ -3011,7 +3379,11 @@ function App() {
   }
 
   function handleSwitchMessageBranch(messageId: string, offset: number) {
-    const nextActiveId = switchMessageSibling(messages, messageId, offset);
+    const normalized = normalizeMessageTree(messages, activeMessageId);
+    if (normalized.messages !== messages) {
+      setMessages(normalized.messages);
+    }
+    const nextActiveId = switchMessageSibling(normalized.messages, messageId, offset);
     setActiveMessageId(nextActiveId);
   }
 
@@ -3048,12 +3420,13 @@ function App() {
       return;
     }
     const nextSession = createEmptySession();
-    const clonedMessages = cloneMessagePath(path, `branch-${Date.now()}`);
+    const clonedTree = normalizeMessageTree(cloneMessagePath(path, `branch-${Date.now()}`));
+    const clonedMessages = clonedTree.messages;
     const branchedSession: ChatSessionRecord = {
       ...nextSession,
       title: buildSessionTitle(clonedMessages, "", generationMode, workspaceMode),
       messages: clonedMessages,
-      activeMessageId: clonedMessages[clonedMessages.length - 1]?.id ?? null,
+      activeMessageId: clonedTree.activeMessageId,
       workspaceMode: message.kind === "analysis" || message.kind === "render" ? "image" : "chat",
       generationMode,
       composerMode: "new-generation",
@@ -3072,6 +3445,10 @@ function App() {
 
   async function handleCopyMessage(message: ChatMessage) {
     const activeMessage = withActiveMessageVariant(message);
+    if (activeMessage.kind === "render" && activeMessage.imageUrl) {
+      await handleCopyImage(activeMessage.imageUrl, activeMessage.imageLabel);
+      return;
+    }
     const text = buildMessageClipboardText(activeMessage, locale) || activeMessage.imageUrl || "";
     if (!text) {
       showToast(locale === "zh" ? "暂无可复制内容" : "No content to copy yet");
@@ -3295,30 +3672,75 @@ function App() {
     }
   }
 
+  function findComparisonCandidateForItem(item?: PreviewImage | RenderHistoryItem | null, selectedResult?: RenderHistoryItem | null) {
+    if (!item && !selectedResult) {
+      return null;
+    }
+    if (item && "url" in item) {
+      return comparisonCandidates.find((candidate) => (
+        (item.sourceResultId && candidate.sourceResultId === item.sourceResultId) ||
+        candidate.imageUrl === item.url
+      )) ?? null;
+    }
+    const result = selectedResult || (item && !("url" in item) ? item : null);
+    if (!result) {
+      return null;
+    }
+    return comparisonCandidates.find((candidate) => (
+      candidate.sourceResultId === result.id ||
+      candidate.id === result.id ||
+      (result.imageUrl && candidate.imageUrl === result.imageUrl)
+    )) ?? null;
+  }
+
+  function resolveDefaultComparisonPair(item?: PreviewImage | RenderHistoryItem | null, selectedResult?: RenderHistoryItem | null) {
+    const uniqueCandidates = uniqueImageComparisonCandidates(comparisonCandidates);
+    const targetCandidate = item ? findComparisonCandidateForItem(item, selectedResult) : null;
+    if (targetCandidate) {
+      const preferredCandidates = targetCandidate.source === "conversation"
+        ? uniqueImageComparisonCandidates(conversationComparisonCandidates)
+        : uniqueCandidates;
+      const leftResult = [...preferredCandidates].reverse().find((candidate) => !areSameImageComparisonCandidate(candidate, targetCandidate)) ??
+        [...uniqueCandidates].reverse().find((candidate) => !areSameImageComparisonCandidate(candidate, targetCandidate)) ??
+        null;
+      return leftResult ? { leftResult, rightResult: targetCandidate } : null;
+    }
+    const conversationDefaults = uniqueImageComparisonCandidates(conversationComparisonCandidates).slice(-2);
+    if (conversationDefaults.length >= 2) {
+      return { leftResult: conversationDefaults[0], rightResult: conversationDefaults[1] };
+    }
+    if (conversationDefaults.length === 1) {
+      const rightResult = conversationDefaults[0];
+      const leftResult = uniqueCandidates.find((candidate) => !areSameImageComparisonCandidate(candidate, rightResult)) ?? null;
+      if (leftResult) {
+        return { leftResult, rightResult };
+      }
+    }
+    const fallbackDefaults = uniqueCandidates.slice(-2);
+    if (fallbackDefaults.length >= 2) {
+      return { leftResult: fallbackDefaults[0], rightResult: fallbackDefaults[1] };
+    }
+    return null;
+  }
+
   function handleOpenComparison(item?: PreviewImage | RenderHistoryItem | null) {
     const selectedResult = item && !("url" in item) ? item : item?.sourceResultId ? renderHistory.find((result) => result.id === item.sourceResultId) ?? null : activeResult;
     const renderUrl = item && "url" in item ? item.url : selectedResult?.imageUrl;
     const renderLabel = item && "url" in item ? item.label : selectedResult?.imageLabel || selectedResult?.title;
-    if (comparisonCandidates.length >= 2) {
-      const targetCandidate = item && "url" in item
-        ? comparisonCandidates.find((candidate) => candidate.sourceResultId === item.sourceResultId || candidate.imageUrl === item.url) ?? null
-        : selectedResult
-          ? comparisonCandidates.find((candidate) => candidate.sourceResultId === selectedResult.id || candidate.id === selectedResult.id) ?? null
-          : null;
-      const rightResult = targetCandidate ?? comparisonCandidates[comparisonCandidates.length - 1] ?? null;
-      const leftResult = comparisonCandidates.find((candidate) => candidate.id !== rightResult?.id) ?? null;
-      if (!leftResult || !rightResult) {
-        showToast(locale === "zh" ? "当前聊天记录里至少需要两张生成图才能对比" : "This chat needs at least two generated images to compare");
+    if (comparableImageCount >= 2) {
+      const defaultPair = resolveDefaultComparisonPair(item, selectedResult);
+      if (!defaultPair) {
+        showToast(locale === "zh" ? "至少需要两张不同的生成图才能对比" : "At least two different generated images are required to compare");
         return;
       }
-      setComparisonImage({ mode: "history-vs-history", leftResultId: leftResult.id, rightResultId: rightResult.id });
+      setComparisonImage({ mode: "history-vs-history", leftResultId: defaultPair.leftResult.id, rightResultId: defaultPair.rightResult.id });
       setIsComparisonOpen(true);
       firePreferenceEvent("compare", { mode: "history-vs-history" }, selectedResult?.id || "");
       return;
     }
     const resultMode = selectedResult?.generationMode || generationMode;
     if (resultMode === "standard") {
-      showToast(locale === "zh" ? "当前聊天记录里至少需要两张生成图才能对比" : "This chat needs at least two generated images to compare");
+      showToast(locale === "zh" ? "至少需要两张不同的生成图才能对比" : "At least two different generated images are required to compare");
       return;
     }
     const floorPlanUrl = selectedResult?.floorPlanUrl || floorPlanPreviews[0]?.url;
@@ -3345,7 +3767,7 @@ function App() {
 
   function isRenderMessageComparisonDisabled(message: ChatMessage) {
     const messageSourceResult = resolveRenderMessageResult(message);
-    if (comparisonCandidates.length >= 2) {
+    if (comparableImageCount >= 2) {
       return false;
     }
     const messageResultMode = messageSourceResult?.generationMode || generationMode;
@@ -3405,6 +3827,7 @@ function App() {
       generation_mode: item.generationMode || generationMode,
       source_title: item.title,
     }, item.id, item.projectId || DEFAULT_PROJECT_ID, item.userId || currentUserId || DEFAULT_PROJECT_ID);
+    setSelectedPromptModeId(promptModeIdForGenerationMode(item.generationMode || "standard"));
     showToast(locale === "zh" ? "已把结果提示词载入输入框" : "Prompt loaded into composer");
   }
 
@@ -3617,7 +4040,7 @@ function App() {
     }
   }
 
-  function applyGenerationProgress(runGuard: ConversationRunGuard, idBase: number, progress: GenerationProgress) {
+  function applyGenerationProgress(runGuard: ConversationRunGuard, idBase: number, progress: GenerationProgress, parentId?: string | null) {
     const nextStep = progress.stage === "failed"
       ? "failed"
       : progress.stage === "completed"
@@ -3670,6 +4093,7 @@ function App() {
           : "Backend generation is still running.";
       appendMessagesToRunSession(runGuard, [{
         id: `m-live-analysis-${idBase}`,
+        parentId: parentId ?? null,
         role: "assistant",
         kind: "analysis",
         content: {
@@ -3868,11 +4292,19 @@ function App() {
     }
   }
 
-  async function runConversationFlow(userPrompt?: string, requestedMode: GenerationMode = generationMode, requestedComposerMode: ComposerMode = composerMode) {
+  async function runConversationFlow(
+    userPrompt?: string,
+    requestedMode: GenerationMode = generationMode,
+    requestedComposerMode: ComposerMode = composerMode,
+    requestedPromptModeId: PromptModeId = selectedPromptModeId
+  ) {
     if (isConversationBusy) return;
     const submitMode = requestedMode;
     const submitComposerMode = requestedComposerMode;
-    const prompt = buildGenerationPrompt(userPrompt, submitMode);
+    const submitPromptModeId = submitMode === "standard" && requestedPromptModeId.startsWith("skill-")
+      ? requestedPromptModeId
+      : promptModeIdForGenerationMode(submitMode);
+    const prompt = buildGenerationPrompt(userPrompt, submitMode, submitPromptModeId);
     const userBrief = (userPrompt ?? chatInput).trim();
     const submitBlocker = submitComposerMode === "edit-selected-result"
       ? generationBlocker
@@ -3884,18 +4316,24 @@ function App() {
     const displayedBrief = userBrief || (submitMode === "colored_floor_plan"
       ? locale === "zh" ? "生成彩色平面图" : "Generate a colored floor plan"
       : "");
+    const isFloorPlanInputMode = submitMode === "render3d" || submitMode === "colored_floor_plan";
     const idBase = Date.now();
     const runGuard = createConversationRunGuard();
+    const userMessageId = `m-user-${idBase}`;
+    const userParentId = activeMessageId;
     const nextMessages: ChatMessage[] = [{
-      id: `m-user-${idBase}`,
+      id: userMessageId,
+      parentId: userParentId,
       role: "user",
       kind: "text",
       content: displayedBrief
     }];
-    setMessages((current) => [...current, ...nextMessages]);
+    appendMessagesToRunSession(runGuard, nextMessages);
     if (userPrompt === undefined) {
       clearComposerDraft();
     }
+    const abortController = new AbortController();
+    generationAbortControllersRef.current.set(runGuard.sessionId, abortController);
     setGenerationStartedAt(Date.now());
     setGenerationElapsedMs(0);
     setLiveGeneration(null);
@@ -3906,8 +4344,94 @@ function App() {
 
     try {
       if (submitComposerMode === "edit-selected-result") {
-        if (!activeResult?.id) {
-          throw new Error(locale === "zh" ? "请先选择一张已有结果" : "Select an existing result first");
+        const shouldEditUploadedReference = floorPlanFiles.length > 0;
+        if (!activeResult?.id && !shouldEditUploadedReference) {
+          throw new Error(locale === "zh" ? "请先选择一张已有结果，或上传一张参考图" : "Select an existing result or upload a reference image first");
+        }
+        if (shouldEditUploadedReference) {
+          const result = await requestGenerationStream(
+            {
+              projectId: DEFAULT_PROJECT_ID,
+              userId: currentUserId || DEFAULT_PROJECT_ID,
+              mode: "standard",
+              prompt,
+              directionStackText: "",
+              maxIterations: effectiveMaxIterations,
+              enableQualityEvaluation,
+              apiConfig,
+              selectedModel,
+              floorPlanFiles
+            },
+            (progress) => {
+              if (!isActiveConversationRun(runGuard)) return;
+              applyGenerationProgress(runGuard, idBase, progress, userMessageId);
+            },
+            { signal: abortController.signal }
+          );
+          if (!isActiveConversationRun(runGuard)) return;
+          const firstImage = result.images?.[0];
+          const backendItems = result.results?.map(normalizeApiResult) ?? [];
+          const fallbackItem: RenderHistoryItem = {
+            id: `r-${idBase}`,
+            title: firstImage?.label || (locale === "zh" ? `上传图续改 ${new Date().toLocaleTimeString()}` : `Uploaded edit ${new Date().toLocaleTimeString()}`),
+            status: result.status,
+            imageUrl: firstImage?.url || firstImage?.data_url,
+            downloadUrl: firstImage?.download_url,
+            imageLabel: firstImage?.label,
+            prompt: result.prompt,
+            evaluation: result.evaluation,
+            floorDesc: result.floor_desc,
+            logs: result.logs,
+            createdAt: new Date().toISOString(),
+            generationMode: "standard",
+          };
+          const newHistoryItems = (backendItems.length > 0 ? backendItems : [fallbackItem]).map((item) => ({
+            ...item,
+            generationMode: item.generationMode || "standard",
+          }));
+          const historyItem = newHistoryItems[0];
+          setRenderHistory((current) => {
+            return mergeRenderHistoryItems(newHistoryItems, current);
+          });
+          applyRunActiveResult(runGuard, historyItem.id);
+          setRenderingStep("completed");
+          if (isVisibleConversationRun(runGuard)) {
+            setActiveStep("completed");
+          }
+          showToast(locale === "zh" ? "上传图续改完成，已保存到图片管理" : "Uploaded image edit completed and saved to images");
+          if (activeUtilityPanel === "preferences") {
+            void refreshLearnedProfile(DEFAULT_PROJECT_ID, currentUserId || DEFAULT_PROJECT_ID);
+          }
+          removeLiveAnalysisMessage(runGuard, idBase);
+          const finalPrompt = result.prompt || prompt;
+          appendMessagesToRunSession(runGuard, [
+            {
+              id: `m-api-analysis-${idBase}`,
+              parentId: userMessageId,
+              role: "assistant",
+              kind: "analysis",
+              content: {
+                zh: "上传图续改完成。默认模式已把上传图片作为参考图，并按输入框要求生成新图。",
+                en: "Uploaded image edit completed. Default mode used the uploaded image as a reference and generated a new image from the request."
+              },
+              bullets: {
+                zh: compactLines([result.status || "", finalPrompt ? "最终提示词已生成" : ""]),
+                en: compactLines([result.status || "", finalPrompt ? "Final prompt generated" : ""])
+              },
+              promptText: finalPrompt
+            },
+            {
+              id: `m-api-render-${idBase}`,
+              parentId: `m-api-analysis-${idBase}`,
+              role: "assistant",
+              kind: "render",
+              content: result.ok ? (locale === "zh" ? "基于上传图的生成结果已返回" : "Reference-image result returned") : result.error || t.requestFailed,
+              imageUrl: historyItem.imageUrl || firstImage?.data_url || firstImage?.url,
+              imageLabel: historyItem.imageLabel || firstImage?.label,
+              sourceResultId: historyItem.id,
+            }
+          ]);
+          return;
         }
         const editResult = await requestImageEdit({
           sourceResultId: activeResult.id,
@@ -3918,7 +4442,7 @@ function App() {
           enableQualityEvaluation,
           apiConfig,
           selectedModel
-        });
+        }, { signal: abortController.signal });
         if (!isActiveConversationRun(runGuard)) return;
         const editedItems = (editResult.results?.length ? editResult.results : editResult.result ? [editResult.result] : []).map(normalizeApiResult);
         if (editedItems.length === 0) {
@@ -3946,6 +4470,7 @@ function App() {
         appendMessagesToRunSession(runGuard, [
           {
             id: `m-api-analysis-${idBase}`,
+            parentId: userMessageId,
             role: "assistant",
             kind: "analysis",
             content: {
@@ -3960,6 +4485,7 @@ function App() {
           },
           {
             id: `m-api-render-${idBase}`,
+            parentId: `m-api-analysis-${idBase}`,
             role: "assistant",
             kind: "render",
             content: editResult.ok ? (locale === "zh" ? "修改后的真实渲染结果已返回" : "Edited render result returned") : editResult.error || t.requestFailed,
@@ -3986,8 +4512,9 @@ function App() {
         },
         (progress) => {
           if (!isActiveConversationRun(runGuard)) return;
-          applyGenerationProgress(runGuard, idBase, progress);
-        }
+          applyGenerationProgress(runGuard, idBase, progress, userMessageId);
+        },
+        { signal: abortController.signal }
       );
       if (!isActiveConversationRun(runGuard)) return;
       const firstImage = result.images?.[0];
@@ -4005,14 +4532,14 @@ function App() {
         logs: result.logs,
         createdAt: new Date().toISOString(),
         generationMode: submitMode,
-        floorPlanUrl: floorPlanPreviews[0]?.url,
-        floorPlanName: floorPlanPreviews[0]?.name
+        floorPlanUrl: isFloorPlanInputMode ? floorPlanPreviews[0]?.url : undefined,
+        floorPlanName: isFloorPlanInputMode ? floorPlanPreviews[0]?.name : undefined
       };
       const newHistoryItems = (backendItems.length > 0 ? backendItems : [fallbackItem]).map((item) => ({
         ...item,
         generationMode: item.generationMode || submitMode,
-        floorPlanUrl: item.floorPlanUrl || floorPlanPreviews[0]?.url,
-        floorPlanName: item.floorPlanName || floorPlanPreviews[0]?.name
+        floorPlanUrl: item.floorPlanUrl || (isFloorPlanInputMode ? floorPlanPreviews[0]?.url : undefined),
+        floorPlanName: item.floorPlanName || (isFloorPlanInputMode ? floorPlanPreviews[0]?.name : undefined)
       }));
       const historyItem = newHistoryItems[0];
       setRenderHistory((current) => {
@@ -4032,6 +4559,7 @@ function App() {
       const resultMessages: ChatMessage[] = [
         {
           id: `m-api-analysis-${idBase}`,
+          parentId: userMessageId,
           role: "assistant",
           kind: "analysis",
           content: {
@@ -4046,6 +4574,7 @@ function App() {
         },
         {
           id: `m-api-render-${idBase}`,
+          parentId: `m-api-analysis-${idBase}`,
           role: "assistant",
           kind: "render",
           content: result.ok ? (locale === "zh" ? "真实渲染结果已返回" : "Real render result returned") : result.error || t.requestFailed,
@@ -4057,18 +4586,35 @@ function App() {
       appendMessagesToRunSession(runGuard, resultMessages);
     } catch (error) {
       if (!isActiveConversationRun(runGuard)) return;
+      if (isGenerationStreamAbortedError(error) || error instanceof DOMException && error.name === "AbortError") {
+        removeLiveAnalysisMessage(runGuard, idBase);
+        setRenderingStep("completed");
+        if (isVisibleConversationRun(runGuard)) {
+          setActiveStep("completed");
+        }
+        appendMessagesToRunSession(runGuard, [{
+          id: `m-api-stopped-${idBase}`,
+          parentId: userMessageId,
+          role: "assistant",
+          kind: "text",
+          content: locale === "zh" ? "已停止生成。" : "Generation stopped."
+        }]);
+        return;
+      }
       setRenderingStep("failed");
       if (isVisibleConversationRun(runGuard)) {
         setActiveStep("failed");
       }
       appendMessagesToRunSession(runGuard, [{
         id: `m-api-error-${idBase}`,
+        parentId: userMessageId,
         role: "assistant",
         kind: "error",
         content: `${t.requestFailed}: ${error instanceof Error ? error.message : String(error)}`
       }]);
     } finally {
       if (isActiveConversationRun(runGuard)) {
+        generationAbortControllersRef.current.delete(runGuard.sessionId);
         setIsRendering(false);
         setRenderingSessionId("");
         setGenerationStartedAt(null);
@@ -4089,7 +4635,7 @@ function App() {
     if (isChatWorkspace) {
       return;
     }
-    void runConversationFlow(undefined, "colored_floor_plan");
+    void runConversationFlow(undefined, "colored_floor_plan", "new-generation", promptModeIdForGenerationMode("colored_floor_plan"));
   }
 
   function handleComposerSubmit(event: FormEvent<HTMLFormElement>) {
@@ -4122,16 +4668,17 @@ function App() {
     setConfigStatus({ tone: "warn", message: locale === "zh" ? `正在检测${label}...` : `Detecting ${label}...` });
     try {
       const models = await detectConfigModels(role, apiConfig);
+      const usableModels = modelSelectOptions("", models);
       setDetectedModels((current) => ({
         ...current,
-        [role]: modelSelectOptions("", current[role], models)
+        [role]: modelSelectOptions("", current[role], usableModels)
       }));
       setConfigStatus({
-        tone: models.length ? "good" : "warn",
-        message: models.length
+        tone: usableModels.length ? "good" : "warn",
+        message: usableModels.length
           ? locale === "zh"
-            ? `检测到 ${models.length} 个${label}，可多选后加入配置`
-            : `Detected ${models.length} ${label}; select one or more to add`
+            ? `检测到 ${usableModels.length} 个${label}，可多选后加入配置`
+            : `Detected ${usableModels.length} ${label}; select one or more to add`
           : locale === "zh"
             ? `没有检测到可用${label}`
             : `No ${label} were detected`
@@ -4175,17 +4722,52 @@ function App() {
     const nextModels = selectedModels.includes(model)
       ? selectedModels.filter((item) => item !== model)
       : [...selectedModels, model];
+    applyImageModelOptions(nextModels);
+    showToast(nextModels.includes(model)
+      ? locale === "zh" ? `已勾选画图模型：${model}` : `Selected image model: ${model}`
+      : locale === "zh" ? `已取消画图模型：${model}` : `Removed image model: ${model}`);
+  }
+
+  function removeAnalysisModelOption(model: string) {
+    const targetModel = model.trim();
+    if (!targetModel) return;
+    const nextModels = selectedAnalysisModelOptions.filter((item) => item !== targetModel);
+    const nextDefaultModel = apiConfig.analysisModel === targetModel ? nextModels[0] || "" : apiConfig.analysisModel;
+    const nextAddedModels = nextModels.filter((item) => item !== nextDefaultModel);
+    setAddedDetectedModels((current) => {
+      const analysis = modelSelectOptions("", nextAddedModels);
+      storeAnalysisModelOptions(currentUserId, modelSelectOptions(nextDefaultModel, analysis));
+      return {
+        ...current,
+        analysis
+      };
+    });
+    if (apiConfig.analysisModel === targetModel) {
+      updateAnalysisProvider({ model: nextDefaultModel });
+    }
+    showToast(locale === "zh" ? `已删除分析模型：${targetModel}` : `Removed analysis model: ${targetModel}`);
+  }
+
+  function applyImageModelOptions(models: string[]) {
+    const nextModels = modelSelectOptions("", models);
     const [primaryModel = "", ...fallbackModels] = nextModels;
-    updateImageProvider({ model: primaryModel });
-    setApiConfig((current) => ({ ...current, fallbackModels: fallbackModels.join("\n") }));
+    setApiConfig((current) => ({
+      ...syncActiveProvider(current, "image", { model: primaryModel }),
+      fallbackModels: fallbackModels.join("\n")
+    }));
     setAddedDetectedModels((current) => ({
       ...current,
       image: nextModels
     }));
     setSelectedModel(primaryModel || modelOptions[0]);
-    showToast(nextModels.includes(model)
-      ? locale === "zh" ? `已勾选画图模型：${model}` : `Selected image model: ${model}`
-      : locale === "zh" ? `已取消画图模型：${model}` : `Removed image model: ${model}`);
+    return nextModels;
+  }
+
+  function removeImageModelOption(model: string) {
+    const targetModel = model.trim();
+    if (!targetModel) return;
+    applyImageModelOptions(selectedImageModelOptions.filter((item) => item !== targetModel));
+    showToast(locale === "zh" ? `已删除画图模型：${targetModel}` : `Removed image model: ${targetModel}`);
   }
 
   function applyDetectedModels(role: ConfigRole) {
@@ -4210,14 +4792,7 @@ function App() {
       return;
     }
     const nextModels = modelSelectOptions(apiConfig.imageModel, parseModelListText(apiConfig.fallbackModels), models);
-    const [primaryModel = "", ...fallbackModels] = nextModels;
-    updateImageProvider({ model: primaryModel });
-    setApiConfig((current) => ({ ...current, fallbackModels: fallbackModels.join("\n") }));
-    setAddedDetectedModels((current) => ({
-      ...current,
-      image: nextModels
-    }));
-    setSelectedModel(primaryModel || modelOptions[0]);
+    applyImageModelOptions(nextModels);
     showToast(locale === "zh" ? `已加入 ${nextModels.length} 个画图模型` : `Added ${nextModels.length} image models`);
   }
 
@@ -4251,6 +4826,7 @@ function App() {
     setSelectedModel(defaultApiConfig.imageModel || modelOptions[0]);
     setDetectedModels({ analysis: [], image: [] });
     setAddedDetectedModels({ analysis: [], image: [] });
+    setVisibleApiKeys({ analysis: false, image: false });
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(analysisModelOptionsStorageKey(currentUserId));
     }
@@ -4272,6 +4848,12 @@ function App() {
   const comparisonRightResult = comparisonImage?.mode === "history-vs-history"
     ? comparisonCandidates.find((item) => item.id === comparisonImage.rightResultId) ?? null
     : null;
+  const comparisonSourceLabel = (candidate: ImageComparisonCandidate) => (
+    candidate.source === "conversation"
+      ? locale === "zh" ? "当前聊天" : "Current chat"
+      : locale === "zh" ? "图片库" : "Image library"
+  );
+  const comparisonOptionLabel = (candidate: ImageComparisonCandidate) => `${comparisonSourceLabel(candidate)} · ${candidate.label}`;
   const activeSettingsPanel = isSettingsPanel(activeUtilityPanel) ? activeUtilityPanel : null;
   const isShortcutDrawerOpen = activeUtilityPanel === "shortcuts" && !isImageManagementView;
   const isSettingsDialogOpen = activeSettingsPanel !== null && !isImageManagementView;
@@ -4292,8 +4874,8 @@ function App() {
         <div className="drop-overlay" aria-hidden="true">
           <div>
             <ImagePlus size={24} />
-            <strong>{locale === "zh" ? "释放图片以添加平面图" : "Drop images to add floor plans"}</strong>
-            <span>{locale === "zh" ? "支持多张图片，系统会自动同步到生成请求" : "Multiple images are supported and sent with the generation request"}</span>
+            <strong>{locale === "zh" ? "释放图片以添加参考图/平面图" : "Drop images to add references or floor plans"}</strong>
+            <span>{locale === "zh" ? "默认模式用于图生图，3D/彩色平面图模式用于结构参考" : "Default mode uses them as references; 3D and colored-plan modes use them as structure inputs"}</span>
           </div>
         </div>
       )}
@@ -4740,6 +5322,7 @@ function App() {
                   const activeMessage = withActiveMessageVariant(message);
                   const branchInfo = getBranchInfo(messages, message.id);
                   const hasAssistantOutput = activeMessage.role === "assistant" && Boolean(buildMessageClipboardText(activeMessage, locale) || activeMessage.imageUrl);
+                  const isStreamingAssistantMessage = isVisibleChatResponding && activeMessage.role === "assistant" && message.id === activeMessageId;
                   const isEditingUserMessage = activeMessage.role === "user" && editingMessage?.messageId === message.id;
                   const editedDraft = isEditingUserMessage ? editingMessage?.draft ?? "" : "";
                   const editedDraftLineCount = Math.min(8, Math.max(3, editedDraft.split("\n").length));
@@ -4759,6 +5342,12 @@ function App() {
                     <div className="message-body">
                       <div className="message-meta">
                         <strong>{activeMessage.role === "user" ? t.userLabel : t.aiLabel}</strong>
+                        {isStreamingAssistantMessage && (
+                          <span className="assistant-streaming-indicator" role="status" aria-live="polite">
+                            <span />
+                            {locale === "zh" ? "正在输出" : "Responding"}
+                          </span>
+                        )}
                         {activeMessage.kind === "render" && <span>{t.renderPreview}</span>}
                         {branchInfo.count > 1 && (
                           <div className="message-version-switch" aria-label={locale === "zh" ? "分支切换" : "Branch switcher"}>
@@ -4832,7 +5421,7 @@ function App() {
 
                       {activeMessage.bullets && (
                         <ul className="analysis-list">
-                          {activeMessage.bullets[locale].map((item) => (
+                          {(activeMessage.bullets[locale] ?? []).map((item) => (
                             <li key={item}>{item}</li>
                           ))}
                         </ul>
@@ -5100,14 +5689,14 @@ function App() {
                       <Mic size={18} />
                     </button>
                     <button
-                      type={isVisibleChatResponding ? "button" : "submit"}
+                      type={composerIsStopping ? "button" : "submit"}
                       className="chatgpt-composer__send"
-                      disabled={isVisibleChatResponding ? false : !canSubmitComposer}
+                      disabled={composerIsStopping ? false : !canSubmitComposer}
                       aria-busy={isVisibleConversationBusy}
-                      onClick={isVisibleChatResponding ? stopCurrentChatResponse : undefined}
-                      title={isVisibleChatResponding ? (locale === "zh" ? "停止当前回复" : "Stop current response") : (isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
+                      onClick={composerIsStopping ? stopCurrentChatResponse : undefined}
+                      title={composerIsStopping ? composerStopTitle : (isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
                     >
-                      {isVisibleChatResponding ? <Square size={16} /> : <AudioLines size={18} />}
+                      {composerIsStopping ? <Square size={16} /> : <AudioLines size={18} />}
                     </button>
                   </>
                 ) : (
@@ -5144,14 +5733,14 @@ function App() {
                       </select>
                     )}
                     <button
-                      type={isVisibleChatResponding ? "button" : "submit"}
+                      type={composerIsStopping ? "button" : "submit"}
                       className="chatgpt-composer__send"
-                      disabled={isVisibleChatResponding ? false : !canSubmitComposer}
+                      disabled={composerIsStopping ? false : !canSubmitComposer}
                       aria-busy={isVisibleConversationBusy}
-                      onClick={isVisibleChatResponding ? stopCurrentChatResponse : undefined}
-                      title={isVisibleChatResponding ? (locale === "zh" ? "停止当前回复" : "Stop current response") : (isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
+                      onClick={composerIsStopping ? stopCurrentChatResponse : undefined}
+                      title={composerIsStopping ? composerStopTitle : (isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
                     >
-                      {isVisibleChatResponding ? <Square size={15} /> : <Send size={16} />}
+                      {composerIsStopping ? <Square size={15} /> : <Send size={16} />}
                     </button>
                   </>
                 )}
@@ -5178,14 +5767,15 @@ function App() {
             {isImageWorkspace && (
               <div className="chatgpt-composer__meta">
                 <div className="chatgpt-composer__mode-row">
-                  {composerMode === "new-generation" ? generationModeOptions.map((option) => (
+                  {composerMode === "new-generation" ? promptModeOptions.map((option) => (
                     <button
                       type="button"
-                      key={option.value}
-                      className={generationMode === option.value ? "is-active" : ""}
-                      aria-pressed={generationMode === option.value}
-                      onClick={() => setGenerationMode(option.value)}
+                      key={option.id}
+                      className={visibleSelectedPromptModeId === option.id ? "is-active" : ""}
+                      aria-pressed={visibleSelectedPromptModeId === option.id}
+                      onClick={() => selectPromptMode(option.id)}
                       disabled={isRendering}
+                      title={option.description || (locale === "zh" ? option.zh : option.en)}
                     >
                       {locale === "zh" ? option.zh : option.en}
                     </button>
@@ -5195,6 +5785,7 @@ function App() {
                     </button>
                   )}
                 </div>
+                {composerMode === "new-generation" && !canSubmitComposer && <span className="chatgpt-mode-note">{promptModeHint}</span>}
                 {composerMode === "new-generation" && floorPlanFiles.length > 0 && (
                   <div className="chatgpt-composer__utility-row">
                     <button
@@ -5659,17 +6250,28 @@ function App() {
                           <input
                             value={apiConfig.analysisBaseUrl}
                             onChange={(event) => updateAnalysisProvider({ baseUrl: event.target.value })}
-                            placeholder="https://api.openai.com/v1"
+                            placeholder={defaultApiBaseUrl}
                           />
                         </label>
                         <label>
                           <span>{locale === "zh" ? "分析 API Key" : "Analysis API Key"}</span>
-                          <input
-                            type="password"
-                            value={apiConfig.analysisApiKey}
-                            onChange={(event) => updateAnalysisProvider({ apiKey: event.target.value })}
-                            placeholder="sk-..."
-                          />
+                          <div className="api-key-field">
+                            <input
+                              type={visibleApiKeys.analysis ? "text" : "password"}
+                              value={apiConfig.analysisApiKey}
+                              onChange={(event) => updateAnalysisProvider({ apiKey: event.target.value })}
+                              placeholder="sk-..."
+                              autoComplete="off"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => toggleApiKeyVisibility("analysis")}
+                              aria-label={visibleApiKeys.analysis ? (locale === "zh" ? "隐藏分析 API Key" : "Hide analysis API key") : (locale === "zh" ? "显示分析 API Key" : "Show analysis API key")}
+                              title={visibleApiKeys.analysis ? (locale === "zh" ? "隐藏" : "Hide") : (locale === "zh" ? "显示" : "Show")}
+                            >
+                              {visibleApiKeys.analysis ? <EyeOff size={15} /> : <Eye size={15} />}
+                            </button>
+                          </div>
                         </label>
                         <label>
                           <span>{locale === "zh" ? "分析模型" : "Analysis model"}</span>
@@ -5679,6 +6281,32 @@ function App() {
                             placeholder="gpt-4o"
                           />
                         </label>
+                        {selectedAnalysisModelOptions.length > 0 && (
+                          <div className="api-model-picker api-model-picker--selected api-config-wide">
+                            <div className="api-model-picker__head">
+                              <strong>{locale === "zh" ? "已加入聊天模型" : "Added chat models"}</strong>
+                              <small>{locale === "zh" ? "删除后会从聊天模型切换里移除；删除默认模型会自动切到下一个。" : "Remove models from the chat switcher; removing the default picks the next one."}</small>
+                            </div>
+                            <div className="api-model-picker__list">
+                              {selectedAnalysisModelOptions.map((model, index) => (
+                                <span className="api-model-chip" key={model}>
+                                  <span>{model}</span>
+                                  <em>{apiConfig.analysisModel === model || (!apiConfig.analysisModel && index === 0) ? (locale === "zh" ? "默认" : "Default") : (locale === "zh" ? "已加入" : "Added")}</em>
+                                  <button
+                                    type="button"
+                                    className="api-model-chip__remove"
+                                    onClick={() => removeAnalysisModelOption(model)}
+                                    disabled={configAction !== null}
+                                    title={locale === "zh" ? "删除模型" : "Remove model"}
+                                    aria-label={locale === "zh" ? `删除分析模型 ${model}` : `Remove analysis model ${model}`}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         <div className="api-model-search-row api-config-wide">
                           <button type="button" onClick={() => handleDetectModels("analysis")} disabled={configAction !== null}>
                             {configAction === "models-analysis" ? (locale === "zh" ? "搜索中" : "Searching") : locale === "zh" ? "搜索分析模型" : "Search analysis models"}
@@ -5763,17 +6391,28 @@ function App() {
                           <input
                             value={apiConfig.imageBaseUrl}
                             onChange={(event) => updateImageProvider({ baseUrl: event.target.value })}
-                            placeholder="https://api.openai.com/v1"
+                            placeholder={defaultApiBaseUrl}
                           />
                         </label>
                         <label>
                           <span>{locale === "zh" ? "画图 API Key" : "Image API Key"}</span>
-                          <input
-                            type="password"
-                            value={apiConfig.imageApiKey}
-                            onChange={(event) => updateImageProvider({ apiKey: event.target.value })}
-                            placeholder="sk-..."
-                          />
+                          <div className="api-key-field">
+                            <input
+                              type={visibleApiKeys.image ? "text" : "password"}
+                              value={apiConfig.imageApiKey}
+                              onChange={(event) => updateImageProvider({ apiKey: event.target.value })}
+                              placeholder="sk-..."
+                              autoComplete="off"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => toggleApiKeyVisibility("image")}
+                              aria-label={visibleApiKeys.image ? (locale === "zh" ? "隐藏画图 API Key" : "Hide image API key") : (locale === "zh" ? "显示画图 API Key" : "Show image API key")}
+                              title={visibleApiKeys.image ? (locale === "zh" ? "隐藏" : "Hide") : (locale === "zh" ? "显示" : "Show")}
+                            >
+                              {visibleApiKeys.image ? <EyeOff size={15} /> : <Eye size={15} />}
+                            </button>
+                          </div>
                         </label>
                         <label>
                           <span>{locale === "zh" ? "画图模型" : "Image model"}</span>
@@ -5795,6 +6434,32 @@ function App() {
                             placeholder={locale === "zh" ? "可选：多个模型用换行或逗号分隔" : "Optional: separate models with commas or new lines"}
                           />
                         </label>
+                        {selectedImageModelOptions.length > 0 && (
+                          <div className="api-model-picker api-model-picker--selected api-config-wide">
+                            <div className="api-model-picker__head">
+                              <strong>{locale === "zh" ? "已加入画图模型" : "Added image models"}</strong>
+                              <small>{locale === "zh" ? "第一个是主模型，其余作为备用模型；可直接删除不需要的候选。" : "The first model is primary and the rest are fallbacks; remove candidates you do not need."}</small>
+                            </div>
+                            <div className="api-model-picker__list">
+                              {selectedImageModelOptions.map((model, index) => (
+                                <span className="api-model-chip" key={model}>
+                                  <span>{model}</span>
+                                  <em>{index === 0 ? (locale === "zh" ? "主" : "Primary") : (locale === "zh" ? "备" : "Fallback")}</em>
+                                  <button
+                                    type="button"
+                                    className="api-model-chip__remove"
+                                    onClick={() => removeImageModelOption(model)}
+                                    disabled={configAction !== null}
+                                    title={locale === "zh" ? "删除模型" : "Remove model"}
+                                    aria-label={locale === "zh" ? `删除画图模型 ${model}` : `Remove image model ${model}`}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         <div className="api-model-search-row api-config-wide">
                           <button type="button" onClick={() => handleDetectModels("image")} disabled={configAction !== null}>
                             {configAction === "models-image" ? (locale === "zh" ? "搜索中" : "Searching") : locale === "zh" ? "搜索画图模型" : "Search image models"}
@@ -5862,6 +6527,91 @@ function App() {
 
               {activeUtilityPanel === "prompts" && (
                 <div className="chatgpt-drawer__stack">
+                  <div className="control-section prompt-skill-manager">
+                    <div className="shortcut-manager__head">
+                      <div className="section-title">
+                        <Sparkles size={14} />
+                        {locale === "zh" ? "图像模式" : "Image modes"}
+                      </div>
+                      <button type="button" onClick={startNewPromptSkill}>
+                        <Plus size={14} />
+                        {locale === "zh" ? "新增" : "Add"}
+                      </button>
+                    </div>
+                    <p className="config-hint">
+                      {locale === "zh"
+                        ? "自定义模式会在提交前把模板套到主输入框内容上；模板可使用 {prompt} 或 {{prompt}} 作为输入占位符。"
+                        : "Custom modes apply their template to the main composer before submit. Use {prompt} or {{prompt}} as the input placeholder."}
+                    </p>
+                    <div className="shortcut-manager__list">
+                      {promptSkills.length === 0 ? (
+                        <p className="shortcut-empty-note">
+                          {locale === "zh" ? "还没有自定义图像模式。默认模式和 3D 增强已内置在主输入区。" : "No custom image modes yet. Default and 3D boost are already built in."}
+                        </p>
+                      ) : promptSkills.map((skill) => (
+                        <div className="shortcut-manager__item prompt-skill-manager__item" key={skill.id}>
+                          <button type="button" className="shortcut-manager__phrase" onClick={() => selectPromptMode(`skill-${skill.id}`)}>
+                            <span>{skill.name}</span>
+                            <small>{skill.description || (locale === "zh" ? "套用到下一次出图" : "Apply to next generation")}</small>
+                          </button>
+                          <div className="shortcut-manager__item-actions">
+                            <button type="button" onClick={() => startEditingPromptSkill(skill)} title={locale === "zh" ? "编辑模式" : "Edit mode"}>
+                              <Edit3 size={14} />
+                            </button>
+                            <button type="button" onClick={() => removePromptSkill(skill.id)} title={locale === "zh" ? "删除模式" : "Delete mode"}>
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className="control-section shortcut-editor prompt-skill-editor">
+                    <div className="section-title">
+                      <Edit3 size={14} />
+                      {editingPromptSkillId ? (locale === "zh" ? "编辑图像模式" : "Edit image mode") : (locale === "zh" ? "新增图像模式" : "New image mode")}
+                    </div>
+                    <label>
+                      <span>{locale === "zh" ? "模式名称" : "Mode name"}</span>
+                      <input
+                        value={promptSkillDraft.name}
+                        onChange={(event) => setPromptSkillDraft((current) => ({ ...current, name: event.target.value }))}
+                        placeholder={locale === "zh" ? "例如：风景图" : "e.g. Landscape"}
+                      />
+                    </label>
+                    <label>
+                      <span>{locale === "zh" ? "说明（可选）" : "Description (optional)"}</span>
+                      <input
+                        value={promptSkillDraft.description}
+                        onChange={(event) => setPromptSkillDraft((current) => ({ ...current, description: event.target.value }))}
+                        placeholder={locale === "zh" ? "例如：自然风光、真实摄影、电影光影" : "Natural scenery, realistic photography, cinematic light"}
+                      />
+                    </label>
+                    <label>
+                      <span>{locale === "zh" ? "提示词模板" : "Prompt template"}</span>
+                      <textarea
+                        rows={8}
+                        value={promptSkillDraft.prompt}
+                        onChange={(event) => setPromptSkillDraft((current) => ({ ...current, prompt: event.target.value }))}
+                        placeholder={locale === "zh" ? "请把用户输入扩展成高质量风景摄影提示词：{prompt}" : "Expand the user input into a high-quality landscape prompt: {prompt}"}
+                      />
+                    </label>
+                    <div className="shortcut-editor__actions">
+                      <button type="button" onClick={savePromptSkill}>
+                        <Save size={14} />
+                        {locale === "zh" ? "保存模式" : "Save mode"}
+                      </button>
+                      <button type="button" onClick={() => {
+                        setEditingPromptSkillId(null);
+                        setPromptSkillDraft(DEFAULT_PROMPT_SKILL_DRAFT);
+                      }}>
+                        <X size={14} />
+                        {locale === "zh" ? "清空" : "Clear"}
+                      </button>
+                    </div>
+                  </div>
+
                   <div className="control-section">
                     <button
                       className="config-toggle"
@@ -6058,14 +6808,14 @@ function App() {
         </div>
       )}
       {isComparisonOpen && comparisonImage && (
-        <div className="comparison-modal" role="dialog" aria-modal="true" aria-label={comparisonImage.mode === "history-vs-history" ? (locale === "zh" ? "当前聊天图片对比" : "Current chat image comparison") : (locale === "zh" ? "平面图与效果图对比分析" : "Floor plan and render comparison")} onClick={() => { setIsComparisonOpen(false); setComparisonImage(null); }}>
+        <div className="comparison-modal" role="dialog" aria-modal="true" aria-label={comparisonImage.mode === "history-vs-history" ? (locale === "zh" ? "A/B 图片对比" : "A/B image comparison") : (locale === "zh" ? "平面图与效果图对比分析" : "Floor plan and render comparison")} onClick={() => { setIsComparisonOpen(false); setComparisonImage(null); }}>
           <div className="comparison-modal__content" onClick={(event) => event.stopPropagation()}>
             <div className="comparison-modal__head">
               <div>
                 <p className="eyebrow">{locale === "zh" ? "对比分析" : "Compare analysis"}</p>
                 <h2>
                   {comparisonImage.mode === "history-vs-history"
-                    ? locale === "zh" ? "当前聊天图片 A / 当前聊天图片 B" : "Current chat image A / current chat image B"
+                    ? locale === "zh" ? "A 基准图 / B 对比图" : "A reference / B comparison"
                     : locale === "zh" ? "左侧平面图 / 右侧效果图" : "Floor plan left / render right"}
                 </h2>
               </div>
@@ -6074,30 +6824,48 @@ function App() {
             {comparisonImage.mode === "history-vs-history" && (
               <div className="comparison-selectors">
                 <p className="comparison-selectors__note">
-                  {locale === "zh" ? "只列出当前聊天记录里的生成图，便于比较同一轮讨论中的多个结果。" : "Only generated images from the current chat are listed, so you can compare results from this conversation."}
+                  {locale === "zh" ? "默认优先选当前聊天最近两张生成图；也可以从当前聊天或图片库手动指定 A/B。" : "Defaults to the two latest generated images in this chat; you can also choose A/B from the current chat or image library."}
                 </p>
                 <label>
-                  <span>{locale === "zh" ? "左侧图片" : "Left image"}</span>
+                  <span>{locale === "zh" ? "A 基准图" : "A reference image"}</span>
                   <select
                     value={comparisonImage.leftResultId}
-                    onChange={(event) => setComparisonImage((current) => current?.mode === "history-vs-history" ? { ...current, leftResultId: event.target.value } : current)}
+                    onChange={(event) => setComparisonImage((current) => {
+                      if (current?.mode !== "history-vs-history") {
+                        return current;
+                      }
+                      if (event.target.value === current.rightResultId) {
+                        showToast(locale === "zh" ? "A 和 B 需要选择不同图片" : "Choose different images for A and B");
+                        return current;
+                      }
+                      return { ...current, leftResultId: event.target.value };
+                    })}
                   >
                     {comparisonCandidates.map((candidate) => (
                       <option key={candidate.id} value={candidate.id}>
-                        {candidate.label}
+                        {comparisonOptionLabel(candidate)}
                       </option>
                     ))}
                   </select>
                 </label>
                 <label>
-                  <span>{locale === "zh" ? "右侧图片" : "Right image"}</span>
+                  <span>{locale === "zh" ? "B 对比图" : "B comparison image"}</span>
                   <select
                     value={comparisonImage.rightResultId}
-                    onChange={(event) => setComparisonImage((current) => current?.mode === "history-vs-history" ? { ...current, rightResultId: event.target.value } : current)}
+                    onChange={(event) => setComparisonImage((current) => {
+                      if (current?.mode !== "history-vs-history") {
+                        return current;
+                      }
+                      if (event.target.value === current.leftResultId) {
+                        showToast(locale === "zh" ? "A 和 B 需要选择不同图片" : "Choose different images for A and B");
+                        return current;
+                      }
+                      return { ...current, rightResultId: event.target.value };
+                    })}
                   >
                     {comparisonCandidates.map((candidate) => (
                       <option key={candidate.id} value={candidate.id}>
-                        {candidate.label}
+                        {comparisonOptionLabel(candidate)}
                       </option>
                     ))}
                   </select>
@@ -6108,11 +6876,17 @@ function App() {
               {comparisonImage.mode === "history-vs-history" ? (
                 <>
                   <figure>
-                    <figcaption>{comparisonLeftResult?.label || (locale === "zh" ? "当前聊天图 A" : "Current chat image A")}</figcaption>
+                    <figcaption>
+                      <span>{locale === "zh" ? "A 基准图" : "A reference"}</span>
+                      {comparisonLeftResult && <small>{comparisonOptionLabel(comparisonLeftResult)}</small>}
+                    </figcaption>
                     {comparisonLeftResult?.imageUrl && <img src={comparisonLeftResult.imageUrl} alt={comparisonLeftResult.alt} />}
                   </figure>
                   <figure>
-                    <figcaption>{comparisonRightResult?.label || (locale === "zh" ? "当前聊天图 B" : "Current chat image B")}</figcaption>
+                    <figcaption>
+                      <span>{locale === "zh" ? "B 对比图" : "B comparison"}</span>
+                      {comparisonRightResult && <small>{comparisonOptionLabel(comparisonRightResult)}</small>}
+                    </figcaption>
                     {comparisonRightResult?.imageUrl && <img src={comparisonRightResult.imageUrl} alt={comparisonRightResult.alt} />}
                   </figure>
                 </>

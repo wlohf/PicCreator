@@ -118,9 +118,7 @@ def _merge_adapter_section(base_section: Any, override_section: Any) -> dict[str
         if key == "api_key_env":
             if has_explicit_api_key:
                 merged[key] = str(value or "").strip()
-                continue
-            if isinstance(value, str) and not value.strip():
-                continue
+            continue
         if key in {"api_key", "provider", "provider_name", "api_format", "base_url", "model"}:
             if isinstance(value, str) and not value.strip():
                 continue
@@ -136,10 +134,6 @@ def _strip_sensitive_default_key_refs(config_json: dict[str, Any], user_id: str 
     for section_name in ("llm", "vision", "image_gen"):
         section = sanitized.get(section_name)
         if not isinstance(section, dict):
-            continue
-        has_explicit_key = bool(str(section.get("api_key") or "").strip())
-        if has_explicit_key:
-            section["api_key_env"] = str(section.get("api_key_env") or "").strip()
             continue
         section["api_key"] = ""
         section["api_key_env"] = ""
@@ -167,10 +161,11 @@ def _load_effective_config_json(user_id: str | None = DEFAULT_CONFIG_USER_ID) ->
     base = _load_default_config_json()
     if _is_default_config_user(user_id):
         return base
+    base = _strip_sensitive_default_key_refs(base, user_id)
 
     override = _load_namespace_override_json(user_id)
     if not override:
-        return _strip_sensitive_default_key_refs(base, user_id)
+        return base
 
     merged = json.loads(json.dumps(base))
     for section_name in ("llm", "vision", "image_gen"):
@@ -180,7 +175,7 @@ def _load_effective_config_json(user_id: str | None = DEFAULT_CONFIG_USER_ID) ->
         if key in {"llm", "vision", "image_gen", "prompt_overrides"}:
             continue
         merged[key] = value
-    return _strip_sensitive_default_key_refs(merged, user_id)
+    return merged
 
 
 def _effective_env_values(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> dict[str, str]:
@@ -200,7 +195,21 @@ def _namespace_has_explicit_api_key(user_id: str | None, section_name: str) -> b
         return True
     override = _load_namespace_override_json(user_id)
     section = override.get(section_name)
-    return isinstance(section, dict) and bool(str(section.get("api_key") or "").strip())
+    if not isinstance(section, dict):
+        return False
+    if str(section.get("api_key") or "").strip():
+        return True
+    active_id = str(section.get("active_provider_id") or "").strip()
+    providers = section.get("providers")
+    if isinstance(providers, list) and active_id:
+        for provider in providers:
+            if (
+                isinstance(provider, dict)
+                and str(provider.get("id") or "").strip() == active_id
+                and str(provider.get("api_key") or provider.get("apiKey") or "").strip()
+            ):
+                return True
+    return False
 
 
 def get_config(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> AppConfig:
@@ -567,7 +576,7 @@ def _update_adapter_json(
 
 def _adapter_section_to_provider_profile(section: dict[str, Any], provider_id: str = "") -> dict[str, str]:
     return {
-        "id": str(provider_id or section.get("active_provider_id") or section.get("id") or "").strip(),
+        "id": str(section.get("id") or section.get("active_provider_id") or provider_id or "").strip(),
         "providerName": str(section.get("provider_name") or "").strip(),
         "apiFormat": _ui_api_format(str(section.get("api_format") or section.get("provider") or "")),
         "baseUrl": str(section.get("base_url") or "").strip(),

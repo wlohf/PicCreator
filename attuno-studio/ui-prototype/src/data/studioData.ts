@@ -1,5 +1,7 @@
 import type { ApiConfig, Locale, LocalizedText, ToolKey } from "../types/domain";
 
+export const defaultApiBaseUrl = "https://api.xyleisure.site/v1";
+
 export const copy = {
   zh: {
     appName: "Attuno",
@@ -135,14 +137,14 @@ export const iterationOptions = [3, 4, 5];
 export const defaultApiConfig: ApiConfig = {
   analysisProviderName: "",
   analysisApiFormat: "",
-  analysisBaseUrl: "",
+  analysisBaseUrl: defaultApiBaseUrl,
   analysisApiKey: "",
   analysisModel: "",
   activeAnalysisProviderId: "",
   analysisProviders: [],
   imageProviderName: "",
   imageApiFormat: "",
-  imageBaseUrl: "",
+  imageBaseUrl: defaultApiBaseUrl,
   imageApiKey: "",
   imageModel: "gpt-image-2",
   activeImageProviderId: "",

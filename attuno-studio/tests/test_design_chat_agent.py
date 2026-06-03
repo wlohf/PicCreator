@@ -104,6 +104,25 @@ def test_design_chat_agent_keeps_generic_generate_requests_as_daily_chat():
     assert result["ui_hints"]["apply_to_composer"] is False
 
 
+def test_design_chat_agent_keeps_logo_naming_brainstorm_as_daily_chat():
+    agent = DesignChatAgent()
+
+    result = agent.respond(
+        {
+            "message": "我想设计一个中转站的logo，但是我不太懂，我个人是比较喜欢武侠风格，你能给点建议么，名字方面也可以帮我想一想",
+            "active_result_id": "result-1",
+            "context": {"workspace_mode": "chat"},
+        }
+    )
+
+    assert result["intent"] == "daily_chat"
+    assert result["suggested_action"] == "chat"
+    assert result["draft_instruction"] == ""
+    assert "基于当前图改图" not in result["reply"]
+    assert result["ui_hints"]["apply_to_composer"] is False
+    assert result["ui_hints"]["switch_to_edit"] is False
+
+
 def test_design_chat_agent_builds_draft_for_explicit_chat_image_request():
     agent = DesignChatAgent()
 

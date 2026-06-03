@@ -23,10 +23,11 @@ function appendEditFormFields(formData: FormData, request: ImageEditRequest) {
   return formData;
 }
 
-export async function requestImageEdit(request: ImageEditRequest): Promise<ImageEditResponse> {
+export async function requestImageEdit(request: ImageEditRequest, options: { signal?: AbortSignal } = {}): Promise<ImageEditResponse> {
   const formData = appendEditFormFields(new FormData(), request);
   const response = await apiFetch(`/api/results/${request.sourceResultId}/edit`, {
     method: "POST",
+    signal: options.signal,
     body: formData
   });
   const data = await parseApiJson<ImageEditResponse>(response);

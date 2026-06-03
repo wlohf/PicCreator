@@ -17,11 +17,15 @@
 - `GET /api/results` returns persisted result records including mode, prompt/output metadata, optional `floor_plan_url`, and optional `notes`.
 - `PUT /api/results/{result_id}/notes` updates notes for a stored result and returns the updated record.
 - `GET /api/results/{result_id}/floor-plan` serves the stored source floor-plan artifact when the result was produced by a structured floor-plan mode.
+- `GET /api/preferences/prompt-skills` returns account-scoped custom image prompt modes as `prompt_skills: [{ id, name, description, prompt }]`.
+- `PUT /api/preferences/prompt-skills` saves the same `prompt_skills` array after normalizing empty or invalid entries.
 
 ### 3. Contracts
 - `standard`: strict pass-through mode. User prompt is sent to image generation as-is. Do not run requirement parsing, floor-plan analysis, prompt compilation, or evaluation system prompts.
 - `render3d`: structured floor-plan mode. Requires the existing floor-plan analysis and 3D prompt compilation path, and stores source floor-plan metadata for comparison.
 - `colored_floor_plan`: structured floor-plan tool action. Uses the uploaded floor plan to produce a colored floor-plan output and stores source floor-plan metadata for comparison. Do not present it as a primary home generation mode.
+- Custom image prompt modes are preference-layer templates, not backend generation modes. The frontend applies the selected template to the composer text, then submits `mode=standard` with the final prompt. Do not add dynamic `GenerationMode` values for user-defined templates.
+- Custom prompt templates support `{prompt}` or `{{prompt}}` as the user input placeholder. If no placeholder exists, combine the template and user input before submitting.
 - Quality review / iteration is optional strict review. It defaults off; when off, the first returned image is stored directly. When on, the vision evaluator may request additional passes up to `max_iterations`, but the UI must not promise guaranteed quality improvement.
 - Structured modes should expose a floor-plan URL so the frontend can compare `source floor plan -> generated output`.
 - Result notes are user-authored text metadata on the result record. Notes must not depend on authentication state.
@@ -35,14 +39,18 @@
 - `standard` with images -> allowed only when the configured image provider supports image inputs; otherwise return the existing provider capability error.
 - Quality review disabled -> force the effective generation pass count to one for the current run.
 - Quality review enabled -> allow the configured max-iteration value, subject to the normal upper bound and model-fallback rules.
+- Invalid custom prompt skill entries, such as empty `name` or empty `prompt`, -> drop during preference normalization rather than storing unusable modes.
+- More than 20 custom prompt skills -> keep only the first 20 normalized entries.
 - Notes update for a missing `result_id` -> return not found.
 - Floor-plan fetch for a result without stored floor-plan artifact -> return not found.
 
 ### 5. Good / Base / Bad Cases
 - Good: upload a floor plan, choose `render3d`, generate, then fetch results and see `floor_plan_url` plus editable notes.
 - Good: upload a floor plan, click the colored-floor-plan tool action, and submit `mode=colored_floor_plan` while preserving the source floor-plan URL for comparison.
+- Good: create a custom "风景图" prompt skill, select it in image mode, type "雪山湖泊", and submit `mode=standard` with the template-expanded final prompt.
 - Base: enter only text in `standard`, generate without any floor-plan analysis or prompt compilation.
 - Bad: silently fall back from an unknown mode to `render3d`; this hides frontend/backend contract drift.
+- Bad: adding every user-defined prompt skill to the backend `GenerationMode` enum; this makes user preferences look like stable pipeline modes.
 - Bad: putting `colored_floor_plan` back in the primary mode selector; this makes a low-frequency tool look like a main generation path.
 - Bad: labeling strict review as guaranteed optimization; the evaluator is advisory and may be wrong.
 
@@ -51,6 +59,8 @@
 - Backend service or API test asserting structured-mode results expose source floor-plan URLs.
 - Backend API test asserting notes persist through update and list/fetch responses.
 - Pipeline policy test asserting `standard` bypasses floor-plan analysis, prompt compilation, and evaluation prompts.
+- Backend API test asserting `prompt_skills` preference save/load normalizes invalid entries and persists valid templates per account.
+- Frontend test/assertion proving custom prompt skills submit as `standard` generation with the selected template applied.
 - Frontend test asserting the primary mode selector exposes only `standard` and `render3d`.
 - Frontend test/assertion proving the colored-floor-plan tool action submits `mode=colored_floor_plan` and remains tied to source result floor-plan metadata.
 - Frontend test/assertion proving quality review defaults off and only enabled runs use the multi-pass value.
@@ -85,6 +95,21 @@ const generationModeOptions = ["standard", "render3d", "colored_floor_plan"];
 // Primary modes stay focused; colored floor plans are triggered explicitly.
 const generationModeOptions = ["standard", "render3d"];
 runConversationFlow(undefined, "colored_floor_plan");
+```
+
+#### Wrong
+
+```typescript
+// User templates are not stable backend pipeline modes.
+type GenerationMode = "standard" | "render3d" | "colored_floor_plan" | "landscape";
+requestGenerationStream({ mode: "landscape", prompt });
+```
+
+#### Correct
+
+```typescript
+const finalPrompt = applyPromptSkillTemplate(skill.prompt, prompt);
+requestGenerationStream({ mode: "standard", prompt: finalPrompt });
 ```
 
 ---
@@ -641,7 +666,8 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
 - `vision` mirrors the active analysis provider; image generation keeps its own profile list.
 - `config.py` must apply `active_provider_id` before building `AdapterConfig`, otherwise runtime calls ignore saved profile switching.
 - Legacy config files with only flat adapter sections must load as a one-item provider profile list.
-- Non-default users must not inherit default workspace keys. If they have no explicit key, both flat `api_key` and nested provider `api_key` values are cleared in effective config.
+- UI-load conversion must preserve each stored provider `id`. Fallback ids are only for profiles missing an id; rewriting ids breaks `active_provider_id` matching and makes reload select the wrong provider.
+- Non-default users must not inherit default workspace keys. Clear default/base flat `api_key` and nested provider keys before merging account overrides, so a current user's own non-active provider keys are preserved while inherited workspace keys stay hidden.
 
 ### 4. Validation & Error Matrix
 - Invalid provider JSON -> return `/api/config/save` failure with a clear JSON format error.
@@ -649,9 +675,11 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
 - Active provider id missing from list -> fall back to the first provider profile.
 - Duplicate provider ids in save payload -> keep the first occurrence and ignore later duplicates.
 - Non-dict provider entries -> ignore them instead of crashing config load.
+- Active provider has an empty key but another current-user provider has a key -> preserve the non-active provider key in `GET /api/config`.
 
 ### 5. Good / Base / Bad Cases
 - Good: user saves two analysis providers and two image providers, selects provider B, reloads, and all calls use B without retyping key/Base URL/model.
+- Good: user saves provider A with a key and provider B without a key, selects provider B, reloads, and provider A still keeps its key for later switching.
 - Good: old `config.json` without `providers` still appears as one editable provider profile.
 - Base: user only changes the current provider fields; flat fields and active profile remain synchronized.
 - Bad: storing profiles only in frontend localStorage; the backend then loses them on another browser or after reload.
@@ -660,7 +688,8 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
 
 ### 6. Tests Required
 - Backend unit test for legacy section -> one UI provider profile.
-- Backend unit test for save round-trip with multiple provider profiles and active id.
+- Backend unit test for save round-trip with multiple provider profiles and active id, asserting stored ids are returned unchanged.
+- Backend unit test proving current-user non-active provider keys survive config load even when the active provider key is empty.
 - Backend config test proving `active_provider_id` affects `build_config_from_dict`.
 - Frontend build/typecheck covering `ApiProviderProfile` and `ApiConfig` additions.
 - Frontend/API client test or static assertion that save sends both profile JSON and active ids.

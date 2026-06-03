@@ -1,0 +1,4 @@
+﻿{"file":".trellis/spec/backend/index.md","reason":"Backend spec index for service/runtime conventions relevant to deployment docs."}
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend spec index for build and UI package context relevant to deployment docs."}
+{"file":".trellis/spec/guides/index.md","reason":"Shared thinking guides index for cross-layer deployment workflow changes."}
+{"file":".trellis/spec/backend/deployment-operations.md","reason":"Deployment operations contract created by this task for future implementation context."}

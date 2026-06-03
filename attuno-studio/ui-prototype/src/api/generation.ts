@@ -2,6 +2,17 @@ import { apiFetch, parseApiJson } from "./client";
 import { iterateSseEvents } from "./sse";
 import type { GenerateResponse, GenerationProgress, GenerationRequest } from "../types/domain";
 
+export class GenerationStreamAbortedError extends Error {
+  constructor(message = "Generation stream aborted") {
+    super(message);
+    this.name = "GenerationStreamAbortedError";
+  }
+}
+
+export function isGenerationStreamAbortedError(error: unknown) {
+  return error instanceof GenerationStreamAbortedError;
+}
+
 function buildGenerationFormData({
   mode,
   projectId,
@@ -59,12 +70,19 @@ export async function requestGeneration(request: GenerationRequest): Promise<Gen
 export async function requestGenerationStream(
   request: GenerationRequest,
   onProgress: (progress: GenerationProgress) => void,
-  apiPath = "/api/generate/stream"
+  apiPathOrOptions: string | { apiPath?: string; signal?: AbortSignal } = "/api/generate/stream",
+  signal?: AbortSignal
 ): Promise<GenerateResponse> {
+  const apiPath = typeof apiPathOrOptions === "string" ? apiPathOrOptions : apiPathOrOptions.apiPath || "/api/generate/stream";
+  const abortSignal = typeof apiPathOrOptions === "string" ? signal : apiPathOrOptions.signal;
   const response = await apiFetch(apiPath, {
     method: "POST",
+    signal: abortSignal,
     body: buildGenerationFormData(request)
   }).catch((error) => {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new GenerationStreamAbortedError();
+    }
     throw new Error(
       `无法连接后端代理 ${apiPath}。请确认前端开发服务器已代理 /api，且 API 服务正在运行；原始错误：${error instanceof Error ? error.message : String(error)}`
     );
@@ -75,23 +93,30 @@ export async function requestGenerationStream(
     throw new Error(data.error || data.status || response.statusText);
   }
 
-  for await (const parsed of iterateSseEvents(
-    response,
-    "生成连接已中断，后端可能在长时间图片生成中退出/不可达。请检查 API 窗口日志"
-  )) {
-    if (parsed.eventName === "progress") {
-      onProgress(parsed.data as GenerationProgress);
-      continue;
+  try {
+    for await (const parsed of iterateSseEvents(
+      response,
+      "生成连接已中断，后端可能在长时间图片生成中退出/不可达。请检查 API 窗口日志"
+    )) {
+      if (parsed.eventName === "progress") {
+        onProgress(parsed.data as GenerationProgress);
+        continue;
+      }
+      if (parsed.eventName === "complete") {
+        const data = parsed.data as GenerateResponse;
+        if (!data.ok) throw new Error(data.error || data.status || "Generation failed");
+        return data;
+      }
+      if (parsed.eventName === "error") {
+        const data = parsed.data as GenerateResponse;
+        throw new Error(data.error || data.status || "Generation failed");
+      }
     }
-    if (parsed.eventName === "complete") {
-      const data = parsed.data as GenerateResponse;
-      if (!data.ok) throw new Error(data.error || data.status || "Generation failed");
-      return data;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new GenerationStreamAbortedError();
     }
-    if (parsed.eventName === "error") {
-      const data = parsed.data as GenerateResponse;
-      throw new Error(data.error || data.status || "Generation failed");
-    }
+    throw error;
   }
 
   throw new Error("Generation stream ended without a final result");

@@ -32,9 +32,14 @@ class DesignChatAgent:
     )
     structure_project_terms = ("办公室", "财务室", "卧室", "卫生间", "厕所", "楼梯", "电梯", "总经理", "房间", "阳台", "门窗", "墙体")
     image_request_terms = (
-        "画",
+        "帮我画",
+        "画一张",
+        "画个",
+        "画成",
         "出图",
-        "图片",
+        "生成图片",
+        "生成一张图",
+        "生成效果图",
         "效果图",
         "平面图",
         "渲染",
@@ -76,13 +81,15 @@ class DesignChatAgent:
     def classify_intent(self, message: str, context: dict[str, Any] | None = None) -> str:
         if self._is_chat_image_question(message, context):
             return "daily_chat"
+        if isinstance(context, dict) and context.get("workspace_mode") == "chat":
+            normalized = message.lower()
+            explicit_image_request = any(keyword in normalized or keyword in message for keyword in self.image_request_terms)
+            if explicit_image_request:
+                return "new_generation"
+            return "daily_chat"
         for intent, keywords in self.intent_keywords:
             if any(keyword in message for keyword in keywords):
                 return intent
-        if isinstance(context, dict) and context.get("workspace_mode") == "chat":
-            normalized = message.lower()
-            if not any(keyword in normalized or keyword in message for keyword in self.image_request_terms):
-                return "daily_chat"
         return "new_generation"
 
     def _is_chat_image_question(self, message: str, context: dict[str, Any] | None = None) -> bool:

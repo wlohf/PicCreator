@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "聊天并发、停止按钮和前端状态变更需遵守前端规范"}
+{"file": ".trellis/spec/backend/index.md", "reason": "聊天搜索和流式取消涉及后端路由规范"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "现有聊天流式契约与配置化聊天路由约束"}

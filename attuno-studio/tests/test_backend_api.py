@@ -124,6 +124,47 @@ def test_chat_endpoint_returns_structured_action(tmp_path, monkeypatch):
     assert payload["ui_hints"]["switch_to_edit"] is True
 
 
+def test_chat_endpoint_routes_logo_name_brainstorm_to_daily_chat_model(tmp_path, monkeypatch):
+    import app_runtime
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("logo-brainstorm-chat-user")
+    calls = []
+
+    class FakeChatAdapter:
+        async def chat(self, messages, **kwargs):
+            calls.append(messages)
+            return "可以先从武侠气质、转运意象和短名字三条线发散。"
+
+    monkeypatch.setattr(app_runtime, "build_adapter", lambda *_args, **_kwargs: FakeChatAdapter())
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "我想设计一个中转站的logo，但是我不太懂，我个人是比较喜欢武侠风格，你能给点建议么，名字方面也可以帮我想一想",
+            "project_id": "p-chat",
+            "active_result_id": "result-1",
+            "context": {"workspace_mode": "chat"},
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["ok"] is True
+    assert payload["intent"] == "daily_chat"
+    assert payload["suggested_action"] == "chat"
+    assert payload["draft_instruction"] == ""
+    assert payload["reply"].startswith("可以先")
+    assert calls
+
+
 def test_daily_chat_endpoint_uses_configured_analysis_model(tmp_path, monkeypatch):
     import app_runtime
 
@@ -863,6 +904,171 @@ def test_image_api_format_save_and_load_preserves_custom_openai_image_option(tmp
     assert payload["config"]["imageApiFormat"] == "custom_openai_image"
 
 
+def test_config_save_and_load_preserves_multiple_provider_profiles(tmp_path, monkeypatch):
+    from backend.app.services.result_store import get_user_data_dir
+
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("multi-provider-user")
+    analysis_providers = [
+        {
+            "id": "analysis-primary",
+            "providerName": "Analysis Primary",
+            "apiFormat": "openai",
+            "baseUrl": "https://analysis-primary.example/v1",
+            "apiKey": "analysis-primary-key",
+            "model": "analysis-primary-model",
+        },
+        {
+            "id": "analysis-backup",
+            "providerName": "Analysis Backup",
+            "apiFormat": "custom",
+            "baseUrl": "https://analysis-backup.example/v1",
+            "apiKey": "analysis-backup-key",
+            "model": "analysis-backup-model",
+        },
+    ]
+    image_providers = [
+        {
+            "id": "image-primary",
+            "providerName": "Image Primary",
+            "apiFormat": "openai_image",
+            "baseUrl": "https://image-primary.example/v1",
+            "apiKey": "image-primary-key",
+            "model": "image-primary-model",
+        },
+        {
+            "id": "image-backup",
+            "providerName": "Image Backup",
+            "apiFormat": "custom_openai_image",
+            "baseUrl": "https://image-backup.example/v1",
+            "apiKey": "image-backup-key",
+            "model": "image-backup-model",
+        },
+    ]
+
+    save_response = client.post(
+        "/api/config/save",
+        data={
+            "analysis_provider_name": "Analysis Backup",
+            "analysis_api_format": "custom",
+            "analysis_base_url": "https://analysis-backup.example/v1",
+            "analysis_api_key": "analysis-backup-key",
+            "analysis_model": "analysis-backup-model",
+            "analysis_providers_json": json.dumps(analysis_providers),
+            "active_analysis_provider_id": "analysis-backup",
+            "img_provider_name": "Image Backup",
+            "img_api_format": "custom_openai_image",
+            "img_base_url": "https://image-backup.example/v1",
+            "img_api_key": "image-backup-key",
+            "img_model": "image-backup-model",
+            "image_providers_json": json.dumps(image_providers),
+            "active_image_provider_id": "image-backup",
+        },
+    )
+    load_response = client.get("/api/config")
+
+    assert save_response.status_code == 200
+    assert save_response.json()["ok"] is True
+    saved_path = get_user_data_dir("multi-provider-user") / "config" / "config.json"
+    saved = json.loads(saved_path.read_text(encoding="utf-8"))
+    assert [item["id"] for item in saved["llm"]["providers"]] == ["analysis-primary", "analysis-backup"]
+    assert [item["id"] for item in saved["vision"]["providers"]] == ["analysis-primary", "analysis-backup"]
+    assert [item["id"] for item in saved["image_gen"]["providers"]] == ["image-primary", "image-backup"]
+    assert saved["llm"]["active_provider_id"] == "analysis-backup"
+    assert saved["vision"]["active_provider_id"] == "analysis-backup"
+    assert saved["image_gen"]["active_provider_id"] == "image-backup"
+
+    assert load_response.status_code == 200
+    payload = load_response.json()
+    config = payload["config"]
+    assert payload["ok"] is True
+    assert config["activeAnalysisProviderId"] == "analysis-backup"
+    assert config["activeImageProviderId"] == "image-backup"
+    assert [item["id"] for item in config["analysisProviders"]] == ["analysis-primary", "analysis-backup"]
+    assert [item["id"] for item in config["imageProviders"]] == ["image-primary", "image-backup"]
+    assert config["analysisProviders"][0]["providerName"] == "Analysis Primary"
+    assert config["analysisProviderName"] == "Analysis Backup"
+    assert config["imageProviders"][0]["providerName"] == "Image Primary"
+    assert config["imageProviderName"] == "Image Backup"
+
+
+def test_config_load_preserves_non_active_provider_keys_for_current_user(tmp_path, monkeypatch):
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("multi-provider-empty-active-user")
+    analysis_providers = [
+        {
+            "id": "analysis-saved",
+            "providerName": "Analysis Saved",
+            "apiFormat": "openai",
+            "baseUrl": "https://analysis-saved.example/v1",
+            "apiKey": "analysis-saved-key",
+            "model": "analysis-saved-model",
+        },
+        {
+            "id": "analysis-empty",
+            "providerName": "Analysis Empty",
+            "apiFormat": "custom",
+            "baseUrl": "https://analysis-empty.example/v1",
+            "apiKey": "",
+            "model": "analysis-empty-model",
+        },
+    ]
+    image_providers = [
+        {
+            "id": "image-saved",
+            "providerName": "Image Saved",
+            "apiFormat": "openai_image",
+            "baseUrl": "https://image-saved.example/v1",
+            "apiKey": "image-saved-key",
+            "model": "image-saved-model",
+        },
+        {
+            "id": "image-empty",
+            "providerName": "Image Empty",
+            "apiFormat": "custom_openai_image",
+            "baseUrl": "https://image-empty.example/v1",
+            "apiKey": "",
+            "model": "image-empty-model",
+        },
+    ]
+
+    save_response = client.post(
+        "/api/config/save",
+        data={
+            "analysis_provider_name": "Analysis Empty",
+            "analysis_api_format": "custom",
+            "analysis_base_url": "https://analysis-empty.example/v1",
+            "analysis_api_key": "",
+            "analysis_model": "analysis-empty-model",
+            "analysis_providers_json": json.dumps(analysis_providers),
+            "active_analysis_provider_id": "analysis-empty",
+            "img_provider_name": "Image Empty",
+            "img_api_format": "custom_openai_image",
+            "img_base_url": "https://image-empty.example/v1",
+            "img_api_key": "",
+            "img_model": "image-empty-model",
+            "image_providers_json": json.dumps(image_providers),
+            "active_image_provider_id": "image-empty",
+        },
+    )
+    load_response = client.get("/api/config")
+
+    assert save_response.status_code == 200
+    assert save_response.json()["ok"] is True
+    assert load_response.status_code == 200
+    config = load_response.json()["config"]
+    assert config["activeAnalysisProviderId"] == "analysis-empty"
+    assert config["activeImageProviderId"] == "image-empty"
+    assert config["analysisProviders"][0]["apiKey"] == "analysis-saved-key"
+    assert config["analysisProviders"][1]["apiKey"] == ""
+    assert config["imageProviders"][0]["apiKey"] == "image-saved-key"
+    assert config["imageProviders"][1]["apiKey"] == ""
+
+
 def test_fresh_token_namespace_load_inherits_default_config_without_exposing_keys(tmp_path, monkeypatch):
     _patch_runtime_files(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -1550,6 +1756,49 @@ def test_generate_endpoint_passes_colored_floor_plan_mode_to_runtime(tmp_path, m
     assert client.get(payload["results"][0]["floor_plan_url"]).status_code == 200
 
 
+def test_generate_endpoint_routes_standard_upload_as_reference_image(tmp_path, monkeypatch):
+    from backend.app.services import generation_service
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    image_path = tmp_path / "render.png"
+    reference_image = tmp_path / "reference.png"
+    _write_test_png(image_path)
+    _write_test_png(reference_image)
+    captured = {}
+
+    def fake_run_pipeline(mode, floor_plan_paths, reference_path, *_args, **_kwargs):
+        captured["mode"] = mode
+        captured["floor_plan_count"] = len(floor_plan_paths)
+        captured["reference_path"] = reference_path
+        yield (
+            str(image_path),
+            [(str(image_path), "reference edit")],
+            "生成成功",
+            "",
+            "prompt text",
+            "",
+            "",
+        )
+
+    monkeypatch.setattr(generation_service, "run_pipeline", fake_run_pipeline)
+    client = _auth_client("reference-image-user")
+
+    response = client.post(
+        "/api/generate",
+        data={"mode": "standard", "requirement": "把这张图改成暖色调"},
+        files={"floor_plans": ("reference.png", reference_image.read_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured["mode"] == "standard"
+    assert captured["floor_plan_count"] == 0
+    assert captured["reference_path"]
+    assert Path(captured["reference_path"]).name == "upload_0.png"
+    assert payload["results"][0]["generation_mode"] == "standard"
+    assert payload["results"][0].get("floor_plan_url") in {"", None}
+
+
 def test_generate_endpoint_passes_project_memory_context_to_runtime(tmp_path, monkeypatch):
     from backend.app.services import generation_service
 
@@ -1731,6 +1980,33 @@ def test_shortcut_preferences_are_persisted_in_backend_data_dir(tmp_path, monkey
     assert save_response.json()["ok"] is True
     assert load_response.status_code == 200
     assert load_response.json() == {"ok": True, "shortcuts": shortcuts}
+
+
+def test_prompt_skill_preferences_are_persisted_and_normalized(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("prompt-skill-user")
+    skills = [
+        {
+            "id": "landscape-mode",
+            "name": "风景图",
+            "description": "自然风光摄影",
+            "prompt": "请扩展为风景摄影提示词：{prompt}",
+        },
+        {
+            "id": "empty-mode",
+            "name": "",
+            "prompt": "ignored",
+        },
+    ]
+
+    save_response = client.put("/api/preferences/prompt-skills", json={"prompt_skills": skills})
+    load_response = client.get("/api/preferences/prompt-skills")
+
+    assert save_response.status_code == 200
+    assert save_response.json()["ok"] is True
+    assert save_response.json()["prompt_skills"] == [skills[0]]
+    assert load_response.status_code == 200
+    assert load_response.json() == {"ok": True, "prompt_skills": [skills[0]]}
 
 
 def test_reference_image_preference_endpoints_are_removed(tmp_path, monkeypatch):

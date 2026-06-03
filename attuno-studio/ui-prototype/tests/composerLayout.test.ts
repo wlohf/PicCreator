@@ -9,6 +9,7 @@ function assert(condition: unknown, message: string) {
 
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const studioDataSource = readFileSync(new URL("../src/data/studioData.ts", import.meta.url), "utf8");
 const domainSource = readFileSync(new URL("../src/types/domain.ts", import.meta.url), "utf8");
 
 assert(
@@ -50,8 +51,33 @@ assert(
 );
 
 assert(
+  appSource.includes('const PROMPT_SKILLS_STORAGE_KEY = "attuno-prompt-skills-v1";') &&
+  appSource.includes("type PromptModeId = \"builtin-standard\" | \"builtin-render3d\" | `skill-${string}`;") &&
+  appSource.includes("loadPromptSkillPreferences(currentUserId)") &&
+  appSource.includes("savePromptSkillPreferences(normalized.map(promptSkillStorageShape), currentUserId)") &&
+  appSource.includes("function applyPromptSkillTemplate(template: string, userPrompt: string)") &&
+  appSource.includes("const promptModeOptions") &&
+  appSource.includes("const visibleSelectedPromptModeId") &&
+  appSource.includes("promptModeOptions.map((option)") &&
+  appSource.includes("selectPromptMode(option.id)") &&
+  appSource.includes("prompt-skill-manager") &&
+  appSource.includes("prompt-skill-editor"),
+  "image workspace should support account-scoped custom prompt skills beside the built-in default and 3D modes",
+);
+
+assert(
+  appSource.includes('mode: submitMode,') &&
+  appSource.includes("const submitPromptModeId = submitMode === \"standard\" && requestedPromptModeId.startsWith(\"skill-\")") &&
+  appSource.includes("applyPromptSkillTemplate(skill.prompt, basePrompt)") &&
+  appSource.includes("setGenerationMode(generationModeForPromptMode(modeId))") &&
+  styles.includes(".prompt-skill-manager") &&
+  styles.includes(".prompt-skill-editor input"),
+  "custom prompt skills should submit as standard generation with the selected template applied to the composer prompt",
+);
+
+assert(
   appSource.includes('handleRunColoredFloorPlanTool') &&
-  appSource.includes('runConversationFlow(undefined, "colored_floor_plan")') &&
+  appSource.includes('runConversationFlow(undefined, "colored_floor_plan", "new-generation", promptModeIdForGenerationMode("colored_floor_plan"))') &&
   appSource.includes('className="chatgpt-tool-action"'),
   "colored floor plan should be available as an explicit floor-plan tool action instead of a primary mode",
 );
@@ -106,10 +132,14 @@ assert(
   appSource.includes("function isRenderMessageComparisonDisabled") &&
   appSource.includes("sourceResultId: historyItem.id") &&
   appSource.includes("sourceResultId: message.sourceResultId") &&
-  appSource.includes("comparisonCandidates.length >= 2") &&
-  appSource.includes("当前聊天记录里至少需要两张生成图才能对比") &&
+  appSource.includes("const comparableImageCount = uniqueImageComparisonCandidates(comparisonCandidates).length;") &&
+  appSource.includes("comparableImageCount >= 2") &&
+  appSource.includes('source: "library"') &&
+  appSource.includes("A 基准图 / B 对比图") &&
+  appSource.includes("默认优先选当前聊天最近两张生成图") &&
+  appSource.includes("至少需要两张不同的生成图才能对比") &&
   appSource.includes("!messageSourceResult?.floorPlanUrl && !floorPlanPreviews[0]?.url"),
-  "chat-thread compare actions should prefer current-chat multi-image comparison and only fall back to floor-plan comparison when needed",
+  "chat-thread compare actions should use A/B image comparison with current-chat defaults, image-library fallback, and floor-plan fallback when needed",
 );
 
 assert(
@@ -141,19 +171,41 @@ assert(
 assert(
   !appSource.includes("defaultChatModelOptions") &&
   !appSource.includes('"claude-3-5-sonnet"') &&
+  appSource.includes("function isUsableModelName") &&
+  appSource.includes("function removeStoredModelFragments") &&
+  appSource.includes(".filter(isUsableModelName)") &&
+  !appSource.includes("const analysis = modelSelectOptions(\"\", [model], current.analysis);") &&
   appSource.includes("addedDetectedModels.analysis") &&
   appSource.includes("addedDetectedModels.image") &&
   appSource.includes("detectedModels.analysis") &&
   appSource.includes("detectedModels.image"),
-  "composer model choices should come from configured/added models instead of hard-coded chat fallbacks",
+  "composer model choices should come from configured/added models instead of hard-coded chat fallbacks or partial typed fragments",
 );
 
 assert(
   appSource.includes('const ANALYSIS_MODEL_OPTIONS_STORAGE_KEY = "attuno-analysis-model-options-v1";') &&
   appSource.includes("loadStoredAnalysisModelOptions(currentUserId)") &&
   appSource.includes("storeAnalysisModelOptions(currentUserId, selectedAnalysisModelOptions)") &&
-  appSource.includes("window.localStorage.removeItem(analysisModelOptionsStorageKey(currentUserId))"),
+  appSource.includes("window.localStorage.removeItem(analysisModelOptionsStorageKey(currentUserId))") &&
+  appSource.includes("function removeAnalysisModelOption") &&
+  appSource.includes("function removeImageModelOption") &&
+  appSource.includes('className="api-model-chip"') &&
+  appSource.includes('className="api-model-chip__remove"') &&
+  styles.includes(".api-model-chip__remove"),
   "added analysis model candidates should persist per account without changing the backend single-default-model config",
+);
+
+assert(
+  appSource.includes("visibleApiKeys") &&
+  appSource.includes('type={visibleApiKeys.analysis ? "text" : "password"}') &&
+  appSource.includes('type={visibleApiKeys.image ? "text" : "password"}') &&
+  studioDataSource.includes('export const defaultApiBaseUrl = "https://api.xyleisure.site/v1";') &&
+  studioDataSource.includes("analysisBaseUrl: defaultApiBaseUrl") &&
+  studioDataSource.includes("imageBaseUrl: defaultApiBaseUrl") &&
+  styles.includes(".api-key-field") &&
+  styles.includes(".config-status--good") &&
+  styles.includes("color: #047857;"),
+  "API setup should default to the Xyleisure endpoint, support explicit key show/hide controls, and use a readable success green",
 );
 
 assert(
@@ -188,7 +240,8 @@ assert(
 
 const dailyChatFlowBlock = appSource.match(/async function runDailyChatFlow[\s\S]*?async function runConversationFlow/m)?.[0] ?? "";
 assert(
-  dailyChatFlowBlock.includes("streamDesignChat({") &&
+  dailyChatFlowBlock.includes("streamDesignChat(") &&
+  dailyChatFlowBlock.includes("message: userBrief") &&
   dailyChatFlowBlock.includes("api_config: requestApiConfig") &&
   dailyChatFlowBlock.includes("reasoning_effort: chatReasoningEffort") &&
   dailyChatFlowBlock.includes("buildLinearChatContext([...messages, nextPatch[0]], userMessageId)") &&
@@ -411,4 +464,22 @@ assert(
   appSource.includes('onClick={() => handleExpandPreview({ url: attachment.dataUrl') &&
   appSource.includes('className="chatgpt-composer__attachment"'),
   "submitted chat image attachments should remain visible in the message thread",
+);
+
+assert(
+  appSource.includes('if (activeMessage.kind === "render" && activeMessage.imageUrl)') &&
+  appSource.includes("await handleCopyImage(activeMessage.imageUrl, activeMessage.imageLabel)") &&
+  appSource.includes('const isStreamingAssistantMessage = isVisibleChatResponding') &&
+  appSource.includes('className="assistant-streaming-indicator"') &&
+  styles.includes(".assistant-streaming-indicator") &&
+  styles.includes("@keyframes assistant-streaming-pulse"),
+  "render message copy should copy the image, and active assistant replies should show a streaming status indicator",
+);
+
+assert(
+  /\.chatgpt-drawer--settings-dialog\s+\.chatgpt-drawer__stack\s*\{[\s\S]*?align-content:\s*start;[\s\S]*?padding:\s*14px 16px 18px;/m.test(styles) &&
+  /\.chatgpt-drawer--settings-dialog\s+\.config-action-row\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*wrap;/m.test(styles) &&
+  /\.chatgpt-drawer--settings-dialog\s+\.config-toggle\s*\{[\s\S]*?min-height:\s*38px;/m.test(styles) &&
+  /\.chatgpt-drawer--settings-dialog\s+\.api-config-grid\s*\{[\s\S]*?gap:\s*10px;[\s\S]*?padding:\s*10px;/m.test(styles),
+  "settings and generation control drawers should keep compact cards, controls, and top-aligned content",
 );

@@ -1,0 +1,4 @@
+﻿{"file":".trellis/spec/backend/index.md","reason":"Backend spec index for checking service/runtime deployment changes."}
+{"file":".trellis/spec/frontend/index.md","reason":"Frontend spec index for checking build/deployment documentation."}
+{"file":".trellis/spec/guides/index.md","reason":"Shared thinking guides index for reviewing cross-layer deployment workflow changes."}
+{"file":".trellis/spec/backend/deployment-operations.md","reason":"Deployment operations contract created by this task for future review context."}

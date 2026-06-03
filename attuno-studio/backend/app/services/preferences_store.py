@@ -18,6 +18,7 @@ def get_preferences_path(user_id: str = "default") -> Path:
 def _empty_preferences() -> dict[str, Any]:
     return {
         "shortcuts": [],
+        "prompt_skills": [],
         "daily_memories": [],
         "user_style_preferences": {"explicit": [], "inferred": [], "avoid": []},
         "project_style_memories": {},
@@ -188,6 +189,39 @@ def normalize_shortcuts(value: Any) -> list[dict[str, str]]:
     return shortcuts[:20]
 
 
+def _normalize_prompt_skill(item: Any, index: int) -> dict[str, str] | None:
+    if not isinstance(item, dict):
+        return None
+    name = str(item.get("name") or item.get("title") or "").strip()
+    prompt = str(item.get("prompt") or item.get("template") or "").strip()
+    if not name or not prompt:
+        return None
+    description = str(item.get("description") or "").strip()
+    skill_id = str(item.get("id") or f"prompt-skill-{index}-{name}").strip()
+    if not skill_id or skill_id.startswith("builtin-"):
+        skill_id = f"prompt-skill-{index}-{name}"
+    return {
+        "id": skill_id[:120],
+        "name": name[:80],
+        "description": description[:240],
+        "prompt": prompt[:12000],
+    }
+
+
+def normalize_prompt_skills(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    skills: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for index, item in enumerate(value):
+        normalized = _normalize_prompt_skill(item, index)
+        if not normalized or normalized["id"] in seen:
+            continue
+        seen.add(normalized["id"])
+        skills.append(normalized)
+    return skills[:20]
+
+
 def load_shortcuts(user_id: str = "default") -> list[dict[str, str]]:
     data = _read_preferences(user_id)
     return normalize_shortcuts(data.get("shortcuts"))
@@ -197,6 +231,18 @@ def save_shortcuts(shortcuts: Any, user_id: str = "default") -> list[dict[str, s
     normalized = normalize_shortcuts(shortcuts)
     data = _read_preferences(user_id)
     _write_preferences({**data, "shortcuts": normalized}, user_id)
+    return normalized
+
+
+def load_prompt_skills(user_id: str = "default") -> list[dict[str, str]]:
+    data = _read_preferences(user_id)
+    return normalize_prompt_skills(data.get("prompt_skills"))
+
+
+def save_prompt_skills(prompt_skills: Any, user_id: str = "default") -> list[dict[str, str]]:
+    normalized = normalize_prompt_skills(prompt_skills)
+    data = _read_preferences(user_id)
+    _write_preferences({**data, "prompt_skills": normalized}, user_id)
     return normalized
 
 

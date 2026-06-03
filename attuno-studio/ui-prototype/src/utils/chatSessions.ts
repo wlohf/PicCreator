@@ -247,7 +247,7 @@ export function hasMeaningfulMessage(message: ChatMessage) {
   const activeMessage = withActiveMessageVariant(message);
   const contentText = localizedContentText(activeMessage.content);
   const bulletText = activeMessage.bullets
-    ? [...activeMessage.bullets.zh, ...activeMessage.bullets.en].join(" ").trim()
+    ? [...(activeMessage.bullets.zh ?? []), ...(activeMessage.bullets.en ?? [])].join(" ").trim()
     : "";
 
   return Boolean(
