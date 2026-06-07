@@ -19,6 +19,7 @@
 - `GET /api/results/{result_id}/floor-plan` serves the stored source floor-plan artifact when the result was produced by a structured floor-plan mode.
 - `GET /api/preferences/prompt-skills` returns account-scoped custom image prompt modes as `prompt_skills: [{ id, name, description, prompt }]`.
 - `PUT /api/preferences/prompt-skills` saves the same `prompt_skills` array after normalizing empty or invalid entries.
+- Generation success response contract: `POST /api/generate` and the `complete` SSE event from `POST /api/generate/stream` must include at least one displayable image through `images[].url`, `images[].data_url`, or `results[].image_url`.
 
 ### 3. Contracts
 - `standard`: strict pass-through mode. User prompt is sent to image generation as-is. Do not run requirement parsing, floor-plan analysis, prompt compilation, or evaluation system prompts.
@@ -30,6 +31,7 @@
 - Structured modes should expose a floor-plan URL so the frontend can compare `source floor plan -> generated output`.
 - Result notes are user-authored text metadata on the result record. Notes must not depend on authentication state.
 - Annotation/image-edit flows may carry forward result and source floor-plan metadata, but must not require a user id in the main unauthenticated workflow.
+- Empty image output is failure, not success. If the pipeline reports a non-failed status but returns no current preview and no output image path, the backend must return `ok: false`, `stage: "generation"`, an explicit “没有返回图片” error, and empty `images` / `results` arrays. The frontend should also guard against `ok: true` responses without any displayable image and render an error message instead of an empty render card.
 
 ### 4. Validation & Error Matrix
 - Unknown `mode` -> reject with a client error before pipeline execution.
@@ -43,6 +45,7 @@
 - More than 20 custom prompt skills -> keep only the first 20 normalized entries.
 - Notes update for a missing `result_id` -> return not found.
 - Floor-plan fetch for a result without stored floor-plan artifact -> return not found.
+- Pipeline finishes without a generated image path or preview -> return HTTP 400 for `/api/generate`, emit an `error` SSE event for `/api/generate/stream`, and preserve the short technical cause in `error` / `logs` when available.
 
 ### 5. Good / Base / Bad Cases
 - Good: upload a floor plan, choose `render3d`, generate, then fetch results and see `floor_plan_url` plus editable notes.
@@ -53,14 +56,17 @@
 - Bad: adding every user-defined prompt skill to the backend `GenerationMode` enum; this makes user preferences look like stable pipeline modes.
 - Bad: putting `colored_floor_plan` back in the primary mode selector; this makes a low-frequency tool look like a main generation path.
 - Bad: labeling strict review as guaranteed optimization; the evaluator is advisory and may be wrong.
+- Bad: returning `ok: true` with empty `images` and `results`; the UI cannot show a result and the user sees a silent blank state.
 
 ### 6. Tests Required
 - Backend API test asserting valid modes are accepted and invalid modes are rejected.
 - Backend service or API test asserting structured-mode results expose source floor-plan URLs.
 - Backend API test asserting notes persist through update and list/fetch responses.
+- Backend API test asserting a successful-looking pipeline snapshot without image outputs returns a generation error with empty `images` / `results`.
 - Pipeline policy test asserting `standard` bypasses floor-plan analysis, prompt compilation, and evaluation prompts.
 - Backend API test asserting `prompt_skills` preference save/load normalizes invalid entries and persists valid templates per account.
 - Frontend test/assertion proving custom prompt skills submit as `standard` generation with the selected template applied.
+- Frontend test/assertion proving image generation shows a visible pending assistant state immediately and converts image-less success payloads into error output.
 - Frontend test asserting the primary mode selector exposes only `standard` and `render3d`.
 - Frontend test/assertion proving the colored-floor-plan tool action submits `mode=colored_floor_plan` and remains tied to source result floor-plan metadata.
 - Frontend test/assertion proving quality review defaults off and only enabled runs use the multi-pass value.
@@ -112,6 +118,24 @@ const finalPrompt = applyPromptSkillTemplate(skill.prompt, prompt);
 requestGenerationStream({ mode: "standard", prompt: finalPrompt });
 ```
 
+#### Wrong
+
+```python
+return {"ok": True, "images": [], "results": [], "status": "生成成功"}
+```
+
+#### Correct
+
+```python
+return {
+    "ok": False,
+    "stage": "generation",
+    "error": "画图服务没有返回图片结果：生成成功",
+    "images": [],
+    "results": [],
+}
+```
+
 ---
 
 ## Scenario: OpenAI Images API Text And Image Input Routing
@@ -124,12 +148,14 @@ requestGenerationStream({ mode: "standard", prompt: finalPrompt });
 - OpenAI Images API-compatible providers use one Base URL and API key, then call provider endpoints through the OpenAI SDK.
 - Text-only `PromptSet` input calls `client.images.generate(model, prompt, response_format="b64_json", n=1)`.
 - `PromptSet.floor_plan` or `PromptSet.reference_image` calls `client.images.edit(model, image, prompt, response_format="b64_json", n=1)`.
+- Successful Images API responses may return image bytes as `data[0].b64_json`, a `data:image/...;base64,...` URL in `data[0].url`, or a remote HTTP(S) URL in `data[0].url`.
 - Frontend setup options must distinguish chat-compatible formats from Images API formats, including `openai_image` and `custom_openai_image`.
 
 ### 3. Contracts
 - Do not require users to configure endpoint-specific URLs. Users provide the Base URL; the adapter chooses generate vs edit based on whether image bytes exist.
 - `reference_image` is the preferred edit image when both `reference_image` and `floor_plan` are present, but generation metadata must preserve both `has_reference_image` and `has_floor_plan`.
 - `generation_params.endpoint` must be `images.generate` for text-only calls and `images.edit` for image-input calls.
+- Image adapters must parse `b64_json`, data URLs, and remote URLs before declaring a successful Images API response empty; do not pass `None` into `base64.b64decode`.
 - `openai_image` and `custom_openai_image` support image inputs for `gpt-image-*` models because image edits are routed through `/images/edits`.
 - `dall-e-2` and `dall-e-3` remain text-only, even if a config override claims image-input support.
 

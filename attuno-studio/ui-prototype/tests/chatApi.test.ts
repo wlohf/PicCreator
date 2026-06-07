@@ -9,6 +9,8 @@ function assert(condition: unknown, message: string) {
 
 const chatApiSource = readFileSync(new URL("../src/api/chat.ts", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const chatWorkspaceSource = readFileSync(new URL("../src/components/chat-workspace.tsx", import.meta.url), "utf8");
+const workspaceSource = `${appSource}\n${chatWorkspaceSource}`;
 
 assert(
   chatApiSource.includes('api_config?: ApiConfig') &&
@@ -58,7 +60,7 @@ assert(
   appSource.includes("const [chatRespondingSessionIds, setChatRespondingSessionIds]") &&
   appSource.includes("chatRespondingSessionIds.includes(currentSessionId)") &&
   appSource.includes("stopCurrentChatResponse") &&
-  appSource.includes("<Square size=") &&
+  workspaceSource.includes("<Square size=") &&
   !appSource.includes("const [isChatResponding, setIsChatResponding]") &&
   !appSource.includes("respondingSessionId"),
   "chat responding state should be tracked per session and expose a stop button instead of a single global lock",

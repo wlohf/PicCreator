@@ -1,4 +1,6 @@
-import type { ChatMessage, ChatMessageVariant } from "../types/domain";
+import type { ChatMessage, ChatMessageVariant, GenerationMode } from "../types/domain";
+
+export type WorkspaceModeLike = "chat" | "image";
 
 function clampIndex(index: number, length: number) {
   if (length <= 0) return 0;
@@ -143,6 +145,37 @@ export function buildLinearChatContext(messages: ChatMessage[], activeMessageId?
       content: localizedContentText(message.content),
       attachments: message.attachments,
     }))
+}
+
+export function inferStoredWorkspaceMode({
+  workspaceMode,
+  messages,
+  generationMode,
+  activeResultId,
+}: {
+  workspaceMode?: unknown;
+  messages: ChatMessage[];
+  generationMode?: GenerationMode;
+  activeResultId?: string | null;
+}): WorkspaceModeLike {
+  if (workspaceMode === "chat") {
+    return "chat";
+  }
+  if (activeResultId || generationMode === "render3d" || generationMode === "colored_floor_plan") {
+    return "image";
+  }
+  const hasImageWorkflowMessage = messages.some((message) => {
+    const activeMessage = withActiveMessageVariant(message);
+    return (
+      activeMessage.kind === "analysis" ||
+      activeMessage.kind === "render" ||
+      Boolean(activeMessage.imageUrl || activeMessage.sourceResultId || activeMessage.promptText)
+    );
+  });
+  if (workspaceMode === "image" && hasImageWorkflowMessage) {
+    return "image";
+  }
+  return hasImageWorkflowMessage ? "image" : "chat";
 }
 
 export function messageToVariant(message: ChatMessage): ChatMessageVariant {

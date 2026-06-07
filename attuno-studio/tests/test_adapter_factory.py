@@ -1,6 +1,7 @@
 import base64
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from adapters.google import OpenAIImageAdapter
@@ -73,6 +74,188 @@ async def test_gpt_image_models_without_image_inputs_use_images_endpoint_first()
     assert images.generate_calls[0]["model"] == "gpt-image-2"
     assert image.image_bytes == b"image-bytes"
     assert image.generation_params["endpoint"] == "images.generate"
+
+
+@pytest.mark.asyncio
+async def test_gpt_image_models_without_image_inputs_accept_data_url_response():
+    adapter = object.__new__(OpenAICompatAdapter)
+    adapter.model = "gpt-image-2"
+    adapter.api_format = "openai_responses"
+    adapter.timeout = 600
+    chat_create = RecordingChatCreate()
+
+    class DataUrlImages:
+        def __init__(self):
+            self.generate_calls = []
+
+        async def generate(self, **kwargs):
+            self.generate_calls.append(kwargs)
+            data_url = "data:image/png;base64," + base64.b64encode(b"data-url-image-bytes").decode("ascii")
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=None, url=data_url)])
+
+    images = DataUrlImages()
+    adapter.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                with_raw_response=SimpleNamespace(create=chat_create.create)
+            )
+        ),
+        images=images,
+    )
+
+    image = await adapter.generate(
+        PromptSet(
+            positive_prompt="modern room",
+            negative_prompt="",
+            model_target="gpt-image-2",
+        )
+    )
+
+    assert chat_create.called is False
+    assert len(images.generate_calls) == 1
+    assert image.image_bytes == b"data-url-image-bytes"
+    assert image.generation_params["endpoint"] == "images.generate"
+
+
+@pytest.mark.asyncio
+async def test_gpt_image_models_without_image_inputs_accept_remote_url_response():
+    adapter = object.__new__(OpenAICompatAdapter)
+    adapter.model = "gpt-image-2"
+    adapter.api_format = "openai_responses"
+    adapter.timeout = 600
+    chat_create = RecordingChatCreate()
+
+    class RemoteUrlImages:
+        def __init__(self):
+            self.generate_calls = []
+
+        async def generate(self, **kwargs):
+            self.generate_calls.append(kwargs)
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=None, url="https://cdn.example/image.png")])
+
+    images = RemoteUrlImages()
+    adapter.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                with_raw_response=SimpleNamespace(create=chat_create.create)
+            )
+        ),
+        images=images,
+    )
+
+    async def fake_download(url: str):
+        assert url == "https://cdn.example/image.png"
+        return b"remote-url-image-bytes"
+
+    adapter._download_remote_image = fake_download
+
+    image = await adapter.generate(
+        PromptSet(
+            positive_prompt="modern room",
+            negative_prompt="",
+            model_target="gpt-image-2",
+        )
+    )
+
+    assert chat_create.called is False
+    assert len(images.generate_calls) == 1
+    assert image.image_bytes == b"remote-url-image-bytes"
+    assert image.generation_params["endpoint"] == "images.generate"
+
+
+@pytest.mark.asyncio
+async def test_gpt_image_models_with_reference_image_use_images_edit():
+    adapter = object.__new__(OpenAICompatAdapter)
+    adapter.model = "gpt-image-2"
+    adapter.api_format = "openai_responses"
+    adapter.timeout = 600
+    chat_create = RecordingChatCreate()
+    images = RecordingImages()
+    adapter.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                with_raw_response=SimpleNamespace(create=chat_create.create)
+            )
+        ),
+        images=images,
+    )
+
+    image = await adapter.generate(
+        PromptSet(
+            positive_prompt="turn this reference into a clean icon",
+            negative_prompt="blurry",
+            model_target="gpt-image-2",
+            reference_image=b"reference-image-bytes",
+        )
+    )
+
+    assert chat_create.called is False
+    assert images.generate_calls == []
+    assert len(images.edit_calls) == 1
+    call = images.edit_calls[0]
+    assert call["model"] == "gpt-image-2"
+    assert call["prompt"] == "turn this reference into a clean icon\n\n负向约束：blurry"
+    assert call["image"].read() == b"reference-image-bytes"
+    assert image.image_bytes == b"edited-image-bytes"
+    assert image.generation_params["endpoint"] == "images.edit"
+    assert image.generation_params["has_reference_image"] is True
+    assert image.generation_params["edit_image_source"] == "reference_image"
+
+
+@pytest.mark.asyncio
+async def test_gpt_image_models_reopen_reference_image_for_edit_retry(monkeypatch):
+    adapter = object.__new__(OpenAICompatAdapter)
+    adapter.model = "gpt-image-2"
+    adapter.api_format = "openai_responses"
+    adapter.timeout = 600
+    chat_create = RecordingChatCreate()
+
+    class RetryingImages:
+        def __init__(self):
+            self.edit_image_reads = []
+
+        async def edit(self, **kwargs):
+            self.edit_image_reads.append(kwargs["image"].read())
+            if len(self.edit_image_reads) == 1:
+                request = httpx.Request("POST", "https://api.example/v1/images/edits")
+                response = httpx.Response(429, headers={"Retry-After": "0"}, request=request)
+                raise httpx.HTTPStatusError("rate limited", request=request, response=response)
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(
+                        b64_json=base64.b64encode(b"retried-image-bytes").decode("ascii")
+                    )
+                ]
+            )
+
+    images = RetryingImages()
+    adapter.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(
+                with_raw_response=SimpleNamespace(create=chat_create.create)
+            )
+        ),
+        images=images,
+    )
+
+    async def fake_sleep(_seconds: float):
+        return None
+
+    monkeypatch.setattr("adapters.openai_compat.asyncio.sleep", fake_sleep)
+
+    image = await adapter.generate(
+        PromptSet(
+            positive_prompt="retry this edit",
+            negative_prompt="",
+            model_target="gpt-image-2",
+            reference_image=b"reference-image-bytes",
+        )
+    )
+
+    assert chat_create.called is False
+    assert images.edit_image_reads == [b"reference-image-bytes", b"reference-image-bytes"]
+    assert image.image_bytes == b"retried-image-bytes"
+    assert image.generation_params["endpoint"] == "images.edit"
 
 
 @pytest.mark.asyncio

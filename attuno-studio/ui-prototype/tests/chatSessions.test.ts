@@ -1,4 +1,4 @@
-import { appendMessageVariant, buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariant, getActiveMessageVariantIndex, hasConversationContent, hasDurableConversationContent, isCurrentConversationRun, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, upsertSessionSnapshot } from "../src/utils/chatSessions.js";
+import { appendMessageVariant, buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariant, getActiveMessageVariantIndex, hasConversationContent, hasDurableConversationContent, inferStoredWorkspaceMode, isCurrentConversationRun, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, upsertSessionSnapshot } from "../src/utils/chatSessions.js";
 import { modelOptions } from "../src/data/studioData.js";
 import type { ChatMessage } from "../src/types/domain.js";
 
@@ -204,6 +204,19 @@ const attachmentContext = buildLinearChatContext([
   },
 ] satisfies ChatMessage[], "u-image");
 assert(attachmentContext[0].attachments?.[0].dataUrl === "data:image/png;base64,AA==", "linear chat context should preserve image attachments on the active user turn");
+
+assert(
+  inferStoredWorkspaceMode({ messages: [userMessage] }) === "chat",
+  "legacy text-only sessions without workspaceMode should reopen in chat mode so they can continue as conversations",
+);
+assert(
+  inferStoredWorkspaceMode({ workspaceMode: "image", messages: [userMessage] }) === "chat",
+  "legacy text-only sessions saved with the old image default should still reopen in chat mode",
+);
+assert(
+  inferStoredWorkspaceMode({ messages: [renderMessage] }) === "image",
+  "legacy render sessions without workspaceMode should still reopen in image mode",
+);
 
 assert(!modelOptions.includes("dall-e-3"), "built-in image model options should not include unavailable DALL-E placeholders");
 assert(!modelOptions.includes("imagen-preview"), "built-in image model options should not include unavailable Imagen placeholders");

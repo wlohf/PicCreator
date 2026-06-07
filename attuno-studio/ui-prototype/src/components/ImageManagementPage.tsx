@@ -67,6 +67,10 @@ export function ImageManagementPage({
     () => items.filter((item) => selectedSet.has(item.id)),
     [items, selectedSet]
   );
+  const filteredIds = useMemo(() => filteredItems.map((item) => item.id), [filteredItems]);
+  const itemIds = useMemo(() => items.map((item) => item.id), [items]);
+  const isFilteredSelectionComplete = isSelectionComplete(filteredIds, selectedSet);
+  const isAllSelectionComplete = isSelectionComplete(itemIds, selectedSet);
   const hasAppliedFilter = Boolean(appliedRange.start || appliedRange.end);
 
   useEffect(() => {
@@ -97,11 +101,11 @@ export function ImageManagementPage({
   }
 
   function selectFilteredItems() {
-    setSelectedIds(filteredItems.map((item) => item.id));
+    setSelectedIds((current) => toggleSelectionScope(current, filteredIds));
   }
 
   function selectAllItems() {
-    setSelectedIds(items.map((item) => item.id));
+    setSelectedIds((current) => toggleSelectionScope(current, itemIds));
   }
 
   function clearSelection() {
@@ -209,12 +213,24 @@ export function ImageManagementPage({
             <strong>{pageCountCopy}</strong>
             {allCountCopy && <span>{allCountCopy}</span>}
             {hasAppliedFilter && <span className="image-management-filter-summary">{locale === "zh" ? `筛选：${appliedRangeCopy}` : `Filtered: ${appliedRangeCopy}`}</span>}
-            <button type="button" onClick={selectFilteredItems} disabled={filteredItems.length === 0}>
-              <Square size={15} />
+            <button
+              type="button"
+              className={isFilteredSelectionComplete ? "is-selected" : ""}
+              onClick={selectFilteredItems}
+              disabled={filteredItems.length === 0}
+              aria-pressed={isFilteredSelectionComplete}
+            >
+              {isFilteredSelectionComplete ? <CheckSquare size={15} /> : <Square size={15} />}
               {locale === "zh" ? "本页全选" : "Select page"}
             </button>
-            <button type="button" onClick={selectAllItems} disabled={items.length === 0}>
-              <CheckSquare size={15} />
+            <button
+              type="button"
+              className={isAllSelectionComplete ? "is-selected" : ""}
+              onClick={selectAllItems}
+              disabled={items.length === 0}
+              aria-pressed={isAllSelectionComplete}
+            >
+              {isAllSelectionComplete ? <CheckSquare size={15} /> : <Square size={15} />}
               {locale === "zh" ? "全选结果" : "Select all"}
             </button>
           </div>
@@ -342,6 +358,27 @@ export function normalizeDateRange(range: DateRange): DateRange {
     return { start: range.end, end: range.start };
   }
   return range;
+}
+
+export function isSelectionComplete(scopeIds: string[], selectedSet: Set<string>) {
+  return scopeIds.length > 0 && scopeIds.every((id) => selectedSet.has(id));
+}
+
+export function toggleSelectionScope(currentIds: string[], scopeIds: string[]) {
+  if (scopeIds.length === 0) return currentIds;
+  const scopeSet = new Set(scopeIds);
+  const currentSet = new Set(currentIds);
+  const scopeComplete = scopeIds.every((id) => currentSet.has(id));
+  if (scopeComplete) {
+    return currentIds.filter((id) => !scopeSet.has(id));
+  }
+  const nextIds = [...currentIds];
+  for (const id of scopeIds) {
+    if (!currentSet.has(id)) {
+      nextIds.push(id);
+    }
+  }
+  return nextIds;
 }
 
 export function isResultInDateRange(item: RenderHistoryItem, range: DateRange) {

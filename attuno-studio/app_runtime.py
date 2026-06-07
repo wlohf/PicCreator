@@ -1209,6 +1209,7 @@ def run_pipeline(
     project_id="default",
     user_id: str | None = DEFAULT_CONFIG_USER_ID,
     learned_preferences_text="",
+    record_output_dir: str | None = None,
     progress=None,
 ):
     progress = progress or _NoopProgress()
@@ -1337,6 +1338,7 @@ def run_pipeline(
                         on_event=on_event,
                         manual_prompt=manual_prompt.strip() or None,
                         learned_preferences_text=learned_preferences_text if generation_mode != GenerationMode.STANDARD else "",
+                        record_output_dir=record_output_dir,
                         project_id=project_id,
                     )
                 )

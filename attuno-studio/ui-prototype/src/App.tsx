@@ -1,7 +1,6 @@
 import { type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
   Aperture,
-  AudioLines,
   Box,
   Camera,
   CheckCircle2,
@@ -22,9 +21,8 @@ import {
   LogOut,
   Maximize2,
   MessageCircle,
-  Mic,
+  Moon,
   MousePointer,
-  MoreHorizontal,
   PanelLeftClose,
   PanelLeftOpen,
   Pin,
@@ -36,8 +34,11 @@ import {
   RotateCcw,
   Save,
   Send,
+  Settings,
+  Share2,
   SlidersHorizontal,
   Sparkles,
+  Star,
   ThumbsDown,
   ThumbsUp,
   Trash2,
@@ -51,12 +52,21 @@ import { applyChatMemory, isChatStreamAbortedError, streamDesignChat } from "./a
 import { loadChatHistory, saveChatHistory } from "./api/chatHistory";
 import { isGenerationStreamAbortedError, requestGenerationStream } from "./api/generation";
 import { requestAnnotatedImageEdit, requestImageEdit } from "./api/imageEdits";
-import { deleteMemoryItem, loadMemoryView, loadPromptSkillPreferences, loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, savePromptSkillPreferences, saveShortcutPreferences, updateMemoryItem, type MemoryItem, type MemorySection, type MemoryView, type PromptSkillPreference, type StyleProfile } from "./api/preferences";
+import { createMemoryItem, deleteMemoryItem, loadMemoryView, loadPromptSkillPreferences, loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, savePromptSkillPreferences, saveShortcutPreferences, updateMemoryItem, type MemoryItem, type MemorySection, type MemoryView, type PromptSkillPreference, type StyleProfile } from "./api/preferences";
 import { deleteResult, listResults, normalizeApiResult } from "./api/results";
 import { ConfigStatus, type ConfigStatusState } from "./components/ConfigStatus";
 import { AnnotationEditor } from "./components/AnnotationEditor";
+import {
+  ChatComposer,
+  ChatSidebar,
+  EmptyConversationState,
+  WorkspaceTopbar,
+  type ChatWorkspaceAction,
+  type PromptStarterCard,
+  type QuickPhraseViewItem,
+  type SidebarHistoryViewGroup,
+} from "./components/chat-workspace";
 import { ImageManagementPage } from "./components/ImageManagementPage";
-import { StatusBadge } from "./components/StatusBadge";
 import {
   apiFormatOptions,
   copy,
@@ -65,8 +75,8 @@ import {
   directionItems,
   modelOptions
 } from "./data/studioData";
-import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatReasoningEffort, FilePreview, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
-import { buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getBranchInfo, getMessagePathTo, hasConversationContent, hasDurableConversationContent, isCurrentConversationRun, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, switchMessageSibling, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
+import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatReasoningEffort, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
+import { buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getBranchInfo, getMessagePathTo, hasConversationContent, hasDurableConversationContent, inferStoredWorkspaceMode, isCurrentConversationRun, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, switchMessageSibling, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
 import { apiConfigStorageKey, apiConfigStorageReadKeys } from "./utils/apiConfigStorage";
 import { filesFromList, imageFilesFromClipboardItems, imageFilesFromFiles, mergeFloorPlanFiles } from "./utils/fileAttachments";
 import { mergeRenderHistoryItems } from "./utils/renderHistory";
@@ -86,8 +96,8 @@ const SIDEBAR_COLLAPSED_WIDTH = 72;
 const GENERATION_SLOW_NOTICE_MS = 5 * 60 * 1000;
 const MAX_ITERATIONS_UPPER_BOUND = 50;
 const COMPOSER_MAX_VISIBLE_HEIGHT = 232;
-const SIDEBAR_WIDTH_MIN = 280;
-const SIDEBAR_WIDTH_MAX = 280;
+const SIDEBAR_WIDTH_MIN = 316;
+const SIDEBAR_WIDTH_MAX = 316;
 const DRAWER_WIDTH_MIN = 420;
 const DRAWER_WIDTH_MAX = 500;
 const DESKTOP_DRAWER_BREAKPOINT = 1100;
@@ -112,6 +122,31 @@ type PromptSkillDraft = {
 };
 
 type PromptModeId = "builtin-standard" | "builtin-render3d" | `skill-${string}`;
+type PromptPlazaView = "all" | "favorite";
+type PromptPlazaSource = "official" | "community" | "team";
+type PromptPlazaLanguage = "zh" | "en";
+type PromptPlazaCategory = "product" | "image" | "research" | "copy" | "code";
+type PromptPlazaMode = "chat" | "image" | "deep";
+type PromptPlazaFilters = {
+  source: "all" | PromptPlazaSource;
+  language: "all" | PromptPlazaLanguage;
+  category: "all" | PromptPlazaCategory;
+  mode: "all" | PromptPlazaMode;
+};
+type PromptPlazaItem = {
+  id: string;
+  title: Record<Locale, string>;
+  description: Record<Locale, string>;
+  prompt: Record<Locale, string>;
+  author: string;
+  source: PromptPlazaSource;
+  language: PromptPlazaLanguage;
+  category: PromptPlazaCategory;
+  mode: PromptPlazaMode;
+  tags: string[];
+  favorite: boolean;
+  tone: "product" | "image" | "research" | "code";
+};
 
 type PreviewImage = {
   url: string;
@@ -123,8 +158,8 @@ type PreviewImage = {
 type ComposerMode = "new-generation" | "edit-selected-result";
 type WorkspaceMode = "chat" | "image";
 type PrimaryView = "workspace" | "image-management";
-type UtilityPanel = "analysis" | "shortcuts" | "preferences" | "generation" | "setup" | "prompts";
-type SettingsUtilityPanel = Extract<UtilityPanel, "preferences" | "generation" | "setup" | "analysis" | "prompts">;
+type UtilityPanel = "analysis" | "shortcuts" | "preferences" | "setup" | "prompts";
+type SettingsUtilityPanel = Extract<UtilityPanel, "preferences" | "setup" | "analysis" | "prompts">;
 type ResizablePanel = "sidebar" | "drawer";
 type DetectedModelState = Record<ConfigRole, string[]>;
 type ConfigAction = "save" | "analysis" | "image" | "models-analysis" | "models-image";
@@ -140,7 +175,7 @@ type MessageEditState = {
 };
 
 const DEFAULT_WORKSPACE_MODE: WorkspaceMode = "chat";
-const settingsUtilityPanels = new Set<UtilityPanel>(["preferences", "generation", "setup", "analysis", "prompts"]);
+const settingsUtilityPanels = new Set<UtilityPanel>(["preferences", "setup", "analysis", "prompts"]);
 
 function isSettingsPanel(panel: UtilityPanel | null): panel is SettingsUtilityPanel {
   return panel !== null && settingsUtilityPanels.has(panel);
@@ -663,6 +698,55 @@ function buildRetryApiConfig(config: ApiConfig, model: string): ApiConfig {
   };
 }
 
+function compactTechnicalReason(rawMessage: string) {
+  return rawMessage
+    .replace(/\s+/g, " ")
+    .replace(/event:\s*error\s*data:\s*/gi, "")
+    .replace(/[{}"]/g, "")
+    .trim()
+    .slice(0, 180);
+}
+
+function formatGenerationErrorMessage(error: unknown, locale: Locale, fallbackTitle: string): ChatMessage["content"] {
+  const rawMessage = error instanceof Error ? error.message : String(error);
+  const lowerMessage = rawMessage.toLowerCase();
+  const technicalReason = compactTechnicalReason(rawMessage);
+  const reasonLine = technicalReason
+    ? locale === "zh"
+      ? `技术原因：${technicalReason}`
+      : `Technical reason: ${technicalReason}`
+    : "";
+
+  if (
+    lowerMessage.includes("upstream") ||
+    lowerMessage.includes("gateway") ||
+    lowerMessage.includes("image_generation_error") ||
+    lowerMessage.includes("internalservererror") ||
+    lowerMessage.includes("没有返回图片") ||
+    lowerMessage.includes("did not return an image")
+  ) {
+    return locale === "zh"
+      ? `画图服务暂时没有成功返回图片。通常是上游模型、API key、额度或网关临时异常导致，不是你的图片没有发送。\n\n${reasonLine}`.trim()
+      : `The image service did not return an image. This is usually caused by the upstream model, API key, quota, or gateway, not by the uploaded image failing to send.\n\n${reasonLine}`.trim();
+  }
+
+  return `${fallbackTitle}: ${technicalReason || rawMessage}`;
+}
+
+function hasGenerationImageResult(result: GenerateResponse, backendItems: RenderHistoryItem[]) {
+  return (
+    backendItems.some((item) => Boolean(item.imageUrl)) ||
+    (result.images ?? []).some((image) => Boolean(image.url || image.data_url))
+  );
+}
+
+function emptyGenerationResultError(result: GenerateResponse, locale: Locale) {
+  const detail = [result.status, result.error, result.logs].map((item) => String(item || "").trim()).find(Boolean);
+  return new Error(locale === "zh"
+    ? `画图服务没有返回图片结果${detail ? `：${detail}` : ""}`
+    : `The image service did not return an image result${detail ? `: ${detail}` : ""}`);
+}
+
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   const boldPattern = /\*\*([^*]+)\*\*/g;
@@ -779,6 +863,36 @@ function createEmptySession(): ChatSessionRecord {
   };
 }
 
+function persistableAttachments(attachments?: ChatImageAttachment[]) {
+  return (attachments ?? []).filter((attachment) => {
+    const url = String(attachment.dataUrl || "");
+    return url && !url.startsWith("data:") && !url.startsWith("blob:");
+  });
+}
+
+function sanitizeMessageForPersistence(message: ChatMessage): ChatMessage {
+  const attachments = persistableAttachments(message.attachments);
+  const variants = message.variants?.map((variant) => {
+    const variantAttachments = persistableAttachments(variant.attachments);
+    return {
+      ...variant,
+      attachments: variantAttachments.length ? variantAttachments : undefined,
+    };
+  });
+  return {
+    ...message,
+    attachments: attachments.length ? attachments : undefined,
+    variants,
+  };
+}
+
+function sanitizeSessionForPersistence(session: ChatSessionRecord): ChatSessionRecord {
+  return {
+    ...session,
+    messages: session.messages.map(sanitizeMessageForPersistence),
+  };
+}
+
 function normalizeStoredSession(value: unknown, fallbackId = ""): ChatSessionRecord | null {
   if (!value || typeof value !== "object") return null;
   const session = value as Partial<ChatSessionRecord>;
@@ -796,9 +910,12 @@ function normalizeStoredSession(value: unknown, fallbackId = ""): ChatSessionRec
     rawPromptModeId.startsWith("skill-")
     ? rawPromptModeId as PromptModeId
     : promptModeIdForGenerationMode(generationMode);
-  const workspaceMode = session.workspaceMode === "chat" || session.workspaceMode === "image"
-    ? session.workspaceMode
-    : "image";
+  const workspaceMode = inferStoredWorkspaceMode({
+    workspaceMode: session.workspaceMode,
+    messages,
+    generationMode,
+    activeResultId: session.activeResultId ? String(session.activeResultId) : null,
+  });
   const composerMode = session.composerMode === "edit-selected-result" ? "edit-selected-result" : "new-generation";
   return {
     id,
@@ -1032,6 +1149,168 @@ const render3DShortcutPhrases: ShortcutPhrase[] = directionItems.map((item, inde
   text: item.zh || item.en
 }));
 const QUICK_PHRASE_VISIBLE_LIMIT = 10;
+const PROMPT_PLAZA_ITEMS: PromptPlazaItem[] = [
+  {
+    id: "product-spec",
+    title: { zh: "把需求整理成产品方案", en: "Turn a brief into a product spec" },
+    description: {
+      zh: "把零散想法整理成目标用户、核心场景、功能范围、优先级、风险和验收标准。",
+      en: "Structure rough ideas into users, scenarios, scope, priorities, risks, and acceptance criteria.",
+    },
+    prompt: {
+      zh: "请把下面这段需求整理成产品方案，包含目标用户、核心场景、功能范围、优先级、风险和验收标准：",
+      en: "Turn the following rough product idea into a structured product spec with goals, target users, constraints, open questions, risks, and acceptance criteria:",
+    },
+    author: "Attuno Team",
+    source: "official",
+    language: "zh",
+    category: "product",
+    mode: "chat",
+    tags: ["产品", "工作流", "验收标准"],
+    favorite: true,
+    tone: "product",
+  },
+  {
+    id: "saas-visual",
+    title: { zh: "高级 AI SaaS 产品视觉图", en: "Premium AI SaaS product visual" },
+    description: {
+      zh: "把主题、构图、材质、色彩和用途一次性说清楚，适合官网首屏、功能卡片和封面。",
+      en: "Describe subject, composition, material, color, and usage for hero images, feature cards, or covers.",
+    },
+    prompt: {
+      zh: "帮我生成一张适合 AI SaaS 产品的高级视觉图：主题为【】，画面构图为【】，色彩保持温暖克制，材质干净，适合用于【官网首屏/功能卡片/社媒封面】。",
+      en: "Generate a premium visual for an AI SaaS product. Subject: []. Composition: []. Keep the color warm and restrained, with clean materials, suitable for [website hero / feature card / social cover].",
+    },
+    author: "Attuno Image",
+    source: "official",
+    language: "zh",
+    category: "image",
+    mode: "image",
+    tags: ["文生图", "官网", "视觉"],
+    favorite: true,
+    tone: "image",
+  },
+  {
+    id: "web-research",
+    title: { zh: "分析网页资料并给结论", en: "Analyze web material and conclude" },
+    description: {
+      zh: "适合竞品页、文档、新闻或资料链接，输出结论、证据来源、风险和可追问问题。",
+      en: "Useful for competitor pages, docs, news, or sources. Returns conclusions, evidence, risks, and follow-ups.",
+    },
+    prompt: {
+      zh: "请分析下面的网页资料，提炼产品定位、关键卖点、证据来源、潜在风险，并列出 5 个我应该继续追问的问题：",
+      en: "Analyze the following web material, extract positioning, key selling points, evidence, risks, and five useful follow-up questions:",
+    },
+    author: "Research Kit",
+    source: "community",
+    language: "zh",
+    category: "research",
+    mode: "deep",
+    tags: ["资料", "引用", "深度思考"],
+    favorite: false,
+    tone: "research",
+  },
+  {
+    id: "copy-polish",
+    title: { zh: "把文案改成产品级表达", en: "Rewrite copy as product UI" },
+    description: {
+      zh: "压掉模板感，保留中文产品的亲和力，让标题、按钮和空状态更自然可用。",
+      en: "Remove templated wording and make headings, buttons, and empty states feel natural and usable.",
+    },
+    prompt: {
+      zh: "请把下面这段文案润色成成熟 AI 产品的界面文案：更自然、更清楚、更有行动导向，避免营销空话和模板感。",
+      en: "Polish the following text into mature AI product interface copy. Make it clear, natural, action-oriented, and avoid generic marketing language:",
+    },
+    author: "Copy Studio",
+    source: "team",
+    language: "zh",
+    category: "copy",
+    mode: "chat",
+    tags: ["写作", "中文产品", "界面文案"],
+    favorite: true,
+    tone: "product",
+  },
+  {
+    id: "react-plan",
+    title: { zh: "生成 React 组件实现方案", en: "Plan a React component" },
+    description: {
+      zh: "从组件拆分、状态机、交互反馈到可测试边界，生成可以直接进入开发的实现说明。",
+      en: "Produce implementation notes covering components, props, state, interactions, edge cases, and tests.",
+    },
+    prompt: {
+      zh: "请帮我设计一个 React + TypeScript 组件实现方案，包含组件拆分、props、状态、交互反馈、边界状态和可测试点：",
+      en: "Design a React + TypeScript component implementation plan covering component split, props, state, interaction feedback, edge states, and test points:",
+    },
+    author: "Dev Workflow",
+    source: "community",
+    language: "zh",
+    category: "code",
+    mode: "chat",
+    tags: ["React", "TS", "状态"],
+    favorite: false,
+    tone: "code",
+  },
+  {
+    id: "meeting-actions",
+    title: { zh: "会议纪要转执行清单", en: "Turn meeting notes into actions" },
+    description: {
+      zh: "把会议记录整理为结论、分歧、行动项、负责人、截止时间和下次会议议题。",
+      en: "Convert notes into conclusions, disagreements, owners, deadlines, and next meeting topics.",
+    },
+    prompt: {
+      zh: "请把下面这段会议记录整理为：会议结论、未解决分歧、行动项、负责人、截止时间和下次会议建议议题：",
+      en: "Turn the following meeting notes into conclusions, unresolved disagreements, action items, owners, deadlines, and recommended next meeting topics:",
+    },
+    author: "Ops Notes",
+    source: "team",
+    language: "zh",
+    category: "research",
+    mode: "chat",
+    tags: ["会议", "行动项", "负责人"],
+    favorite: true,
+    tone: "product",
+  },
+  {
+    id: "brand-qa",
+    title: { zh: "品牌风格一致性检查", en: "Brand voice consistency check" },
+    description: {
+      zh: "检查一组界面文案是否符合品牌调性，并指出哪些句子太硬、太泛或不够行动导向。",
+      en: "Check UI copy against brand voice and flag wording that is stiff, vague, or low-action.",
+    },
+    prompt: {
+      zh: "请作为品牌文案审校，检查下面这组界面文案是否一致、自然、具体，并按“保留 / 修改 / 删除”给出建议：",
+      en: "Act as a brand copy reviewer. Check whether the following UI copy is consistent, natural, and specific, then classify each as keep / revise / remove:",
+    },
+    author: "Design QA",
+    source: "community",
+    language: "zh",
+    category: "copy",
+    mode: "deep",
+    tags: ["品牌", "UI 文案", "检查"],
+    favorite: false,
+    tone: "research",
+  },
+  {
+    id: "en-spec",
+    title: { zh: "Prompt to product spec", en: "Prompt to product spec" },
+    description: {
+      zh: "把英文粗略想法整理成结构化产品说明，适合跨语言产品沟通。",
+      en: "Turn a rough product idea into a structured spec with goals, constraints, open questions, and acceptance criteria.",
+    },
+    prompt: {
+      zh: "Turn the following rough product idea into a structured product spec with goals, target users, constraints, open questions, risks, and acceptance criteria:",
+      en: "Turn the following rough product idea into a structured product spec with goals, target users, constraints, open questions, risks, and acceptance criteria:",
+    },
+    author: "Official",
+    source: "official",
+    language: "en",
+    category: "product",
+    mode: "deep",
+    tags: ["EN", "Spec", "Deep"],
+    favorite: false,
+    tone: "research",
+  },
+];
 
 function cloneDefaultShortcutPhrases() {
   return render3DShortcutPhrases.map((item) => ({ ...item }));
@@ -1162,6 +1441,7 @@ function App() {
   const [memoryView, setMemoryView] = useState<MemoryView | null>(null);
   const [editingMemoryItemId, setEditingMemoryItemId] = useState<string | null>(null);
   const [memoryDraftText, setMemoryDraftText] = useState("");
+  const [newMemoryDraft, setNewMemoryDraft] = useState({ text: "", sectionId: "long_term_preferences" });
   const [memoryActionId, setMemoryActionId] = useState<string | null>(null);
   const [renderHistory, setRenderHistory] = useState<RenderHistoryItem[]>([]);
   const [activeResultId, setActiveResultId] = useState<string | null>(null);
@@ -1170,8 +1450,14 @@ function App() {
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isChatHistoryOpen, setIsChatHistoryOpen] = useState(true);
   const [chatHistoryQuery, setChatHistoryQuery] = useState("");
+  const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
   const [activeHistoryMenuId, setActiveHistoryMenuId] = useState<string | null>(null);
   const [historyMenuPosition, setHistoryMenuPosition] = useState<HistoryMenuPosition | null>(null);
+  const [isPromptPlazaOpen, setIsPromptPlazaOpen] = useState(false);
+  const [promptPlazaQuery, setPromptPlazaQuery] = useState("");
+  const [promptPlazaView, setPromptPlazaView] = useState<PromptPlazaView>("all");
+  const [promptPlazaFilters, setPromptPlazaFilters] = useState<PromptPlazaFilters>({ source: "all", language: "all", category: "all", mode: "all" });
+  const [promptPlazaFavoriteIds, setPromptPlazaFavoriteIds] = useState<Set<string>>(() => new Set(PROMPT_PLAZA_ITEMS.filter((item) => item.favorite).map((item) => item.id)));
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [isRefreshingResults, setIsRefreshingResults] = useState(false);
@@ -1212,11 +1498,15 @@ function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
+  const chatSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const promptPlazaSearchInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const activeResizeRef = useRef<{ panel: ResizablePanel; startX: number; startWidth: number } | null>(null);
   const previousGenerationModeRef = useRef<GenerationMode>("standard");
   const currentUserIdRef = useRef(currentUserId);
   const currentSessionIdRef = useRef(currentSessionId);
+  const messagesRef = useRef(messages);
+  const activeMessageIdRef = useRef(activeMessageId);
   const conversationEpochRef = useRef(0);
   const isBootstrappingSessionRef = useRef(false);
   const lastSavedChatHistoryRef = useRef("");
@@ -1233,10 +1523,9 @@ function App() {
     ? locale === "zh" ? "日常对话" : "Daily chat"
     : currentGenerationModeLabel;
   const normalizedHistoryQuery = chatHistoryQuery.trim().toLowerCase();
-  const sidebarHistoryItems = currentUserId
+  const durableChatSessions = currentUserId
     ? chatSessions
       .filter((session) => hasDurableConversationContent(session.messages))
-      .filter((session) => !normalizedHistoryQuery || sessionSearchText(session).includes(normalizedHistoryQuery))
       .slice()
       .sort((left, right) => {
         const pinnedRank = Number(Boolean(right.pinnedAt)) - Number(Boolean(left.pinnedAt));
@@ -1246,11 +1535,49 @@ function App() {
         }
         return right.updatedAt.localeCompare(left.updatedAt);
       })
-      .slice(0, 12)
     : [];
-  const sidebarHistoryTotal = currentUserId
-    ? chatSessions.filter((session) => hasDurableConversationContent(session.messages)).length
-    : 0;
+  const sidebarHistoryItems = durableChatSessions.slice(0, 12);
+  const chatSearchResults = durableChatSessions
+    .filter((session) => !normalizedHistoryQuery || sessionSearchText(session).includes(normalizedHistoryQuery))
+    .slice(0, 24);
+  const sidebarHistoryTotal = durableChatSessions.length;
+  const sidebarHistoryGroups = useMemo(() => {
+    const labels = {
+      today: locale === "zh" ? "今天" : "Today",
+      yesterday: locale === "zh" ? "昨天" : "Yesterday",
+      lastWeek: locale === "zh" ? "最近 7 天" : "Last 7 days",
+      earlier: locale === "zh" ? "更早" : "Earlier",
+    };
+    const today = new Date();
+    const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
+    const grouped = new Map<string, ChatSessionRecord[]>();
+
+    const resolveGroupLabel = (updatedAt: string) => {
+      const parsed = new Date(updatedAt);
+      const timestamp = parsed.getTime();
+      if (!Number.isFinite(timestamp)) {
+        return labels.earlier;
+      }
+      const itemStart = new Date(parsed.getFullYear(), parsed.getMonth(), parsed.getDate()).getTime();
+      const dayDiff = Math.round((todayStart - itemStart) / (24 * 60 * 60 * 1000));
+      if (dayDiff <= 0) return labels.today;
+      if (dayDiff === 1) return labels.yesterday;
+      if (dayDiff < 7) return labels.lastWeek;
+      return labels.earlier;
+    };
+
+    for (const item of sidebarHistoryItems) {
+      const label = resolveGroupLabel(item.updatedAt);
+      const items = grouped.get(label) ?? [];
+      items.push(item);
+      grouped.set(label, items);
+    }
+
+    return [labels.today, labels.yesterday, labels.lastWeek, labels.earlier].flatMap((label) => {
+      const items = grouped.get(label);
+      return items && items.length > 0 ? [{ label, items }] : [];
+    });
+  }, [locale, sidebarHistoryItems]);
   const activeResult = useMemo(
     () => renderHistory.find((item) => item.id === activeResultId) ?? renderHistory[0] ?? null,
     [activeResultId, renderHistory]
@@ -1358,18 +1685,16 @@ function App() {
   const utilityPanelTitles: Record<UtilityPanel, string> = {
     analysis: locale === "zh" ? "高级功能" : "Advanced",
     shortcuts: locale === "zh" ? "管理快捷短语" : "Manage quick phrases",
-    preferences: locale === "zh" ? "记忆与偏好" : "Memory & preferences",
-    generation: locale === "zh" ? "生成控制" : "Generation controls",
-    setup: locale === "zh" ? "模型与 API 设置" : "Model & API setup",
+    preferences: locale === "zh" ? "个性化" : "Personalization",
+    setup: locale === "zh" ? "供应商与模型" : "Providers & models",
     prompts: locale === "zh" ? "提示词设置" : "Prompt settings"
   };
   const settingsPanelDescriptions: Record<UtilityPanel, string> = {
     analysis: locale === "zh" ? "严格复核、运行阶段和平面图分析集中在这里。" : "Strict review, run stages, and floor-plan analysis live here.",
     shortcuts: locale === "zh" ? "维护会插入到主输入框的快捷短语。" : "Manage phrases that insert into the main composer.",
-    preferences: locale === "zh" ? "查看、编辑或删除聊天记忆和生图偏好。" : "Review, edit, or delete chat memory and image preferences.",
-    generation: locale === "zh" ? "调整下一次出图使用的模型、备用模型和轮数。" : "Tune the model, fallbacks, and pass count for the next image run.",
-    setup: locale === "zh" ? "保存供应商、地址、密钥与默认模型。" : "Save providers, endpoints, keys, and default models.",
-    prompts: locale === "zh" ? "管理自定义图像模式，或覆盖分析与 3D 提示词。" : "Manage custom image modes or override analysis and 3D prompts."
+    preferences: locale === "zh" ? "查看、编辑或删除聊天记忆、生图偏好和账号侧个性化选项。" : "Review, edit, or delete chat memory, image preferences, and account personalization.",
+    setup: locale === "zh" ? "保存供应商、地址、密钥与默认模型，让真实后端接口继续接到当前前端样式。" : "Save providers, endpoints, keys, and default models while keeping the real backend wiring intact.",
+    prompts: locale === "zh" ? "管理自定义图像模式、快捷语，或覆盖分析与 3D 提示词。" : "Manage custom image modes, quick phrases, or override analysis and 3D prompts."
   };
   const settingsPanelItems: Array<{
     panel: SettingsUtilityPanel;
@@ -1380,19 +1705,13 @@ function App() {
     {
       panel: "preferences" as const,
       icon: CheckCircle2,
-      title: locale === "zh" ? "记忆与偏好" : "Memory",
+      title: locale === "zh" ? "个性化" : "Personalization",
       description: settingsPanelDescriptions.preferences
-    },
-    {
-      panel: "generation" as const,
-      icon: Box,
-      title: locale === "zh" ? "生成控制" : "Generation",
-      description: settingsPanelDescriptions.generation
     },
     {
       panel: "setup" as const,
       icon: PlugZap,
-      title: locale === "zh" ? "模型与 API" : "Model & API",
+      title: locale === "zh" ? "供应商与模型" : "Providers & models",
       description: settingsPanelDescriptions.setup
     },
     {
@@ -1408,6 +1727,16 @@ function App() {
       description: settingsPanelDescriptions.prompts
     }
   ];
+  const settingsDialogTitle = locale === "zh" ? "设置" : "Settings";
+  const activeSettingsSection = activeUtilityPanel && activeUtilityPanel !== "shortcuts"
+    ? {
+      title: utilityPanelTitles[activeUtilityPanel],
+      description: settingsPanelDescriptions[activeUtilityPanel]
+    }
+    : null;
+  const settingsDialogDescription = activeSettingsSection?.description || (locale === "zh"
+    ? "按类别管理 Attuno 的外观、模型和数据，不把所有选项挤在同一页。"
+    : "Manage Attuno appearance, models, and data by category instead of squeezing everything into one page.");
 
   function openSettingsPanel(panel: SettingsUtilityPanel) {
     if (panel === "setup") {
@@ -1418,20 +1747,59 @@ function App() {
     }
     setIsAccountMenuOpen(false);
     setIsQuickPhraseCardOpen(false);
+    setIsPromptPlazaOpen(false);
+    setIsChatSearchOpen(false);
     setActivePrimaryView("workspace");
     setActiveUtilityPanel(panel);
+  }
+
+  function openPromptPlaza() {
+    setActivePrimaryView("workspace");
+    setActiveUtilityPanel(null);
+    setIsAccountMenuOpen(false);
+    setIsQuickPhraseCardOpen(false);
+    setIsChatSearchOpen(false);
+    setIsPromptPlazaOpen(true);
+    window.setTimeout(() => promptPlazaSearchInputRef.current?.focus(), 30);
+  }
+
+  function openChatSearch() {
+    setIsChatHistoryOpen(true);
+    setIsAccountMenuOpen(false);
+    setIsPromptPlazaOpen(false);
+    setActiveHistoryMenuId(null);
+    setHistoryMenuPosition(null);
+    setIsChatSearchOpen(true);
+    window.setTimeout(() => chatSearchInputRef.current?.focus(), 30);
   }
 
   function openImageManagementView() {
     setActivePrimaryView("image-management");
     setActiveUtilityPanel(null);
     setIsQuickPhraseCardOpen(false);
+    setIsPromptPlazaOpen(false);
+    setIsChatSearchOpen(false);
     setIsAccountMenuOpen(false);
     void refreshResultsFromServer(false);
   }
 
   function returnToWorkspaceView() {
     setActivePrimaryView("workspace");
+    window.setTimeout(() => composerRef.current?.focus(), 0);
+  }
+
+  function openChatWorkspace() {
+    setActivePrimaryView("workspace");
+    setActiveUtilityPanel(null);
+    setIsQuickPhraseCardOpen(false);
+    setIsPromptPlazaOpen(false);
+    setIsChatSearchOpen(false);
+    setIsAccountMenuOpen(false);
+    if (workspaceMode !== "chat") {
+      if (isVisibleConversationBusy) return;
+      switchWorkspaceMode("chat");
+      return;
+    }
     window.setTimeout(() => composerRef.current?.focus(), 0);
   }
 
@@ -1459,6 +1827,19 @@ function App() {
     const attachments = await Promise.all(
       imageFiles.map(async (file, index) => ({
         id: `chat-image-${Date.now()}-${index}-${file.name}`,
+        name: file.name,
+        mimeType: file.type || "image/png",
+        dataUrl: await fileToDataUrl(file),
+      }))
+    );
+    return attachments.filter((item) => item.dataUrl.startsWith("data:image/"));
+  }
+
+  async function buildGenerationPreviewAttachments(files: File[]): Promise<ChatImageAttachment[]> {
+    const imageFiles = imageFilesFromFiles(files);
+    const attachments = await Promise.all(
+      imageFiles.map(async (file, index) => ({
+        id: `generation-preview-${Date.now()}-${index}-${file.name}`,
         name: file.name,
         mimeType: file.type || "image/png",
         dataUrl: await fileToDataUrl(file),
@@ -1499,6 +1880,8 @@ function App() {
       messages: normalizedTree.messages,
       activeMessageId: normalizedTree.activeMessageId,
     });
+    messagesRef.current = displaySession.messages;
+    activeMessageIdRef.current = displaySession.activeMessageId;
     setMessages(displaySession.messages);
     setActiveMessageId(displaySession.activeMessageId);
     setChatInput(displaySession.chatInput);
@@ -1529,6 +1912,8 @@ function App() {
   }
 
   function resetVisibleConversationState() {
+    messagesRef.current = [];
+    activeMessageIdRef.current = null;
     setMessages([]);
     setActiveMessageId(null);
     setChatInput("");
@@ -1814,8 +2199,8 @@ function App() {
       return hasSubmitPromptText
         ? ""
         : locale === "zh"
-          ? "请输入要直接发送给画图模型的提示词"
-          : "Enter the prompt to send directly to the image model";
+          ? "请输入画面需求"
+          : "Enter an image brief";
     }
     if (mode === "colored_floor_plan" && floorPlanFiles.length === 0) {
       return locale === "zh" ? "请先粘贴或拖入至少一张平面图" : "Paste or drop at least one floor plan first";
@@ -1926,28 +2311,6 @@ function App() {
     ? locale === "zh" ? "发送聊天" : "Send chat"
     : composerMode === "edit-selected-result" ? (locale === "zh" ? "提交改图" : "Edit image") : t.sendPrompt;
   const composerIsStopping = isVisibleChatResponding || isVisibleRendering;
-  const composerHint = isChatWorkspace
-    ? chatBlocker || (locale === "zh" ? "日常对话不会触发画图；需要出图时切换到图像模式。" : "Daily chat does not generate images; switch to image mode when ready to draw.")
-    : generationBlocker || (composerMode === "edit-selected-result"
-    ? locale === "zh"
-      ? "会以当前选中的结果图为源图，只修改你描述的内容。"
-      : "The selected result is used as the source image; only the described changes are requested."
-    : generationMode === "standard"
-      ? locale === "zh"
-        ? (floorPlanFiles.length > 0 ? "默认模式会把上传图片作为参考图，配合输入框提示词进行图生图/二次创作。" : "默认模式可直接文生图；上传图片后会作为参考图进行图生图。")
-        : (floorPlanFiles.length > 0 ? "Default mode uses uploaded images as references for image-to-image generation." : "Default mode supports text-to-image; upload images to use them as references.")
-      : generationMode === "colored_floor_plan"
-        ? locale === "zh"
-        ? "添加平面图后可生成彩色平面图，输入框文字只作为补充偏好。"
-        : "Add a floor plan to generate a colored plan; composer text is used only as optional preference."
-        : locale === "zh"
-          ? "3D 提示词增强会在你的输入上追加效果图表达；平面图可选，拖入后作为结构参考。"
-          : "3D prompt boost adds render-oriented wording to your prompt. A floor plan is optional structure reference.");
-  const promptModeHint = selectedPromptSkill
-    ? locale === "zh"
-      ? `当前自定义模式：${selectedPromptSkill.name}。提交时会把模板套用到输入内容。`
-      : `Custom mode: ${selectedPromptSkill.name}. The template is applied to your composer text.`
-    : composerHint;
   const composerSubmitShortcutHint = locale === "zh"
     ? `${composerSubmitLabel}（Enter 发送，Shift+Enter 换行）`
     : `${composerSubmitLabel} (Enter to send, Shift+Enter for a new line)`;
@@ -1965,6 +2328,92 @@ function App() {
     ? locale === "zh" ? "有问题，尽管问" : "Ask anything"
     : composerPlaceholder;
   const hasRun = activePathMessages.length > 0 || isVisibleRendering || renderHistory.length > 0;
+  const emptyPromptCards: Array<{
+    icon: ReactNode;
+    title: string;
+    description: string;
+    prompt: string;
+    mode?: WorkspaceMode;
+  }> = [
+    {
+      icon: <FileText size={18} />,
+      title: locale === "zh" ? "总结一份文档" : "Summarize a document",
+      description: locale === "zh" ? "提炼结论、风险和后续问题，适合会议资料和报告。" : "Extract conclusions, risks, and follow-up questions from meeting notes or reports.",
+      prompt: locale === "zh" ? "帮我总结这份文档，并列出 5 个可以继续追问的问题。" : "Summarize this document and list five useful follow-up questions.",
+    },
+    {
+      icon: <MousePointer size={18} />,
+      title: locale === "zh" ? "设计产品页面" : "Design a product page",
+      description: locale === "zh" ? "从结构到文案，再到按钮和状态，直接形成原型方向。" : "Shape the information architecture, copy, buttons, and states into a prototype direction.",
+      prompt: locale === "zh" ? "帮我设计一个产品页面，包含信息架构、首屏文案和组件状态。" : "Help me design a product page with information architecture, hero copy, and component states.",
+    },
+    {
+      icon: <ImagePlus size={18} />,
+      title: locale === "zh" ? "生成图片" : "Generate image",
+      description: locale === "zh" ? "输入主题、画面、风格和尺寸，快速得到视觉草案。" : "Describe subject, scene, style, and size to produce a visual draft.",
+      prompt: locale === "zh" ? "帮我生成一张暖色、高级、适合 AI SaaS 官网的产品概念图。" : "Generate a warm, polished product concept image for an AI SaaS website.",
+      mode: "image" as WorkspaceMode,
+    },
+    {
+      icon: <Search size={18} />,
+      title: locale === "zh" ? "分析网页资料" : "Analyze web material",
+      description: locale === "zh" ? "适合竞品分析、资料检索和内容核对。" : "Good for competitor review, source research, and content checking.",
+      prompt: locale === "zh" ? "帮我分析这个网页资料，找出产品定位、关键卖点和可改进点。" : "Analyze this web material and identify positioning, key selling points, and improvements.",
+    },
+    {
+      icon: <Box size={18} />,
+      title: locale === "zh" ? "写一段代码" : "Write code",
+      description: locale === "zh" ? "生成组件、解释逻辑，并给出可维护的状态设计。" : "Generate a component, explain the logic, and keep state maintainable.",
+      prompt: locale === "zh" ? "帮我写一段 React 组件代码，要求状态清晰、交互完整。" : "Write a React component with clear state and complete interactions.",
+    },
+    {
+      icon: <Edit3 size={18} />,
+      title: locale === "zh" ? "润色文案" : "Polish copy",
+      description: locale === "zh" ? "更自然、更清楚，避免机械和模板感。" : "Make interface copy clearer, more natural, and less templated.",
+      prompt: locale === "zh" ? "帮我润色这段文案，让它更像成熟 AI 产品的界面文案。" : "Polish this copy so it feels like mature AI product interface writing.",
+    },
+  ];
+  const emptyPromptStarterCards: PromptStarterCard[] = emptyPromptCards.map((card) => ({
+    icon: card.icon,
+    title: card.title,
+    description: card.description,
+    onSelect: () => {
+      const targetMode = card.mode ?? "chat";
+      if (workspaceMode !== targetMode) {
+        switchWorkspaceMode(targetMode);
+      }
+      insertComposerPhrase(card.prompt);
+    },
+  }));
+  const promptPlazaVisibleItems = useMemo(() => {
+    const query = promptPlazaQuery.trim().toLowerCase();
+    return PROMPT_PLAZA_ITEMS.filter((item) => {
+      const isFavorite = promptPlazaFavoriteIds.has(item.id);
+      if (promptPlazaView === "favorite" && !isFavorite) return false;
+      if (promptPlazaFilters.source !== "all" && item.source !== promptPlazaFilters.source) return false;
+      if (promptPlazaFilters.language !== "all" && item.language !== promptPlazaFilters.language) return false;
+      if (promptPlazaFilters.category !== "all" && item.category !== promptPlazaFilters.category) return false;
+      if (promptPlazaFilters.mode !== "all" && item.mode !== promptPlazaFilters.mode) return false;
+      if (!query) return true;
+      const haystack = [
+        item.title.zh,
+        item.title.en,
+        item.description.zh,
+        item.description.en,
+        item.prompt.zh,
+        item.prompt.en,
+        item.author,
+        item.source,
+        item.language,
+        item.category,
+        item.mode,
+        ...item.tags,
+      ].join(" ").toLowerCase();
+      return haystack.includes(query);
+    });
+  }, [promptPlazaFavoriteIds, promptPlazaFilters, promptPlazaQuery, promptPlazaView]);
+  const promptPlazaFavoriteCount = promptPlazaFavoriteIds.size;
+  const promptPlazaCountLabel = `${promptPlazaVisibleItems.length} / ${PROMPT_PLAZA_ITEMS.length}`;
   const workflowActiveStep = visibleActiveStep === "idle" && latestResult ? "completed" : visibleActiveStep;
   const workflowSteps = [
     {
@@ -2035,6 +2484,54 @@ function App() {
           : locale === "zh"
             ? "可生成"
             : "Ready";
+  const currentHeaderSubLabel = composerMode === "edit-selected-result" && isImageWorkspace
+    ? (locale === "zh" ? "继续改图" : "Editing source")
+    : currentWorkspaceLabel;
+  const sidebarPrimaryActions: ChatWorkspaceAction[] = [
+    {
+      id: "workspace",
+      title: locale === "zh" ? "AI 聊天" : "AI chat",
+      description: locale === "zh" ? "问答、写作、分析" : "Ask, write, and analyze",
+      icon: <MessageCircle size={15} />,
+      isActive: activePrimaryView === "workspace" && activeUtilityPanel === null && isChatWorkspace,
+      disabled: isVisibleConversationBusy && !isChatWorkspace,
+      onClick: openChatWorkspace,
+    },
+    {
+      id: "image-management",
+      title: locale === "zh" ? "图片管理" : "Image management",
+      description: locale === "zh" ? `管理 ${renderHistory.length} 张历史生成图` : `Manage ${renderHistory.length} generated images`,
+      icon: <ImagePlus size={15} />,
+      isActive: isImageManagementView,
+      disabled: false,
+      onClick: openImageManagementView,
+    },
+    {
+      id: "prompt-plaza",
+      title: locale === "zh" ? "提示词广场" : "Prompt plaza",
+      description: locale === "zh" ? "复制、使用常用提示词" : "Copy and use common prompts",
+      icon: <Sparkles size={15} />,
+      isActive: isPromptPlazaOpen,
+      disabled: false,
+      onClick: openPromptPlaza,
+    },
+  ];
+  const headerPrimaryActions: ChatWorkspaceAction[] = [
+    {
+      id: "share",
+      title: locale === "zh" ? "分享" : "Share",
+      icon: <Share2 size={16} />,
+      isActive: false,
+      onClick: () => showToast(locale === "zh" ? "分享入口已打开" : "Share entry opened"),
+    },
+    {
+      id: "theme",
+      title: locale === "zh" ? "切换深色模式" : "Toggle dark mode",
+      icon: <Moon size={16} />,
+      isActive: false,
+      onClick: () => showToast(locale === "zh" ? "深色模式入口已准备" : "Dark mode entry is ready"),
+    },
+  ];
   const generationElapsedSeconds = Math.floor(generationElapsedMs / 1000);
   const generationElapsedLabel = `${String(Math.floor(generationElapsedSeconds / 60)).padStart(2, "0")}:${String(generationElapsedSeconds % 60).padStart(2, "0")}`;
   const currentIteration = visibleLiveGeneration?.iteration ?? null;
@@ -2134,6 +2631,14 @@ function App() {
   useEffect(() => {
     currentSessionIdRef.current = currentSessionId;
   }, [currentSessionId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
+
+  useEffect(() => {
+    activeMessageIdRef.current = activeMessageId;
+  }, [activeMessageId]);
 
   useEffect(() => {
     const normalized = normalizeMessageTree(messages, activeMessageId);
@@ -2321,12 +2826,17 @@ function App() {
 
   useEffect(() => {
     if (typeof window === "undefined" || !currentUserId || chatSessions.length === 0) return;
+    const persistableSessions = chatSessions.map(sanitizeSessionForPersistence);
     const historyPayload = {
       currentSessionId,
-      sessions: chatSessions,
+      sessions: persistableSessions,
     };
     const serialized = JSON.stringify(historyPayload);
-    window.localStorage.setItem(chatHistoryStorageKey(currentUserId), serialized);
+    try {
+      window.localStorage.setItem(chatHistoryStorageKey(currentUserId), serialized);
+    } catch {
+      // Large image messages can exceed browser storage quota; backend history remains the fallback.
+    }
     if (isBootstrappingSessionRef.current || serialized === lastSavedChatHistoryRef.current) return;
     lastSavedChatHistoryRef.current = serialized;
     void saveChatHistory(historyPayload).catch(() => {
@@ -2436,7 +2946,15 @@ function App() {
     function handleKeyDown(event: KeyboardEvent) {
       const target = event.target as HTMLElement | null;
       const isEditableTarget = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
-        if (event.key === "Escape") {
+      if (event.key === "Escape") {
+        if (isChatSearchOpen) {
+          setIsChatSearchOpen(false);
+          return;
+        }
+        if (isPromptPlazaOpen) {
+          setIsPromptPlazaOpen(false);
+          return;
+        }
         if (isAccountMenuOpen) {
           setIsAccountMenuOpen(false);
           return;
@@ -2474,11 +2992,19 @@ function App() {
         if (!isEditableTarget) {
           showToast(locale === "zh" ? "已聚焦需求输入框" : "Composer focused");
         }
+        return;
+      }
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "n") {
+        event.preventDefault();
+        handleResetWorkspace();
+        if (!isEditableTarget) {
+          showToast(locale === "zh" ? "已创建新的对话" : "Started a new chat");
+        }
       }
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeHistoryMenuId, activeUtilityPanel, annotationTarget, isAccountMenuOpen, isComparisonOpen, isSubmittingAnnotation, locale, previewImage, retryPopover]);
+  }, [activeHistoryMenuId, activeUtilityPanel, annotationTarget, isAccountMenuOpen, isChatSearchOpen, isComparisonOpen, isPromptPlazaOpen, isSubmittingAnnotation, locale, previewImage, retryPopover]);
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -2576,6 +3102,41 @@ function App() {
   function showToast(message: string) {
     setToast(message);
     window.setTimeout(() => setToast((current) => (current === message ? null : current)), 2600);
+  }
+
+  function updatePromptPlazaFilter<K extends keyof PromptPlazaFilters>(key: K, value: PromptPlazaFilters[K]) {
+    setPromptPlazaFilters((current) => ({ ...current, [key]: value }));
+  }
+
+  function togglePromptPlazaFavorite(id: string) {
+    setPromptPlazaFavoriteIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  }
+
+  async function handleCopyPromptPlazaItem(item: PromptPlazaItem) {
+    const text = item.prompt[locale].trim();
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      showToast(locale === "zh" ? "提示词已复制" : "Prompt copied");
+    } catch {
+      showToast(locale === "zh" ? "复制失败，请手动复制" : "Copy failed");
+    }
+  }
+
+  function handleUsePromptPlazaItem(item: PromptPlazaItem) {
+    insertComposerPhrase(item.prompt[locale]);
+    setIsPromptPlazaOpen(false);
+    setActiveUtilityPanel(null);
+    setActivePrimaryView("workspace");
+    showToast(locale === "zh" ? "提示词已填入输入框" : "Prompt inserted into the composer");
   }
 
   function setFloorPlansFromFiles(files: FileList | File[], append = false) {
@@ -2764,11 +3325,16 @@ function App() {
       text,
     };
     const nextPhrases = editingShortcutId
-      ? shortcutPhrases.map((item) => item.id === editingShortcutId ? nextPhrase : item)
-      : [...shortcutPhrases, nextPhrase];
+      ? [nextPhrase, ...shortcutPhrases.filter((item) => item.id !== editingShortcutId)]
+      : [nextPhrase, ...shortcutPhrases];
     persistShortcutPhrases(nextPhrases);
     setEditingShortcutId(null);
     setShortcutDraft({ text: "" });
+    setActiveUtilityPanel(null);
+    setIsQuickPhraseCardOpen(true);
+    if (workspaceMode !== "image") {
+      setWorkspaceMode("image");
+    }
     showToast(locale === "zh" ? "快捷短语已保存" : "Shortcut phrase saved");
   }
 
@@ -3025,6 +3591,7 @@ function App() {
     if (!sessionId || sessionId === currentSessionId) return;
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
+    setIsChatSearchOpen(false);
     setActiveHistoryMenuId(null);
     setHistoryMenuPosition(null);
     setRenamingSessionId(null);
@@ -3186,8 +3753,10 @@ function App() {
     setMessages((current) => {
       const normalized = normalizeMessageTree(
         current.map((message) => message.id === messageId ? updater(message) : message),
-        activeMessageId
+        activeMessageIdRef.current
       );
+      messagesRef.current = normalized.messages;
+      activeMessageIdRef.current = normalized.activeMessageId;
       setActiveMessageId(normalized.activeMessageId);
       return normalized.messages;
     });
@@ -3511,6 +4080,30 @@ function App() {
     if (item.editable === false) return;
     setEditingMemoryItemId(item.id);
     setMemoryDraftText(item.text);
+  }
+
+  async function handleCreateMemoryItem() {
+    const nextText = newMemoryDraft.text.trim();
+    if (!nextText) {
+      showToast(locale === "zh" ? "记忆内容不能为空" : "Memory text cannot be empty");
+      return;
+    }
+    setMemoryActionId("new-memory");
+    try {
+      const response = await createMemoryItem(nextText, newMemoryDraft.sectionId, DEFAULT_PROJECT_ID);
+      setMemoryView(response.memory);
+      if (response.profile) {
+        setLearnedProfile(response.profile);
+      } else {
+        await refreshLearnedProfile();
+      }
+      setNewMemoryDraft((current) => ({ ...current, text: "" }));
+      showToast(locale === "zh" ? "记忆已添加" : "Memory added");
+    } catch (error) {
+      showToast(`${locale === "zh" ? "添加记忆失败" : "Memory add failed"}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setMemoryActionId(null);
+    }
   }
 
   async function handleSaveMemoryItem(itemId: string) {
@@ -4027,7 +4620,7 @@ function App() {
         id: `m-api-annotation-error-${idBase}`,
         role: "assistant",
         kind: "error",
-        content: `${t.requestFailed}: ${error instanceof Error ? error.message : String(error)}`
+        content: formatGenerationErrorMessage(error, locale, t.requestFailed)
       }]);
     } finally {
       if (isActiveConversationRun(runGuard)) {
@@ -4149,11 +4742,23 @@ function App() {
     const userMessageId = retryParentUserMessageId ? `m-chat-user-retry-${idBase}` : `m-chat-user-${idBase}`;
     const assistantMessageId = retryTargetMessageId ? `m-chat-ai-retry-${idBase}` : `m-chat-ai-${idBase}`;
     const requestApiConfig = buildRetryApiConfig(apiConfig, retryModel || "");
+    const normalizedBaseTree = normalizeMessageTree(messagesRef.current, activeMessageIdRef.current);
+    if (normalizedBaseTree.messages !== messagesRef.current) {
+      messagesRef.current = normalizedBaseTree.messages;
+      setMessages(normalizedBaseTree.messages);
+    }
+    if (normalizedBaseTree.activeMessageId !== activeMessageIdRef.current) {
+      activeMessageIdRef.current = normalizedBaseTree.activeMessageId;
+      setActiveMessageId(normalizedBaseTree.activeMessageId);
+    }
+    const baseMessages = normalizedBaseTree.messages;
+    const messages = baseMessages;
+    const baseActiveMessageId = normalizedBaseTree.activeMessageId;
     const userParentId = retryParentUserMessageId
-      ? (messages.find((message) => message.id === retryParentUserMessageId)?.parentId ?? null)
+      ? (baseMessages.find((message) => message.id === retryParentUserMessageId)?.parentId ?? null)
       : editParentId !== undefined
         ? editParentId
-        : activeMessageId;
+        : baseActiveMessageId;
     const providedAttachments = retryAttachments ?? submittedAttachments;
     let chatAttachments: ChatImageAttachment[] = providedAttachments ?? [];
     try {
@@ -4182,6 +4787,8 @@ function App() {
       }
     ];
     appendMessagesToRunSession(runGuard, nextPatch);
+    messagesRef.current = mergeMessageTreeById(baseMessages, nextPatch, assistantMessageId).messages;
+    activeMessageIdRef.current = assistantMessageId;
     if (editParentId !== undefined) {
       setEditingMessage(null);
     }
@@ -4317,20 +4924,59 @@ function App() {
       ? locale === "zh" ? "生成彩色平面图" : "Generate a colored floor plan"
       : "");
     const isFloorPlanInputMode = submitMode === "render3d" || submitMode === "colored_floor_plan";
+    const submittedFiles = [...floorPlanFiles];
+    let generationAttachments: ChatImageAttachment[] = [];
+    try {
+      generationAttachments = await buildGenerationPreviewAttachments(submittedFiles);
+    } catch (error) {
+      showToast(`${locale === "zh" ? "读取图片失败" : "Failed to read image"}: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    const submittedFloorPlanPreview = generationAttachments[0];
+    const submittedFloorPlanUrl = submittedFloorPlanPreview?.dataUrl;
+    const submittedFloorPlanName = submittedFloorPlanPreview?.name;
     const idBase = Date.now();
     const runGuard = createConversationRunGuard();
     const userMessageId = `m-user-${idBase}`;
     const userParentId = activeMessageId;
-    const nextMessages: ChatMessage[] = [{
-      id: userMessageId,
-      parentId: userParentId,
-      role: "user",
-      kind: "text",
-      content: displayedBrief
-    }];
+    const nextMessages: ChatMessage[] = [
+      {
+        id: userMessageId,
+        parentId: userParentId,
+        role: "user",
+        kind: "text",
+        content: displayedBrief,
+        attachments: generationAttachments,
+      },
+      {
+        id: `m-live-analysis-${idBase}`,
+        parentId: userMessageId,
+        role: "assistant",
+        kind: "analysis",
+        content: {
+          zh: "已提交生成请求，正在等待图片服务返回结果。",
+          en: "Generation request submitted. Waiting for the image service to return a result."
+        },
+        bullets: {
+          zh: compactLines([
+            "后端已收到请求",
+            submitMode === "standard" ? "默认模式会直接请求画图模型" : "正在准备分析与出图流程",
+            "如果上游失败，会在这里显示原因"
+          ]),
+          en: compactLines([
+            "Backend received the request",
+            submitMode === "standard" ? "Default mode calls the image model directly" : "Preparing analysis and rendering",
+            "If the upstream service fails, the reason will appear here"
+          ])
+        }
+      }
+    ];
     appendMessagesToRunSession(runGuard, nextMessages);
     if (userPrompt === undefined) {
       clearComposerDraft();
+      if (submittedFiles.length > 0) {
+        clearAttachments(true);
+      }
     }
     const abortController = new AbortController();
     generationAbortControllersRef.current.set(runGuard.sessionId, abortController);
@@ -4344,7 +4990,7 @@ function App() {
 
     try {
       if (submitComposerMode === "edit-selected-result") {
-        const shouldEditUploadedReference = floorPlanFiles.length > 0;
+        const shouldEditUploadedReference = submittedFiles.length > 0;
         if (!activeResult?.id && !shouldEditUploadedReference) {
           throw new Error(locale === "zh" ? "请先选择一张已有结果，或上传一张参考图" : "Select an existing result or upload a reference image first");
         }
@@ -4360,7 +5006,7 @@ function App() {
               enableQualityEvaluation,
               apiConfig,
               selectedModel,
-              floorPlanFiles
+              floorPlanFiles: submittedFiles
             },
             (progress) => {
               if (!isActiveConversationRun(runGuard)) return;
@@ -4371,6 +5017,9 @@ function App() {
           if (!isActiveConversationRun(runGuard)) return;
           const firstImage = result.images?.[0];
           const backendItems = result.results?.map(normalizeApiResult) ?? [];
+          if (!hasGenerationImageResult(result, backendItems)) {
+            throw emptyGenerationResultError(result, locale);
+          }
           const fallbackItem: RenderHistoryItem = {
             id: `r-${idBase}`,
             title: firstImage?.label || (locale === "zh" ? `上传图续改 ${new Date().toLocaleTimeString()}` : `Uploaded edit ${new Date().toLocaleTimeString()}`),
@@ -4508,7 +5157,7 @@ function App() {
           enableQualityEvaluation,
           apiConfig,
           selectedModel,
-          floorPlanFiles
+          floorPlanFiles: submittedFiles
         },
         (progress) => {
           if (!isActiveConversationRun(runGuard)) return;
@@ -4519,6 +5168,9 @@ function App() {
       if (!isActiveConversationRun(runGuard)) return;
       const firstImage = result.images?.[0];
       const backendItems = result.results?.map(normalizeApiResult) ?? [];
+      if (!hasGenerationImageResult(result, backendItems)) {
+        throw emptyGenerationResultError(result, locale);
+      }
       const fallbackItem: RenderHistoryItem = {
         id: `r-${idBase}`,
         title: firstImage?.label || (locale === "zh" ? `生成结果 ${new Date().toLocaleTimeString()}` : `Render ${new Date().toLocaleTimeString()}`),
@@ -4532,14 +5184,14 @@ function App() {
         logs: result.logs,
         createdAt: new Date().toISOString(),
         generationMode: submitMode,
-        floorPlanUrl: isFloorPlanInputMode ? floorPlanPreviews[0]?.url : undefined,
-        floorPlanName: isFloorPlanInputMode ? floorPlanPreviews[0]?.name : undefined
+        floorPlanUrl: isFloorPlanInputMode ? submittedFloorPlanUrl : undefined,
+        floorPlanName: isFloorPlanInputMode ? submittedFloorPlanName : undefined
       };
       const newHistoryItems = (backendItems.length > 0 ? backendItems : [fallbackItem]).map((item) => ({
         ...item,
         generationMode: item.generationMode || submitMode,
-        floorPlanUrl: item.floorPlanUrl || (isFloorPlanInputMode ? floorPlanPreviews[0]?.url : undefined),
-        floorPlanName: item.floorPlanName || (isFloorPlanInputMode ? floorPlanPreviews[0]?.name : undefined)
+        floorPlanUrl: item.floorPlanUrl || (isFloorPlanInputMode ? submittedFloorPlanUrl : undefined),
+        floorPlanName: item.floorPlanName || (isFloorPlanInputMode ? submittedFloorPlanName : undefined)
       }));
       const historyItem = newHistoryItems[0];
       setRenderHistory((current) => {
@@ -4605,12 +5257,13 @@ function App() {
       if (isVisibleConversationRun(runGuard)) {
         setActiveStep("failed");
       }
+      removeLiveAnalysisMessage(runGuard, idBase);
       appendMessagesToRunSession(runGuard, [{
         id: `m-api-error-${idBase}`,
         parentId: userMessageId,
         role: "assistant",
         kind: "error",
-        content: `${t.requestFailed}: ${error instanceof Error ? error.message : String(error)}`
+        content: formatGenerationErrorMessage(error, locale, t.requestFailed)
       }]);
     } finally {
       if (isActiveConversationRun(runGuard)) {
@@ -4857,6 +5510,34 @@ function App() {
   const activeSettingsPanel = isSettingsPanel(activeUtilityPanel) ? activeUtilityPanel : null;
   const isShortcutDrawerOpen = activeUtilityPanel === "shortcuts" && !isImageManagementView;
   const isSettingsDialogOpen = activeSettingsPanel !== null && !isImageManagementView;
+  const projectStateTone = isVisibleRendering || hasRunFailure ? "warn" : "good";
+  const sidebarHistoryViewGroups: SidebarHistoryViewGroup[] = sidebarHistoryGroups.map((group) => ({
+    label: group.label,
+    items: group.items.map((item) => {
+      const updatedAt = new Date(item.updatedAt);
+      const updatedLabel = Number.isNaN(updatedAt.getTime())
+        ? item.updatedAt
+        : updatedAt.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+      return {
+        id: item.id,
+        title: sessionDisplayTitle(item),
+        updatedLabel,
+        pinned: Boolean(item.pinnedAt),
+        isActive: currentSessionId === item.id,
+        isRenaming: renamingSessionId === item.id,
+        hasMenu: activeHistoryMenuId === item.id,
+        onOpen: () => handleOpenSession(item.id),
+        onToggleMenu: (target: HTMLButtonElement) => handleToggleHistoryMenu(item.id, target),
+        onStartRename: () => handleStartRenameSession(item),
+        onTogglePin: () => handleTogglePinSession(item.id),
+        onDelete: () => handleDeleteSession(item.id),
+      };
+    }),
+  }));
+  const quickPhraseViewItems: QuickPhraseViewItem[] = shortcutPhrases.map((item) => ({
+    id: item.id,
+    text: shortcutText(item),
+  })).filter((item) => item.text);
   const layoutStyle = {
     "--chatgpt-sidebar-width": `${isSidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth}px`,
     "--chatgpt-drawer-width": `${drawerWidth}px`,
@@ -4890,246 +5571,37 @@ function App() {
             onPointerDown={(event) => beginPanelResize("sidebar", sidebarWidth, event)}
           />
         )}
-        <aside className="chatgpt-sidebar" aria-label={locale === "zh" ? "侧边栏" : "Sidebar"}>
-          <div className="chatgpt-sidebar__brand-row">
-            <div className="chatgpt-sidebar__brand">
-              <div className="brand-mark">
-                <Aperture size={18} />
-              </div>
-              {!isSidebarCollapsed && (
-                <div>
-                  <strong>{t.appName}</strong>
-                  <span>{locale === "zh" ? "聊天优先，图像辅助" : "Chat first, image assisted"}</span>
-                </div>
-              )}
-            </div>
-            <button
-              type="button"
-              className="chatgpt-sidebar__icon-button"
-              onClick={toggleSidebarCollapsed}
-              aria-label={isSidebarCollapsed ? (locale === "zh" ? "展开侧边栏" : "Expand sidebar") : (locale === "zh" ? "收起侧边栏" : "Collapse sidebar")}
-              title={isSidebarCollapsed ? (locale === "zh" ? "展开侧边栏" : "Expand sidebar") : (locale === "zh" ? "收起侧边栏" : "Collapse sidebar")}
-            >
-              {isSidebarCollapsed ? <PanelLeftOpen size={17} /> : <PanelLeftClose size={17} />}
-            </button>
-          </div>
-
-          <button
-            type="button"
-            className={`chatgpt-sidebar__new-chat ${isSidebarCollapsed ? "is-collapsed" : ""} ${canStartNewConversation ? "" : "is-empty-session"} ${!isImageManagementView && activeUtilityPanel === null ? "is-active" : ""}`}
-            onClick={handleResetWorkspace}
-            disabled={isRendering}
-            title={!canStartNewConversation
-              ? (locale === "zh" ? "当前已经是空白新对话；点击可清空草稿并聚焦输入框" : "Current chat is already blank; click to clear draft state and focus the composer")
-              : (locale === "zh" ? "新建对话" : "Start a new chat")}
-          >
-            <Plus size={15} />
-            {!isSidebarCollapsed && <span>{locale === "zh" ? "新对话" : "New chat"}</span>}
-          </button>
-
-          <div className="chatgpt-sidebar__section chatgpt-sidebar__nav">
-            {!isSidebarCollapsed && <p className="chatgpt-sidebar__label">{locale === "zh" ? "主导航" : "Primary nav"}</p>}
-            <button
-              type="button"
-              className={`${isImageManagementView ? "is-active" : ""} ${isSidebarCollapsed ? "is-icon-only" : ""}`}
-              onClick={openImageManagementView}
-              title={locale === "zh" ? "图片管理" : "Image management"}
-            >
-              <span className="chatgpt-sidebar__tool-icon">
-                <ImagePlus size={15} />
-              </span>
-              {!isSidebarCollapsed && (
-                <span className="chatgpt-sidebar__tool-copy">
-                  <strong>{locale === "zh" ? "图片管理" : "Image management"}</strong>
-                  <small>{locale === "zh" ? `管理 ${renderHistory.length} 张历史生成图` : `Manage ${renderHistory.length} generated images`}</small>
-                </span>
-              )}
-            </button>
-          </div>
-
-          {!isSidebarCollapsed && (
-            <div className={`chatgpt-sidebar__section chatgpt-sidebar__history ${isChatHistoryOpen ? "is-open" : "is-collapsed"}`}>
-              <button
-                type="button"
-                className="chatgpt-sidebar__history-toggle"
-                aria-expanded={isChatHistoryOpen}
-                onClick={() => setIsChatHistoryOpen((current) => !current)}
-              >
-                <span>{locale === "zh" ? "历史聊天" : "Chat history"}</span>
-                <small>{sidebarHistoryTotal}</small>
-                <ChevronDown size={14} />
-              </button>
-              {isChatHistoryOpen && (
-                <>
-                  <label className="chatgpt-sidebar__history-search">
-                    <Search size={14} aria-hidden="true" />
-                    <input
-                      value={chatHistoryQuery}
-                      onChange={(event) => setChatHistoryQuery(event.target.value)}
-                      placeholder={locale === "zh" ? "搜索历史聊天" : "Search history"}
-                    />
-                  </label>
-                  {sidebarHistoryItems.length === 0 ? (
-                    <div className="chatgpt-sidebar__empty">
-                      {normalizedHistoryQuery
-                        ? locale === "zh" ? "没有匹配的历史聊天" : "No matching chat history"
-                        : locale === "zh" ? "还没有历史聊天" : "No chat history yet"}
-                    </div>
-                  ) : (
-                    sidebarHistoryItems.map((item) => {
-                      const isRenaming = renamingSessionId === item.id;
-                      return (
-                        <div
-                          className={`chatgpt-sidebar__history-item ${currentSessionId === item.id ? "is-active" : ""} ${activeHistoryMenuId === item.id ? "has-menu" : ""}`}
-                          key={item.id}
-                        >
-                          {isRenaming ? (
-                            <form
-                              className="chatgpt-sidebar__history-rename"
-                              onSubmit={(event) => {
-                                event.preventDefault();
-                                commitRenameSession(item.id);
-                              }}
-                            >
-                              <input
-                                value={renameDraft}
-                                onChange={(event) => setRenameDraft(event.target.value)}
-                                onBlur={() => commitRenameSession(item.id)}
-                                onKeyDown={(event) => {
-                                  if (event.key === "Escape") {
-                                    event.preventDefault();
-                                    setRenamingSessionId(null);
-                                    setRenameDraft("");
-                                  }
-                                }}
-                                aria-label={locale === "zh" ? "重命名聊天" : "Rename chat"}
-                                autoFocus
-                              />
-                            </form>
-                          ) : (
-                            <button
-                              type="button"
-                              className="chatgpt-sidebar__history-open"
-                              onClick={() => handleOpenSession(item.id)}
-                            >
-                              <span className="chatgpt-sidebar__history-title">
-                                {item.pinnedAt && <Pin size={12} aria-hidden="true" />}
-                                {sessionDisplayTitle(item)}
-                              </span>
-                              <small>{new Date(item.updatedAt).toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</small>
-                            </button>
-                          )}
-                          {!isRenaming && (
-                            <button
-                              type="button"
-                              className="chatgpt-sidebar__history-more"
-                              onClick={(event) => handleToggleHistoryMenu(item.id, event.currentTarget)}
-                              aria-expanded={activeHistoryMenuId === item.id}
-                              aria-label={locale === "zh" ? "聊天操作" : "Chat actions"}
-                            >
-                              <MoreHorizontal size={16} />
-                            </button>
-                          )}
-                          {activeHistoryMenuId === item.id && (
-                            <div
-                              className="chatgpt-sidebar__history-menu"
-                              role="menu"
-                              style={historyMenuPosition
-                                ? { top: historyMenuPosition.top, left: historyMenuPosition.left }
-                                : undefined}
-                            >
-                              <button type="button" role="menuitem" onClick={() => handleStartRenameSession(item)}>
-                                <Edit3 size={16} />
-                                <span>{locale === "zh" ? "重命名" : "Rename"}</span>
-                              </button>
-                              <button type="button" role="menuitem" onClick={() => handleTogglePinSession(item.id)}>
-                                <Pin size={16} />
-                                <span>{item.pinnedAt
-                                  ? locale === "zh" ? "取消置顶" : "Unpin chat"
-                                  : locale === "zh" ? "置顶聊天" : "Pin chat"}</span>
-                              </button>
-                              <div className="chatgpt-sidebar__history-menu-separator" />
-                              <button type="button" role="menuitem" className="is-danger" onClick={() => handleDeleteSession(item.id)}>
-                                <Trash2 size={16} />
-                                <span>{locale === "zh" ? "删除" : "Delete"}</span>
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })
-                  )}
-                </>
-              )}
-            </div>
-          )}
-
-          <div className="chatgpt-sidebar__footer" ref={accountMenuRef}>
-            <button
-              type="button"
-              className={`chatgpt-sidebar__account-button ${isAccountMenuOpen ? "is-open" : ""} ${isSidebarCollapsed ? "is-collapsed" : ""}`}
-              onClick={toggleAccountMenu}
-              aria-expanded={isAccountMenuOpen}
-              title={authUser ? undefined : (locale === "zh" ? "登录" : "Sign in")}
-            >
-              <span className="chatgpt-sidebar__account-avatar">
-                {authUser?.username?.slice(0, 1).toUpperCase() || <User size={15} />}
-              </span>
-              {!isSidebarCollapsed && (
-                <>
-                  <span className="chatgpt-sidebar__account-copy">
-                    <strong>{authUser?.username || (locale === "zh" ? "未登录" : "Guest")}</strong>
-                    <small>{isSettingsPanel(activeUtilityPanel) ? (locale === "zh" ? "设置已打开" : "Settings open") : (locale === "zh" ? "账户与设置" : "Account & settings")}</small>
-                  </span>
-                  <ChevronDown size={15} />
-                </>
-              )}
-            </button>
-            {isAccountMenuOpen && authUser && (
-              <div className={`chatgpt-sidebar__account-menu ${isSidebarCollapsed ? "is-collapsed" : ""}`} role="menu" aria-label={locale === "zh" ? "账户菜单" : "Account menu"}>
-                <button type="button" className="chatgpt-sidebar__account-summary" role="menuitem">
-                  <span className="chatgpt-sidebar__account-avatar">{authUser.username.slice(0, 1).toUpperCase()}</span>
-                  <span className="chatgpt-sidebar__account-copy">
-                    <strong>{authUser.username}</strong>
-                    <small>{currentHeaderModelLabel}</small>
-                  </span>
-                  <ChevronDown size={15} />
-                </button>
-                <div className="chatgpt-sidebar__account-menu-separator" />
-                <button type="button" className={activeUtilityPanel === "preferences" ? "is-active" : ""} role="menuitem" onClick={() => openSettingsPanel("preferences")}>
-                  <User size={16} />
-                  <span>{locale === "zh" ? "个性化" : "Personalization"}</span>
-                </button>
-                <button type="button" className={activeUtilityPanel === "setup" ? "is-active" : ""} role="menuitem" onClick={() => openSettingsPanel("setup")}>
-                  <SlidersHorizontal size={16} />
-                  <span>{locale === "zh" ? "设置" : "Settings"}</span>
-                </button>
-                <button type="button" className={activeUtilityPanel === "generation" ? "is-active" : ""} role="menuitem" onClick={() => openSettingsPanel("generation")}>
-                  <Aperture size={16} />
-                  <span>{locale === "zh" ? "模型与出图" : "Models & generation"}</span>
-                </button>
-                <button type="button" className={activeUtilityPanel === "analysis" ? "is-active" : ""} role="menuitem" onClick={() => openSettingsPanel("analysis")}>
-                  <Sparkles size={16} />
-                  <span>{locale === "zh" ? "高级功能" : "Advanced"}</span>
-                </button>
-                <button type="button" className={activeUtilityPanel === "prompts" ? "is-active" : ""} role="menuitem" onClick={() => openSettingsPanel("prompts")}>
-                  <FileText size={16} />
-                  <span>{locale === "zh" ? "提示词设置" : "Prompt settings"}</span>
-                </button>
-                <div className="chatgpt-sidebar__account-menu-separator" />
-                <button type="button" role="menuitem" onClick={() => openSettingsPanel("setup")}>
-                  <CircleHelp size={16} />
-                  <span>{locale === "zh" ? "帮助与配置" : "Help & setup"}</span>
-                </button>
-                <button type="button" className="is-danger" role="menuitem" onClick={() => void handleLogout()}>
-                  <LogOut size={16} />
-                  <span>{locale === "zh" ? "退出登录" : "Log out"}</span>
-                </button>
-              </div>
-            )}
-          </div>
-
-        </aside>
+        <ChatSidebar
+          locale={locale}
+          appName={t.appName}
+          isSidebarCollapsed={isSidebarCollapsed}
+          canStartNewConversation={canStartNewConversation}
+          isRendering={isRendering}
+          isChatHistoryOpen={isChatHistoryOpen}
+          historyTotal={sidebarHistoryTotal}
+          historyGroups={sidebarHistoryViewGroups}
+          renameDraft={renameDraft}
+          historyMenuStyle={historyMenuPosition ?? undefined}
+          authUsername={authUser?.username}
+          currentModelLabel={currentHeaderModelLabel}
+          isAccountMenuOpen={isAccountMenuOpen}
+          isSettingsActive={isSettingsPanel(activeUtilityPanel)}
+          primaryActions={sidebarPrimaryActions}
+          onToggleSidebar={toggleSidebarCollapsed}
+          onNewChat={handleResetWorkspace}
+          onOpenChatSearch={openChatSearch}
+          onToggleChatHistory={() => setIsChatHistoryOpen((current) => !current)}
+          onRenameDraftChange={setRenameDraft}
+          onCommitRename={commitRenameSession}
+          onCancelRename={() => {
+            setRenamingSessionId(null);
+            setRenameDraft("");
+          }}
+          onToggleAccountMenu={toggleAccountMenu}
+          onOpenSettingsPanel={openSettingsPanel}
+          onLogout={() => void handleLogout()}
+          accountMenuRef={accountMenuRef}
+        />
 
         <section className={`chatgpt-main ${isImageManagementView ? "chatgpt-main--management" : ""} ${isEmptyConversation && !isImageManagementView ? "chatgpt-main--empty-conversation" : ""}`}>
           {isImageManagementView ? (
@@ -5151,134 +5623,43 @@ function App() {
             />
           ) : (
             <>
-          <header className={`chatgpt-main__header chatgpt-main__header--${workspaceMode}`}>
-            <button
-              type="button"
-              className="chatgpt-main__model-pill"
-              onClick={() => openSettingsPanel(isChatWorkspace ? "setup" : "generation")}
-              title={locale === "zh" ? "查看当前模型设置" : "View current model setup"}
-            >
-              <Aperture size={15} />
-              <span className="chatgpt-main__model-pill-copy">
-                <strong title={currentHeaderModelLabel}>{currentHeaderModelLabel}</strong>
-                <small>{composerMode === "edit-selected-result" && isImageWorkspace ? (locale === "zh" ? "继续改图" : "Editing source") : currentWorkspaceLabel}</small>
-              </span>
-              <StatusBadge tone={isVisibleRendering ? "warn" : hasRunFailure ? "warn" : "good"}>{projectState}</StatusBadge>
-            </button>
-            <div className="workspace-mode-toggle" aria-label={locale === "zh" ? "工作区模式" : "Workspace mode"}>
-              <button
-                type="button"
-                className={workspaceMode === "chat" ? "is-active" : ""}
-                aria-pressed={workspaceMode === "chat"}
-                onClick={() => switchWorkspaceMode("chat")}
-                disabled={isVisibleConversationBusy}
-              >
-                <MessageCircle size={14} />
-                {locale === "zh" ? "聊天" : "Chat"}
-              </button>
-              <button
-                type="button"
-                className={workspaceMode === "image" ? "is-active" : ""}
-                aria-pressed={workspaceMode === "image"}
-                onClick={() => switchWorkspaceMode("image")}
-                disabled={isVisibleConversationBusy}
-              >
-                <Camera size={14} />
-                {locale === "zh" ? "图像" : "Image"}
-              </button>
-            </div>
-            <div className={`chatgpt-main__actions chatgpt-main__actions--${workspaceMode}`}>
-              <div className="chatgpt-main__action-group">
-                {isImageWorkspace && composerMode === "edit-selected-result" && (
-                  <button
-                    type="button"
-                    onClick={handleNewGenerationMode}
-                    aria-label={locale === "zh" ? "回到新生成" : "Back to new generation"}
-                    title={locale === "zh" ? "回到新生成" : "Back to new generation"}
-                  >
-                    <RotateCcw size={14} />
-                    <span className="chatgpt-main__action-label">{locale === "zh" ? "回到新生成" : "Back to new"}</span>
-                  </button>
-                )}
-                {isImageWorkspace && (
-                  <div className="quick-phrase-popover">
-                    <div className="quick-phrase-popover__actions">
-                      <button
-                        type="button"
-                        className={activeUtilityPanel === "shortcuts" ? "is-active" : ""}
-                        onClick={() => toggleUtilityPanel("shortcuts")}
-                        aria-label={locale === "zh" ? "管理快捷短语" : "Manage shortcut phrases"}
-                        title={locale === "zh" ? "自定义、编辑或删除快捷短语" : "Customize, edit, or delete shortcut phrases"}
-                      >
-                        <Edit3 size={14} />
-                        <span className="chatgpt-main__action-label">{locale === "zh" ? "管理短语" : "Manage phrases"}</span>
-                      </button>
-                      {composerMode === "new-generation" && shortcutPhrases.length > 0 && (
-                        <button
-                          type="button"
-                          className={isQuickPhraseCardOpen ? "is-active" : ""}
-                          onClick={() => {
-                            setActivePrimaryView("workspace");
-                            setActiveUtilityPanel(null);
-                            setIsAccountMenuOpen(false);
-                            setIsQuickPhraseCardOpen((current) => !current);
-                          }}
-                          aria-expanded={isQuickPhraseCardOpen}
-                          aria-label={locale === "zh" ? "展开快捷短语" : "Open quick phrases"}
-                          title={locale === "zh" ? "展开快捷短语" : "Open quick phrases"}
-                        >
-                          <Clipboard size={14} />
-                          <span className="chatgpt-main__action-label">{locale === "zh" ? "快捷短语" : "Quick phrases"}</span>
-                        </button>
-                      )}
-                    </div>
-                    {isQuickPhraseCardOpen && composerMode === "new-generation" && shortcutPhrases.length > 0 && (
-                      <div className="quick-phrase-card" role="dialog" aria-label={locale === "zh" ? "快捷短语" : "Quick phrases"}>
-                        <div className="quick-phrase-card__list">
-                          {shortcutPhrases.slice(0, QUICK_PHRASE_VISIBLE_LIMIT).map((item) => {
-                            const text = shortcutText(item);
-                            return (
-                              <button type="button" key={item.id} onClick={() => handleInsertQuickPhrase(text)} title={locale === "zh" ? "插入快捷短语" : "Insert shortcut phrase"}>
-                                {text}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              {isImageWorkspace && (
-                <div className="chatgpt-main__action-group chatgpt-main__action-group--result">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenResult(activeResult)}
-                    disabled={!activeResult?.imageUrl}
-                    aria-label={locale === "zh" ? "预览当前结果" : "Preview current result"}
-                    title={locale === "zh" ? "预览当前结果" : "Preview current result"}
-                  >
-                    <Eye size={14} />
-                    <span className="chatgpt-main__action-label">{locale === "zh" ? "预览" : "Preview"}</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenComparison()}
-                    disabled={!canCompareActiveResult}
-                    aria-label={locale === "zh" ? "对比当前结果" : "Compare current result"}
-                    title={locale === "zh" ? "对比当前结果" : "Compare current result"}
-                  >
-                    <FileText size={14} />
-                    <span className="chatgpt-main__action-label">{locale === "zh" ? "对比" : "Compare"}</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          </header>
+          <WorkspaceTopbar
+            locale={locale}
+            workspaceMode={workspaceMode}
+            isConversationBusy={isVisibleConversationBusy}
+            currentModelLabel={currentHeaderModelLabel}
+            currentSubLabel={currentHeaderSubLabel}
+            projectState={projectState}
+            projectStateTone={projectStateTone}
+            headerActions={headerPrimaryActions}
+            composerMode={composerMode}
+            isQuickPhraseCardOpen={isQuickPhraseCardOpen}
+            quickPhrases={quickPhraseViewItems}
+            quickPhraseLimit={QUICK_PHRASE_VISIBLE_LIMIT}
+            activeUtilityPanel={activeUtilityPanel}
+            activeResult={activeResult}
+            canCompareActiveResult={canCompareActiveResult}
+            onOpenModelSettings={() => openSettingsPanel("setup")}
+            onSwitchWorkspaceMode={switchWorkspaceMode}
+            onNewGenerationMode={handleNewGenerationMode}
+            onToggleShortcutDrawer={() => toggleUtilityPanel("shortcuts")}
+            onToggleQuickPhraseCard={() => {
+              setActivePrimaryView("workspace");
+              setActiveUtilityPanel(null);
+              setIsAccountMenuOpen(false);
+              setIsQuickPhraseCardOpen((current) => !current);
+            }}
+            onInsertQuickPhrase={handleInsertQuickPhrase}
+            onOpenResult={handleOpenResult}
+            onOpenComparison={() => handleOpenComparison()}
+          />
 
-          <div className={`chatgpt-thread ${isEmptyConversation ? "is-empty" : ""}`} aria-label={t.designChat} ref={chatThreadRef}>
+          <div className={`chatgpt-thread chat-shell ${isEmptyConversation ? "is-empty" : ""}`} aria-label={t.designChat} ref={chatThreadRef}>
             {isEmptyConversation ? (
-              null
+              <EmptyConversationState
+                locale={locale}
+                cards={emptyPromptStarterCards}
+              />
             ) : (
               <>
                 {isVisibleRendering && (
@@ -5288,6 +5669,10 @@ function App() {
                       <div className="generation-progress-head">
                         <strong>{locale === "zh" ? "后端正在执行生成流程" : "Backend generation is running"}</strong>
                         <span>{generationElapsedLabel}</span>
+                      </div>
+                      <div className="generation-progress-status">
+                        <Sparkles size={14} aria-hidden="true" />
+                        <span>{locale === "zh" ? "正在画图中，未卡住" : "Drawing in progress, not stuck"}</span>
                       </div>
                       <p>
                         {locale === "zh"
@@ -5572,240 +5957,64 @@ function App() {
             )}
           </div>
 
-          <form className={`chatgpt-composer ${isEmptyConversation ? "chatgpt-composer--empty-conversation" : ""}`} onSubmit={handleComposerSubmit}>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              style={{ display: "none" }}
-              onChange={(e) => {
-                if (e.target.files && e.target.files.length > 0) {
-                  setComposerImageAttachments(e.target.files, true);
-                  e.target.value = "";
-                }
-              }}
-            />
-            {isEmptyConversation && (
-              <div className="chatgpt-composer__empty-title">
-                <h1>{locale === "zh" ? "我们先从哪里开始呢？" : "Where shall we start?"}</h1>
-              </div>
-            )}
-
-            <div className={`chatgpt-composer__bar ${isChatWorkspace ? "chatgpt-composer__bar--chat" : ""} ${(selectedEditSourceLabel || floorPlanFiles.length > 0) ? "chatgpt-composer__bar--has-attachments" : ""}`}>
-              {(selectedEditSourceLabel || floorPlanFiles.length > 0) && (
-                <div className="chatgpt-composer__attachments-inner" aria-label={locale === "zh" ? "已添加的图片" : "Attached images"}>
-                  {selectedEditSourceLabel && <span className="chatgpt-chip chatgpt-chip--accent">{selectedEditSourceLabel}</span>}
-                  {floorPlanPreviews.slice(0, 4).map((file, index) => (
-                    <div
-                      className="chatgpt-composer__attachment-card"
-                      key={file.url}
-                    >
-                      <div className="chatgpt-composer__attachment-card-header">
-                        <img src={file.url} alt={file.name} className="chatgpt-composer__attachment-card-thumb" />
-                        <span className="chatgpt-composer__attachment-card-name">{file.name}</span>
-                        <button
-                          type="button"
-                          className="chatgpt-composer__attachment-card-close"
-                          onClick={() => removeFloorPlan(index)}
-                          title={locale === "zh" ? "移除" : "Remove"}
-                        >
-                          <X size={14} />
-                        </button>
-                      </div>
-                      <img src={file.url} alt={file.name} className="chatgpt-composer__attachment-card-preview" />
-                    </div>
-                  ))}
-                  {floorPlanPreviews.length > 4 && <span className="chatgpt-chip">+{floorPlanPreviews.length - 4}</span>}
-                </div>
-              )}
-              {isEmptyConversation && (
-                <button
-                  type="button"
-                  className="chatgpt-composer__plus-btn"
-                  onClick={() => fileInputRef.current?.click()}
-                  title={locale === "zh" ? "上传文件" : "Upload file"}
-                >
-                  <Plus size={18} />
-                </button>
-              )}
-              <textarea
-                ref={composerRef}
-                name="composer_text"
-                className={chatInput.trim().length > 900 ? "is-long-draft" : ""}
-                value={chatInput}
-                onChange={handleComposerInputChange}
-                onKeyDown={handleComposerKeyDown}
-                onPaste={handleComposerPaste}
-                placeholder={visibleComposerPlaceholder}
-                rows={1}
-                aria-label={visibleComposerPlaceholder}
-              />
-              <div className="chatgpt-composer__inline-actions">
-                {!isEmptyConversation && (
-                  <span className="chatgpt-composer__provider-badge" title={composerProviderLabel}>
-                    <PlugZap size={14} aria-hidden="true" />
-                    <span>{composerProviderLabel}</span>
-                  </span>
-                )}
-                {isEmptyConversation ? (
-                  <>
-                    <select
-                      className="chatgpt-composer__model-select"
-                      value={composerModelValue}
-                      onChange={(event) => handleComposerModelChange(event.target.value)}
-                      disabled={isVisibleConversationBusy}
-                      aria-label={isChatWorkspace ? (locale === "zh" ? "聊天模型" : "Chat model") : (locale === "zh" ? "图像模型" : "Image model")}
-                      title={isChatWorkspace ? (locale === "zh" ? "切换聊天模型" : "Switch chat model") : (locale === "zh" ? "切换图像模型" : "Switch image model")}
-                    >
-                      {!composerModelValue && (
-                        <option value="">{locale === "zh" ? "选择模型" : "Select model"}</option>
-                      )}
-                      {composerModelOptions.map((model) => (
-                        <option key={model} value={model}>{model}</option>
-                      ))}
-                    </select>
-                    {isChatWorkspace && (
-                      <select
-                        className="chatgpt-composer__effort-select"
-                        value={chatReasoningEffort}
-                        onChange={(event) => setChatReasoningEffort(event.target.value as ChatReasoningEffort)}
-                        disabled={isVisibleChatResponding}
-                        aria-label={locale === "zh" ? "思考强度" : "Reasoning effort"}
-                        title={locale === "zh" ? "切换回复深度" : "Switch response depth"}
-                      >
-                        {chatReasoningEffortOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {locale === "zh" ? `思考 ${option.zh}` : `Effort ${option.en}`}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    <button
-                      type="button"
-                      className="chatgpt-composer__mic-btn"
-                      title={locale === "zh" ? "语音输入" : "Voice input"}
-                    >
-                      <Mic size={18} />
-                    </button>
-                    <button
-                      type={composerIsStopping ? "button" : "submit"}
-                      className="chatgpt-composer__send"
-                      disabled={composerIsStopping ? false : !canSubmitComposer}
-                      aria-busy={isVisibleConversationBusy}
-                      onClick={composerIsStopping ? stopCurrentChatResponse : undefined}
-                      title={composerIsStopping ? composerStopTitle : (isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
-                    >
-                      {composerIsStopping ? <Square size={16} /> : <AudioLines size={18} />}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <select
-                      className="chatgpt-composer__model-select"
-                      value={composerModelValue}
-                      onChange={(event) => handleComposerModelChange(event.target.value)}
-                      disabled={isVisibleConversationBusy}
-                      aria-label={isChatWorkspace ? (locale === "zh" ? "聊天模型" : "Chat model") : (locale === "zh" ? "图像模型" : "Image model")}
-                      title={isChatWorkspace ? (locale === "zh" ? "切换聊天模型" : "Switch chat model") : (locale === "zh" ? "切换图像模型" : "Switch image model")}
-                    >
-                      {!composerModelValue && (
-                        <option value="">{locale === "zh" ? "选择模型" : "Select model"}</option>
-                      )}
-                      {composerModelOptions.map((model) => (
-                        <option key={model} value={model}>{model}</option>
-                      ))}
-                    </select>
-                    {isChatWorkspace && (
-                      <select
-                        className="chatgpt-composer__effort-select"
-                        value={chatReasoningEffort}
-                        onChange={(event) => setChatReasoningEffort(event.target.value as ChatReasoningEffort)}
-                        disabled={isVisibleChatResponding}
-                        aria-label={locale === "zh" ? "思考强度" : "Reasoning effort"}
-                        title={locale === "zh" ? "切换回复深度" : "Switch response depth"}
-                      >
-                        {chatReasoningEffortOptions.map((option) => (
-                          <option key={option.value} value={option.value}>
-                            {locale === "zh" ? `思考 ${option.zh}` : `Effort ${option.en}`}
-                          </option>
-                        ))}
-                      </select>
-                    )}
-                    <button
-                      type={composerIsStopping ? "button" : "submit"}
-                      className="chatgpt-composer__send"
-                      disabled={composerIsStopping ? false : !canSubmitComposer}
-                      aria-busy={isVisibleConversationBusy}
-                      onClick={composerIsStopping ? stopCurrentChatResponse : undefined}
-                      title={composerIsStopping ? composerStopTitle : (isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
-                    >
-                      {composerIsStopping ? <Square size={15} /> : <Send size={16} />}
-                    </button>
-                  </>
-                )}
-              </div>
-            </div>
-
-            {isEmptyConversation && (
-              <div className="chatgpt-empty__suggestions" aria-label={locale === "zh" ? "快速开始" : "Quick starts"}>
-                <button type="button" onClick={() => isImageWorkspace ? composerRef.current?.focus() : switchWorkspaceMode("image")}>
-                  <ImagePlus size={18} />
-                  {locale === "zh" ? "生成图片" : "Generate image"}
-                </button>
-                <button type="button" onClick={() => composerRef.current?.focus()}>
-                  <Edit3 size={18} />
-                  {locale === "zh" ? "撰写或编辑" : "Write or edit"}
-                </button>
-                <button type="button" onClick={openImageManagementView}>
-                  <Search size={18} />
-                  {locale === "zh" ? "查找资料" : "Find references"}
-                </button>
-              </div>
-            )}
-
-            {isImageWorkspace && (
-              <div className="chatgpt-composer__meta">
-                <div className="chatgpt-composer__mode-row">
-                  {composerMode === "new-generation" ? promptModeOptions.map((option) => (
-                    <button
-                      type="button"
-                      key={option.id}
-                      className={visibleSelectedPromptModeId === option.id ? "is-active" : ""}
-                      aria-pressed={visibleSelectedPromptModeId === option.id}
-                      onClick={() => selectPromptMode(option.id)}
-                      disabled={isRendering}
-                      title={option.description || (locale === "zh" ? option.zh : option.en)}
-                    >
-                      {locale === "zh" ? option.zh : option.en}
-                    </button>
-                  )) : (
-                    <button type="button" className="is-active" onClick={handleNewGenerationMode}>
-                      {locale === "zh" ? "切回新生成" : "Back to new"}
-                    </button>
-                  )}
-                </div>
-                {composerMode === "new-generation" && !canSubmitComposer && <span className="chatgpt-mode-note">{promptModeHint}</span>}
-                {composerMode === "new-generation" && floorPlanFiles.length > 0 && (
-                  <div className="chatgpt-composer__utility-row">
-                    <button
-                      type="button"
-                      className="chatgpt-tool-action"
-                      onClick={handleRunColoredFloorPlanTool}
-                      disabled={isConversationBusy || Boolean(coloredFloorPlanActionBlocker)}
-                      title={coloredFloorPlanActionBlocker || (locale === "zh" ? "用当前平面图直接生成彩色平面图，输入框文字只作为补充偏好" : "Generate a colored floor plan from the current attachment; composer text is only an optional preference")}
-                    >
-                      <Aperture size={14} />
-                      {locale === "zh" ? "彩色平面图" : "Colored plan"}
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {!canSubmitComposer && <p className="composer-hint">{composerHint}</p>}
-
-          </form>
+          <ChatComposer
+            locale={locale}
+            isEmptyConversation={isEmptyConversation}
+            isChatWorkspace={isChatWorkspace}
+            isImageWorkspace={isImageWorkspace}
+            isImageModeActive={isImageWorkspace}
+            composerMode={composerMode}
+            chatInput={chatInput}
+            visibleComposerPlaceholder={visibleComposerPlaceholder}
+            selectedEditSourceLabel={selectedEditSourceLabel}
+            floorPlanPreviews={floorPlanPreviews}
+            floorPlanExtraCount={Math.max(0, floorPlanPreviews.length - 4)}
+            composerProviderLabel={composerProviderLabel}
+            showProviderBadge={!isEmptyConversation}
+            composerModelValue={composerModelValue}
+            composerModelOptions={composerModelOptions}
+            chatReasoningEffort={chatReasoningEffort}
+            chatReasoningEffortOptions={chatReasoningEffortOptions}
+            isVisibleConversationBusy={isVisibleConversationBusy}
+            isVisibleChatResponding={isVisibleChatResponding}
+            composerIsStopping={composerIsStopping}
+            composerStopTitle={composerStopTitle}
+            composerSubmitTitle={(isChatWorkspace ? chatBlocker : generationBlocker) || composerSubmitShortcutHint}
+            canSubmitComposer={canSubmitComposer}
+            promptModeOptions={promptModeOptions}
+            visibleSelectedPromptModeId={visibleSelectedPromptModeId}
+            isRendering={isRendering}
+            canRunColoredFloorPlan={composerMode === "new-generation" && floorPlanFiles.length > 0}
+            coloredFloorPlanTitle={coloredFloorPlanActionBlocker || (locale === "zh" ? "????????????????????????????" : "Generate a colored floor plan from the current attachment; composer text is only an optional preference")}
+            fileInputRef={fileInputRef}
+            composerRef={composerRef}
+            onSubmit={handleComposerSubmit}
+            onFileChange={(event) => {
+              if (event.target.files && event.target.files.length > 0) {
+                setComposerImageAttachments(event.target.files, true);
+                event.target.value = "";
+              }
+            }}
+            onRemoveFloorPlan={removeFloorPlan}
+            onComposerInputChange={handleComposerInputChange}
+            onComposerKeyDown={handleComposerKeyDown}
+            onComposerPaste={handleComposerPaste}
+            onAttach={() => fileInputRef.current?.click()}
+            onSwitchImageMode={() => {
+              if (!isImageWorkspace) {
+                switchWorkspaceMode("image");
+              } else {
+                window.setTimeout(() => composerRef.current?.focus(), 0);
+              }
+            }}
+            onToggleReasoning={() => setChatReasoningEffort((current) => current === "high" ? "medium" : "high")}
+            onComposerModelChange={handleComposerModelChange}
+            onReasoningEffortChange={setChatReasoningEffort}
+            onStop={stopCurrentChatResponse}
+            onSelectPromptMode={(modeId) => selectPromptMode(modeId as PromptModeId)}
+            onNewGenerationMode={handleNewGenerationMode}
+            onRunColoredFloorPlan={handleRunColoredFloorPlanTool}
+          />
             </>
           )}
         </section>
@@ -5828,24 +6037,25 @@ function App() {
           >
             <div className="chatgpt-drawer__header">
               <div>
-                <h2>{utilityPanelTitles[activeUtilityPanel]}</h2>
-                <p>{settingsPanelDescriptions[activeUtilityPanel]}</p>
+                <h2>{isSettingsDialogOpen ? settingsDialogTitle : utilityPanelTitles[activeUtilityPanel]}</h2>
+                <p>{isSettingsDialogOpen ? settingsDialogDescription : settingsPanelDescriptions[activeUtilityPanel]}</p>
               </div>
               <button type="button" onClick={() => setActiveUtilityPanel(null)} aria-label={locale === "zh" ? "关闭设置面板" : "Close settings panel"}>
                 <X size={16} />
               </button>
             </div>
 
-            <div className="chatgpt-drawer__content">
+            <div className="chatgpt-drawer__content settings-shell">
               {activeUtilityPanel !== "shortcuts" && (
-                <nav className="chatgpt-drawer__nav" aria-label={locale === "zh" ? "设置分类" : "Settings sections"}>
+                <nav className="chatgpt-drawer__nav settings-nav" aria-label={locale === "zh" ? "设置分类" : "Settings sections"}>
                   {settingsPanelItems.map((item) => {
                     const Icon = item.icon;
                     return (
                       <button
                         key={item.panel}
                         type="button"
-                        className={activeUtilityPanel === item.panel ? "is-active" : ""}
+                        className={`settings-tab ${activeUtilityPanel === item.panel ? "is-active active" : ""}`}
+                        data-settings-tab={item.panel}
                         onClick={() => openSettingsPanel(item.panel)}
                       >
                         <Icon size={14} />
@@ -5856,7 +6066,13 @@ function App() {
                 </nav>
               )}
               {activeUtilityPanel === "analysis" && (
-                <div className="chatgpt-drawer__stack">
+                <div className="chatgpt-drawer__stack settings-content settings-pane active" data-settings-pane="analysis">
+                  {activeSettingsSection && (
+                    <div className="chatgpt-drawer__section-head">
+                      <h3>{activeSettingsSection.title}</h3>
+                      <p>{activeSettingsSection.description}</p>
+                    </div>
+                  )}
                   <div className={`quality-toggle-card ${enableQualityEvaluation ? "quality-toggle-card--active" : ""}`}>
                     <div>
                       <div className="section-title">
@@ -5878,6 +6094,77 @@ function App() {
                       <CheckCircle2 size={14} />
                       {enableQualityEvaluation ? (locale === "zh" ? "本次启用" : "Enabled") : (locale === "zh" ? "启用严格复核" : "Enable")}
                     </button>
+                  </div>
+
+                  <div className="control-section">
+                    <div className="section-title">
+                      <SlidersHorizontal size={14} />
+                      {locale === "zh" ? "出图运行控制" : "Image run controls"}
+                    </div>
+                    <p className="config-hint">
+                      {locale === "zh"
+                        ? "这里的改动会直接影响下一次出图；如需长期保存默认模型，请到“供应商与模型”里保存配置。"
+                        : "Changes here affect the next image run immediately. Save defaults in Providers & models."}
+                    </p>
+                    <label className="select-row">
+                      <span>
+                        <Box size={15} />
+                        {locale === "zh" ? "画图模型" : "Image model"}
+                      </span>
+                      <span className="select-shell select-shell--input">
+                        <input
+                          name="selected_model"
+                          list="image-model-options"
+                          value={selectedModel}
+                          onChange={(event) => handleSelectedModelChange(event.target.value)}
+                          placeholder={locale === "zh" ? "输入模型名" : "Type model name"}
+                          aria-label={locale === "zh" ? "画图模型" : "Image model"}
+                        />
+                        <datalist id="image-model-options">
+                          {modelOptions.map((model) => (
+                            <option key={model} value={model} />
+                          ))}
+                        </datalist>
+                      </span>
+                    </label>
+                    <label className="select-row select-row--stacked">
+                      <span>
+                        <RotateCcw size={15} />
+                        {t.modelFallback}
+                      </span>
+                      <span className="select-shell select-shell--input select-shell--wide">
+                        <input
+                          name="fallback_models"
+                          value={apiConfig.fallbackModels}
+                          onChange={(event) => setApiConfig((current) => ({ ...current, fallbackModels: event.target.value }))}
+                          placeholder={locale === "zh" ? "多个模型用逗号分隔" : "Comma-separated model names"}
+                          aria-label={t.modelFallback}
+                        />
+                      </span>
+                    </label>
+                    <label className="select-row">
+                      <span>
+                        <Clock3 size={15} />
+                        {t.maxIterations}
+                      </span>
+                      <span className="select-shell select-shell--input select-shell--number">
+                        <input
+                          name="max_iterations"
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          min={1}
+                          max={MAX_ITERATIONS_UPPER_BOUND}
+                          value={maxIterationsInput}
+                          onChange={(event) => handleMaxIterationsChange(event.target.value)}
+                          onBlur={commitMaxIterations}
+                          onFocus={(event) => event.currentTarget.select()}
+                          placeholder="5"
+                          aria-label={t.maxIterations}
+                        />
+                        <span className="select-shell__unit">{locale === "zh" ? "轮" : "passes"}</span>
+                      </span>
+                    </label>
                   </div>
 
                   <div className="control-section run-status-panel">
@@ -5935,7 +6222,7 @@ function App() {
               )}
 
               {activeUtilityPanel === "shortcuts" && (
-                <div className="chatgpt-drawer__stack">
+                <div className="chatgpt-drawer__stack settings-content settings-pane active" data-settings-pane="shortcuts">
                   <div className="control-section shortcut-manager">
                     <div className="shortcut-manager__head">
                       <div className="section-title">
@@ -6015,7 +6302,13 @@ function App() {
               )}
 
               {activeUtilityPanel === "preferences" && (
-                <div className="chatgpt-drawer__stack">
+                <div className="chatgpt-drawer__stack settings-content settings-pane active" data-settings-pane="preferences">
+                  {activeSettingsSection && (
+                    <div className="chatgpt-drawer__section-head">
+                      <h3>{activeSettingsSection.title}</h3>
+                      <p>{activeSettingsSection.description}</p>
+                    </div>
+                  )}
                   <div className="control-section">
                     <div className="section-title">
                       <CheckCircle2 size={14} />
@@ -6026,6 +6319,36 @@ function App() {
                         ? "日常聊天记忆只来自你手动确认的“记住”；生图偏好用于辅助图像提示词。"
                         : "Daily chat memory only comes from explicit Remember actions; image preferences support image prompts."}
                     </p>
+                    <div className="memory-create-panel">
+                      <label>
+                        <span>{locale === "zh" ? "新增记忆" : "Add memory"}</span>
+                        <textarea
+                          rows={3}
+                          value={newMemoryDraft.text}
+                          onChange={(event) => setNewMemoryDraft((current) => ({ ...current, text: event.target.value }))}
+                          placeholder={locale === "zh" ? "例如：我喜欢浅色木材和柔和自然光" : "For example: I like pale wood and soft natural light"}
+                        />
+                      </label>
+                      <div className="memory-create-panel__actions">
+                        <label>
+                          <span>{locale === "zh" ? "保存到" : "Save to"}</span>
+                          <select
+                            value={newMemoryDraft.sectionId}
+                            onChange={(event) => setNewMemoryDraft((current) => ({ ...current, sectionId: event.target.value }))}
+                          >
+                            <option value="long_term_preferences">{locale === "zh" ? "生图长期偏好" : "Image preferences"}</option>
+                            <option value="daily_memories">{locale === "zh" ? "日常聊天记忆" : "Daily chat memory"}</option>
+                            <option value="avoid_items">{locale === "zh" ? "避免项" : "Avoid items"}</option>
+                            <option value="project_preferences">{locale === "zh" ? "项目偏好" : "Project preferences"}</option>
+                            <option value="evaluation_standards">{locale === "zh" ? "评判标准" : "Evaluation standards"}</option>
+                          </select>
+                        </label>
+                        <button type="button" onClick={() => void handleCreateMemoryItem()} disabled={memoryActionId === "new-memory"}>
+                          <Plus size={14} />
+                          {memoryActionId === "new-memory" ? (locale === "zh" ? "保存中" : "Saving") : (locale === "zh" ? "添加记忆" : "Add memory")}
+                        </button>
+                      </div>
+                    </div>
                     {memoryView ? (
                       <div className="learned-profile-list">
                         {memoryView.sections.map((section) => {
@@ -6092,79 +6415,14 @@ function App() {
                 </div>
               )}
 
-              {activeUtilityPanel === "generation" && (
-                <div className="chatgpt-drawer__stack">
-                  <div className="control-section">
-                    <p className="config-hint">
-                      {locale === "zh"
-                        ? "这里的改动会直接影响下一次出图；如果你希望长期保留到当前账号，再去“模型与 API”面板保存。"
-                        : "Changes here affect the next image run immediately. Use the Model & API panel if you want to save them for this account."}
-                    </p>
-                    <label className="select-row">
-                      <span>
-                        <Box size={15} />
-                        {locale === "zh" ? "画图模型" : "Image model"}
-                      </span>
-                      <span className="select-shell select-shell--input">
-                        <input
-                          name="selected_model"
-                          list="image-model-options"
-                          value={selectedModel}
-                          onChange={(event) => handleSelectedModelChange(event.target.value)}
-                          placeholder={locale === "zh" ? "输入模型名" : "Type model name"}
-                          aria-label={locale === "zh" ? "画图模型" : "Image model"}
-                        />
-                        <datalist id="image-model-options">
-                          {modelOptions.map((model) => (
-                            <option key={model} value={model} />
-                          ))}
-                        </datalist>
-                      </span>
-                    </label>
-                    <label className="select-row select-row--stacked">
-                      <span>
-                        <RotateCcw size={15} />
-                        {t.modelFallback}
-                      </span>
-                      <span className="select-shell select-shell--input select-shell--wide">
-                        <input
-                          name="fallback_models"
-                          value={apiConfig.fallbackModels}
-                          onChange={(event) => setApiConfig((current) => ({ ...current, fallbackModels: event.target.value }))}
-                          placeholder={locale === "zh" ? "多个模型用逗号分隔" : "Comma-separated model names"}
-                          aria-label={t.modelFallback}
-                        />
-                      </span>
-                    </label>
-                    <label className="select-row">
-                      <span>
-                        <Clock3 size={15} />
-                        {t.maxIterations}
-                      </span>
-                      <span className="select-shell select-shell--input select-shell--number">
-                        <input
-                          name="max_iterations"
-                          type="text"
-                          inputMode="numeric"
-                          pattern="[0-9]*"
-                          min={1}
-                          max={MAX_ITERATIONS_UPPER_BOUND}
-                          value={maxIterationsInput}
-                          onChange={(event) => handleMaxIterationsChange(event.target.value)}
-                          onBlur={commitMaxIterations}
-                          onFocus={(event) => event.currentTarget.select()}
-                          placeholder="5"
-                          aria-label={t.maxIterations}
-                        />
-                        <span className="select-shell__unit">{locale === "zh" ? "轮" : "passes"}</span>
-                      </span>
-                    </label>
-                  </div>
-                </div>
-              )}
-
               {activeUtilityPanel === "setup" && (
-                <div className="chatgpt-drawer__stack">
+                <div className="chatgpt-drawer__stack settings-content settings-pane active" data-settings-pane="setup">
+                  {activeSettingsSection && (
+                    <div className="chatgpt-drawer__section-head">
+                      <h3>{activeSettingsSection.title}</h3>
+                      <p>{activeSettingsSection.description}</p>
+                    </div>
+                  )}
                   <div className="control-section">
                     <button
                       className="config-toggle"
@@ -6526,7 +6784,13 @@ function App() {
               )}
 
               {activeUtilityPanel === "prompts" && (
-                <div className="chatgpt-drawer__stack">
+                <div className="chatgpt-drawer__stack settings-content settings-pane active" data-settings-pane="prompts">
+                  {activeSettingsSection && (
+                    <div className="chatgpt-drawer__section-head">
+                      <h3>{activeSettingsSection.title}</h3>
+                      <p>{activeSettingsSection.description}</p>
+                    </div>
+                  )}
                   <div className="control-section prompt-skill-manager">
                     <div className="shortcut-manager__head">
                       <div className="section-title">
@@ -6773,6 +7037,181 @@ function App() {
               </button>
             </form>
           </div>
+        </div>
+      )}
+      {isChatSearchOpen && (
+        <div className="chat-search-overlay" role="presentation" onClick={() => setIsChatSearchOpen(false)}>
+          <section className="chat-search-modal" role="dialog" aria-modal="true" aria-labelledby="chat-search-title" onClick={(event) => event.stopPropagation()}>
+            <header className="chat-search-modal__head">
+              <div>
+                <h2 id="chat-search-title">{locale === "zh" ? "搜索聊天" : "Search chats"}</h2>
+                <p>{locale === "zh" ? "支持标题模糊搜索，点击结果可快速定位会话。" : "Search titles and message content, then open the matching chat."}</p>
+              </div>
+              <button
+                type="button"
+                className="chat-search-modal__close icon-btn"
+                onClick={() => setIsChatSearchOpen(false)}
+                aria-label={locale === "zh" ? "关闭搜索聊天" : "Close chat search"}
+                title={locale === "zh" ? "关闭搜索聊天" : "Close chat search"}
+              >
+                <X size={18} />
+              </button>
+            </header>
+            <label className="chat-search-field">
+              <Search size={18} aria-hidden="true" />
+              <input
+                ref={chatSearchInputRef}
+                type="search"
+                value={chatHistoryQuery}
+                onChange={(event) => setChatHistoryQuery(event.target.value)}
+                placeholder={locale === "zh" ? "搜索历史聊天、图片请求、资料分析..." : "Search chat history, image requests, research..."}
+              />
+            </label>
+            <div className="chat-search-results">
+              {chatSearchResults.length === 0 ? (
+                <div className="chat-search-empty">
+                  <strong>{locale === "zh" ? "没有找到匹配会话" : "No matching chats"}</strong>
+                  <p>{locale === "zh" ? "可以换个关键词继续搜索。" : "Try another keyword."}</p>
+                </div>
+              ) : (
+                chatSearchResults.map((session) => {
+                  const title = sessionDisplayTitle(session);
+                  const updatedAt = new Date(session.updatedAt);
+                  const updatedLabel = Number.isNaN(updatedAt.getTime())
+                    ? session.updatedAt
+                    : updatedAt.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
+                  return (
+                    <button
+                      type="button"
+                      className={`chat-search-result ${currentSessionId === session.id ? "is-active" : ""}`}
+                      key={session.id}
+                      onClick={() => handleOpenSession(session.id)}
+                    >
+                      <span>
+                        <span className="chat-search-result__title">{title}</span>
+                        <span className="chat-search-result__meta">{updatedLabel}</span>
+                      </span>
+                      <span className="chat-search-result__badge">{locale === "zh" ? "打开" : "Open"}</span>
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          </section>
+        </div>
+      )}
+      {isPromptPlazaOpen && (
+        <div className="prompt-plaza-overlay" role="presentation" onClick={() => setIsPromptPlazaOpen(false)}>
+          <section className="prompt-market-card" role="dialog" aria-modal="true" aria-labelledby="prompt-market-title" onClick={(event) => event.stopPropagation()}>
+            <header className="prompt-market-head">
+              <div>
+                <h2 id="prompt-market-title">{locale === "zh" ? "Prompts 提示词广场" : "Prompts plaza"}</h2>
+                <p>{locale === "zh" ? "沉淀 Attuno 常用工作流。支持按来源、语言、分类和模式筛选，一键复制或套用到当前输入框。" : "Browse Attuno workflows. Filter by source, language, category, and mode, then copy or use a prompt."}</p>
+              </div>
+              <div className="prompt-count">{promptPlazaCountLabel}</div>
+              <button type="button" className="prompt-modal-close icon-btn" onClick={() => setIsPromptPlazaOpen(false)} aria-label={locale === "zh" ? "关闭提示词广场" : "Close prompt plaza"} title={locale === "zh" ? "关闭提示词广场" : "Close prompt plaza"}>
+                <X size={18} />
+              </button>
+            </header>
+
+            <div className="prompt-market-toolbar">
+              <div className="prompt-search-row">
+                <label className="prompt-search">
+                  <Search size={18} aria-hidden="true" />
+                  <input
+                    ref={promptPlazaSearchInputRef}
+                    type="search"
+                    value={promptPlazaQuery}
+                    onChange={(event) => setPromptPlazaQuery(event.target.value)}
+                    placeholder={locale === "zh" ? "搜索标题、作者、分类或提示词内容" : "Search titles, authors, categories, or prompt text"}
+                  />
+                </label>
+                <div className="prompt-view-toggle" aria-label={locale === "zh" ? "提示词视图" : "Prompt view"}>
+                  <button type="button" className={`market-tab ${promptPlazaView === "all" ? "selected" : ""}`} onClick={() => setPromptPlazaView("all")}>
+                    <span>{locale === "zh" ? "全部" : "All"}</span>
+                  </button>
+                  <button type="button" className={`market-tab ${promptPlazaView === "favorite" ? "selected" : ""}`} onClick={() => setPromptPlazaView("favorite")}>
+                    <Star size={15} />
+                    <span>{locale === "zh" ? `收藏 ${promptPlazaFavoriteCount}` : `Favorites ${promptPlazaFavoriteCount}`}</span>
+                  </button>
+                </div>
+              </div>
+              <div className="market-filter-row">
+                <select className="market-select" value={promptPlazaFilters.source} onChange={(event) => updatePromptPlazaFilter("source", event.target.value as PromptPlazaFilters["source"])} aria-label={locale === "zh" ? "来源" : "Source"}>
+                  <option value="all">{locale === "zh" ? "全部来源" : "All sources"}</option>
+                  <option value="official">Official</option>
+                  <option value="community">{locale === "zh" ? "社区精选" : "Community"}</option>
+                  <option value="team">{locale === "zh" ? "团队沉淀" : "Team"}</option>
+                </select>
+                <select className="market-select" value={promptPlazaFilters.language} onChange={(event) => updatePromptPlazaFilter("language", event.target.value as PromptPlazaFilters["language"])} aria-label={locale === "zh" ? "语言" : "Language"}>
+                  <option value="all">{locale === "zh" ? "全部语言" : "All languages"}</option>
+                  <option value="zh">{locale === "zh" ? "中文" : "Chinese"}</option>
+                  <option value="en">English</option>
+                </select>
+                <select className="market-select" value={promptPlazaFilters.category} onChange={(event) => updatePromptPlazaFilter("category", event.target.value as PromptPlazaFilters["category"])} aria-label={locale === "zh" ? "分类" : "Category"}>
+                  <option value="all">{locale === "zh" ? "全部分类" : "All categories"}</option>
+                  <option value="product">{locale === "zh" ? "产品设计" : "Product"}</option>
+                  <option value="image">{locale === "zh" ? "图像生成" : "Image"}</option>
+                  <option value="research">{locale === "zh" ? "资料分析" : "Research"}</option>
+                  <option value="copy">{locale === "zh" ? "写作润色" : "Copy"}</option>
+                  <option value="code">{locale === "zh" ? "代码开发" : "Code"}</option>
+                </select>
+                <select className="market-select" value={promptPlazaFilters.mode} onChange={(event) => updatePromptPlazaFilter("mode", event.target.value as PromptPlazaFilters["mode"])} aria-label={locale === "zh" ? "模式" : "Mode"}>
+                  <option value="all">{locale === "zh" ? "全部模式" : "All modes"}</option>
+                  <option value="chat">{locale === "zh" ? "聊天模式" : "Chat mode"}</option>
+                  <option value="image">{locale === "zh" ? "图像模式" : "Image mode"}</option>
+                  <option value="deep">{locale === "zh" ? "深度思考" : "Deep thinking"}</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="prompt-market-body">
+              {promptPlazaVisibleItems.length === 0 ? (
+                <div className="prompt-market-empty">
+                  <strong>{locale === "zh" ? "没有找到匹配的提示词" : "No matching prompts"}</strong>
+                  <p>{locale === "zh" ? "可以换个关键词，或切回全部分类继续浏览。" : "Try a different search or return to all filters."}</p>
+                </div>
+              ) : (
+                <div className="plaza-grid">
+                  {promptPlazaVisibleItems.map((item) => {
+                    const isFavorite = promptPlazaFavoriteIds.has(item.id);
+                    const localizedTitle = item.title[locale];
+                    return (
+                      <article className={`plaza-card plaza-card--${item.tone}`} key={item.id}>
+                        <div className="plaza-preview">
+                          <span className="plaza-source">{item.source === "official" ? "Official" : item.source === "team" ? "Team" : locale === "zh" ? "社区精选" : "Community"}</span>
+                          <div className="plaza-tags">
+                            {item.tags.slice(0, 3).map((tag) => <span className="plaza-tag" key={`${item.id}-${tag}`}>{tag}</span>)}
+                          </div>
+                        </div>
+                        <div className="plaza-body">
+                          <div className="plaza-card-head">
+                            <div>
+                              <h3>{localizedTitle}</h3>
+                              <div className="plaza-meta-line">{item.author} · {item.category} · {item.mode}</div>
+                            </div>
+                            <button type="button" className={`favorite-btn ${isFavorite ? "favorited" : ""}`} onClick={() => togglePromptPlazaFavorite(item.id)} aria-label={isFavorite ? (locale === "zh" ? "取消收藏" : "Remove favorite") : (locale === "zh" ? "收藏" : "Favorite")} title={isFavorite ? (locale === "zh" ? "取消收藏" : "Remove favorite") : (locale === "zh" ? "收藏" : "Favorite")}>
+                              <Star size={17} />
+                            </button>
+                          </div>
+                          <p>{item.description[locale]}</p>
+                          <div className="plaza-actions">
+                            <button type="button" className="chip-btn prompt-copy" onClick={() => void handleCopyPromptPlazaItem(item)}>
+                              <Clipboard size={15} />
+                              <span>{locale === "zh" ? "复制提示词" : "Copy prompt"}</span>
+                            </button>
+                            <button type="button" className="chip-btn selected prompt-use" onClick={() => handleUsePromptPlazaItem(item)}>
+                              <span>{locale === "zh" ? "使用" : "Use"}</span>
+                            </button>
+                          </div>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </section>
         </div>
       )}
       {previewImage && (

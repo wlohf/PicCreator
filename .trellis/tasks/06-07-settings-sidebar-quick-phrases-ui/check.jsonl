@@ -1,0 +1,3 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend guideline index for verification scope."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Verify strict review placement, shortcut phrase behavior, and editable memory state/API contract."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Verify TypeScript type-safety for changed UI state and handlers."}

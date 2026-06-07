@@ -145,6 +145,19 @@ export async function loadMemoryView(projectId = "default", userId = "default"):
   return data.memory ?? { project_id: projectId, sections: [] };
 }
 
+export async function createMemoryItem(text: string, sectionId = "long_term_preferences", projectId = "default", group = "style"): Promise<MemoryResponse> {
+  const response = await apiFetch("/api/preferences/memory", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ project_id: projectId, section_id: sectionId, group, text }),
+  });
+  const data = await parseApiJson<MemoryResponse>(response);
+  if (!response.ok || !data.ok) {
+    throw new Error(data.error || data.detail || response.statusText);
+  }
+  return data;
+}
+
 export async function updateMemoryItem(itemId: string, text: string, projectId = "default"): Promise<MemoryResponse> {
   const response = await apiFetch(`/api/preferences/memory/${encodeURIComponent(itemId)}`, {
     method: "PATCH",

@@ -1,0 +1,856 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>聊天生图平台风格对比</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        --page-bg: #eceff2;
+        --page-ink: #151515;
+        --page-muted: #687078;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background: var(--page-bg);
+        color: var(--page-ink);
+      }
+
+      .board {
+        width: min(1780px, calc(100vw - 48px));
+        margin: 0 auto;
+        padding: 28px 0 40px;
+      }
+
+      .board-header {
+        display: flex;
+        align-items: end;
+        justify-content: space-between;
+        gap: 24px;
+        margin-bottom: 22px;
+      }
+
+      .board-title {
+        margin: 0;
+        font-size: 28px;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+
+      .board-subtitle {
+        margin: 8px 0 0;
+        max-width: 760px;
+        color: var(--page-muted);
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .board-note {
+        min-width: 280px;
+        color: #4d5660;
+        font-size: 13px;
+        line-height: 1.45;
+        text-align: right;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 20px;
+      }
+
+      .style-card {
+        min-height: 560px;
+        overflow: hidden;
+        border: 1px solid rgba(0, 0, 0, 0.09);
+        border-radius: 10px;
+        box-shadow: 0 18px 42px rgba(18, 24, 31, 0.12);
+      }
+
+      .style-shell {
+        display: grid;
+        grid-template-rows: auto 1fr;
+        min-height: 560px;
+      }
+
+      .style-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 13px 16px;
+        border-bottom: 1px solid var(--line);
+        background: var(--top-bg);
+        color: var(--ink);
+      }
+
+      .style-meta {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+
+      .mark {
+        width: 26px;
+        height: 26px;
+        flex: 0 0 auto;
+        border-radius: var(--mark-radius);
+        background: var(--accent);
+      }
+
+      .style-name {
+        margin: 0;
+        color: var(--ink);
+        font-size: 15px;
+        font-weight: 650;
+        letter-spacing: 0;
+      }
+
+      .style-desc {
+        margin: 2px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.35;
+      }
+
+      .style-actions {
+        display: flex;
+        gap: 8px;
+      }
+
+      .mini-button {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        height: 30px;
+        padding: 0 12px;
+        border: 1px solid var(--button-line);
+        border-radius: var(--button-radius);
+        background: var(--button-bg);
+        color: var(--button-ink);
+        font-size: 12px;
+        font-weight: 600;
+        white-space: nowrap;
+      }
+
+      .mini-button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: var(--on-accent);
+      }
+
+      .app {
+        display: grid;
+        grid-template-columns: 150px minmax(0, 1fr) 220px;
+        gap: 12px;
+        padding: 14px;
+        background: var(--canvas);
+        color: var(--ink);
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--panel);
+      }
+
+      .sidebar {
+        padding: 12px;
+      }
+
+      .side-label {
+        margin: 0 0 10px;
+        color: var(--muted);
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.7px;
+        text-transform: uppercase;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        min-height: 30px;
+        margin-bottom: 5px;
+        padding: 0 8px;
+        border-radius: calc(var(--radius) - 2px);
+        color: var(--muted-strong);
+        font-size: 12px;
+      }
+
+      .nav-item.active {
+        background: var(--nav-active);
+        color: var(--ink);
+      }
+
+      .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+        opacity: 0.65;
+      }
+
+      .main {
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        min-height: 480px;
+        padding: 14px;
+      }
+
+      .chat-title {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .chat-title h3 {
+        margin: 0;
+        color: var(--ink);
+        font-size: 16px;
+        font-weight: 680;
+        letter-spacing: 0;
+      }
+
+      .status {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        height: 24px;
+        padding: 0 9px;
+        border-radius: var(--pill-radius);
+        background: var(--status-bg);
+        color: var(--status-ink);
+        font-size: 11px;
+        font-weight: 650;
+      }
+
+      .messages {
+        display: grid;
+        align-content: start;
+        gap: 10px;
+        min-height: 258px;
+      }
+
+      .message {
+        max-width: 86%;
+        padding: 10px 12px;
+        border: 1px solid var(--message-line);
+        border-radius: var(--bubble-radius);
+        background: var(--bubble);
+        color: var(--body);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .message.user {
+        justify-self: end;
+        background: var(--user-bubble);
+        color: var(--user-ink);
+      }
+
+      .result-strip {
+        display: grid;
+        grid-template-columns: 1.05fr 0.95fr;
+        gap: 9px;
+        margin-top: 2px;
+      }
+
+      .image-preview {
+        min-height: 124px;
+        overflow: hidden;
+        border: 1px solid var(--image-line);
+        border-radius: var(--image-radius);
+        background:
+          radial-gradient(circle at 20% 20%, var(--img-a), transparent 32%),
+          radial-gradient(circle at 80% 28%, var(--img-b), transparent 34%),
+          linear-gradient(135deg, var(--img-c), var(--img-d));
+      }
+
+      .image-preview.alt {
+        background:
+          linear-gradient(120deg, rgba(255, 255, 255, 0.22), transparent 35%),
+          radial-gradient(circle at 74% 25%, var(--img-e), transparent 28%),
+          linear-gradient(145deg, var(--img-b), var(--img-c));
+      }
+
+      .composer {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 9px;
+        margin-top: 12px;
+      }
+
+      .input {
+        min-height: 42px;
+        padding: 11px 12px;
+        border: 1px solid var(--input-line);
+        border-radius: var(--input-radius);
+        background: var(--input-bg);
+        color: var(--muted-strong);
+        font-size: 12px;
+      }
+
+      .send {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 76px;
+        height: 42px;
+        border-radius: var(--button-radius);
+        background: var(--accent);
+        color: var(--on-accent);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .right {
+        display: grid;
+        grid-template-rows: auto auto 1fr;
+        gap: 10px;
+      }
+
+      .settings {
+        padding: 12px;
+      }
+
+      .setting-row {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 8px;
+        align-items: center;
+        padding: 8px 0;
+        border-bottom: 1px solid var(--line-soft);
+        color: var(--body);
+        font-size: 11px;
+      }
+
+      .setting-row:last-child {
+        border-bottom: 0;
+      }
+
+      .token {
+        border-radius: var(--pill-radius);
+        background: var(--token-bg);
+        color: var(--token-ink);
+        padding: 4px 7px;
+        font-size: 10px;
+        font-weight: 700;
+      }
+
+      .gallery {
+        padding: 10px;
+      }
+
+      .thumbs {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .thumb {
+        aspect-ratio: 1;
+        border: 1px solid var(--image-line);
+        border-radius: var(--thumb-radius);
+        background:
+          radial-gradient(circle at 32% 24%, var(--img-e), transparent 26%),
+          linear-gradient(145deg, var(--img-c), var(--img-d));
+      }
+
+      .caption {
+        margin: 10px 0 0;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.45;
+      }
+
+      .claude-runway {
+        --canvas: #faf9f5;
+        --top-bg: #faf9f5;
+        --panel: #f3eee6;
+        --line: #e4ddd3;
+        --line-soft: #e8e1d8;
+        --ink: #181715;
+        --body: #393633;
+        --muted: #766f67;
+        --muted-strong: #4e4a45;
+        --accent: #cc785c;
+        --on-accent: #ffffff;
+        --button-bg: #ffffff;
+        --button-ink: #181715;
+        --button-line: #ded7cd;
+        --radius: 12px;
+        --button-radius: 8px;
+        --bubble-radius: 13px;
+        --input-radius: 12px;
+        --pill-radius: 999px;
+        --mark-radius: 8px;
+        --nav-active: #e9dfd2;
+        --status-bg: #efe2d8;
+        --status-ink: #a5573f;
+        --message-line: #e4ddd3;
+        --bubble: #fffdfa;
+        --user-bubble: #cc785c;
+        --user-ink: #ffffff;
+        --input-bg: #fffdfa;
+        --input-line: #ded7cd;
+        --image-line: rgba(24, 23, 21, 0.18);
+        --image-radius: 12px;
+        --thumb-radius: 10px;
+        --token-bg: #fffdfa;
+        --token-ink: #a5573f;
+        --img-a: rgba(255, 181, 129, 0.88);
+        --img-b: rgba(86, 160, 172, 0.82);
+        --img-c: #171613;
+        --img-d: #d29c6a;
+        --img-e: rgba(245, 229, 198, 0.95);
+      }
+
+      .replicate-cursor {
+        --canvas: #f7f7f4;
+        --top-bg: #f7f7f4;
+        --panel: #ffffff;
+        --line: #e6e5e0;
+        --line-soft: #efeee8;
+        --ink: #26251e;
+        --body: #4a4740;
+        --muted: #807d72;
+        --muted-strong: #3f3d35;
+        --accent: #f54e00;
+        --on-accent: #ffffff;
+        --button-bg: #ffffff;
+        --button-ink: #26251e;
+        --button-line: #cfcdc4;
+        --radius: 12px;
+        --button-radius: 8px;
+        --bubble-radius: 10px;
+        --input-radius: 999px;
+        --pill-radius: 999px;
+        --mark-radius: 50%;
+        --nav-active: #efeee8;
+        --status-bg: #f3e4dd;
+        --status-ink: #d04200;
+        --message-line: #e6e5e0;
+        --bubble: #ffffff;
+        --user-bubble: #26251e;
+        --user-ink: #f7f7f4;
+        --input-bg: #ffffff;
+        --input-line: #cfcdc4;
+        --image-line: rgba(38, 37, 30, 0.14);
+        --image-radius: 10px;
+        --thumb-radius: 8px;
+        --token-bg: #f4eee9;
+        --token-ink: #d04200;
+        --img-a: rgba(245, 78, 0, 0.85);
+        --img-b: rgba(159, 187, 224, 0.9);
+        --img-c: #f3f0e8;
+        --img-d: #202020;
+        --img-e: rgba(192, 168, 221, 0.88);
+      }
+
+      .linear-vercel {
+        --canvas: #010102;
+        --top-bg: #010102;
+        --panel: #0f1011;
+        --line: #23252a;
+        --line-soft: #1b1d20;
+        --ink: #f7f8f8;
+        --body: #d0d6e0;
+        --muted: #8a8f98;
+        --muted-strong: #d0d6e0;
+        --accent: #5e6ad2;
+        --on-accent: #ffffff;
+        --button-bg: #141516;
+        --button-ink: #f7f8f8;
+        --button-line: #34343a;
+        --radius: 10px;
+        --button-radius: 8px;
+        --bubble-radius: 9px;
+        --input-radius: 8px;
+        --pill-radius: 999px;
+        --mark-radius: 6px;
+        --nav-active: #18191a;
+        --status-bg: rgba(94, 106, 210, 0.2);
+        --status-ink: #adb6ff;
+        --message-line: #23252a;
+        --bubble: #141516;
+        --user-bubble: #5e6ad2;
+        --user-ink: #ffffff;
+        --input-bg: #0f1011;
+        --input-line: #34343a;
+        --image-line: rgba(255, 255, 255, 0.12);
+        --image-radius: 9px;
+        --thumb-radius: 8px;
+        --token-bg: #18191a;
+        --token-ink: #adb6ff;
+        --img-a: rgba(0, 124, 240, 0.82);
+        --img-b: rgba(255, 0, 128, 0.78);
+        --img-c: #141516;
+        --img-d: #5e6ad2;
+        --img-e: rgba(0, 223, 216, 0.72);
+      }
+
+      .runway {
+        --canvas: #000000;
+        --top-bg: #000000;
+        --panel: #1a1a1a;
+        --line: #27272a;
+        --line-soft: #242426;
+        --ink: #ffffff;
+        --body: #d8d8d8;
+        --muted: #8f949a;
+        --muted-strong: #c9ccd1;
+        --accent: #ffffff;
+        --on-accent: #000000;
+        --button-bg: #141414;
+        --button-ink: #ffffff;
+        --button-line: #303035;
+        --radius: 8px;
+        --button-radius: 4px;
+        --bubble-radius: 6px;
+        --input-radius: 6px;
+        --pill-radius: 4px;
+        --mark-radius: 4px;
+        --nav-active: #242424;
+        --status-bg: #202020;
+        --status-ink: #ffffff;
+        --message-line: #27272a;
+        --bubble: #151515;
+        --user-bubble: #e9ecf2;
+        --user-ink: #0c0c0c;
+        --input-bg: #111111;
+        --input-line: #303035;
+        --image-line: rgba(255, 255, 255, 0.13);
+        --image-radius: 6px;
+        --thumb-radius: 5px;
+        --token-bg: #0f0f0f;
+        --token-ink: #c9ccd1;
+        --img-a: rgba(255, 255, 255, 0.22);
+        --img-b: rgba(96, 106, 119, 0.9);
+        --img-c: #050505;
+        --img-d: #767d88;
+        --img-e: rgba(231, 205, 172, 0.58);
+      }
+
+      .runway .image-preview,
+      .runway .thumb {
+        filter: contrast(1.08) saturate(0.82);
+      }
+
+      @media (max-width: 1200px) {
+        .grid {
+          grid-template-columns: 1fr;
+        }
+      }
+
+      @media (max-width: 760px) {
+        .board {
+          width: min(100vw - 24px, 720px);
+          padding-top: 18px;
+        }
+
+        .board-header {
+          display: block;
+        }
+
+        .board-note {
+          margin-top: 10px;
+          text-align: left;
+        }
+
+        .app {
+          grid-template-columns: 1fr;
+        }
+
+        .sidebar,
+        .right {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="board">
+      <header class="board-header">
+        <div>
+          <h1 class="board-title">聊天生图平台风格对比</h1>
+          <p class="board-subtitle">
+            同一个产品场景，分别套 4 个视觉方向。重点看：聊天是否耐用、图片结果是否突出、参数区是否清楚、整体是否符合你想要的产品气质。
+          </p>
+        </div>
+        <div class="board-note">
+          预览来源：awesome-design-md 风格规范<br />
+          用途：选方向，不代表最终实现细节
+        </div>
+      </header>
+
+      <section class="grid" aria-label="风格对比">
+        <article class="style-card claude-runway">
+          <div class="style-shell">
+            <div class="style-top">
+              <div class="style-meta">
+                <div class="mark"></div>
+                <div>
+                  <h2 class="style-name">Claude + Runway</h2>
+                  <p class="style-desc">温暖对话底色，结果区更像创作画廊</p>
+                </div>
+              </div>
+              <div class="style-actions">
+                <span class="mini-button">收藏</span>
+                <span class="mini-button primary">生成</span>
+              </div>
+            </div>
+            <div class="app">
+              <aside class="panel sidebar">
+                <p class="side-label">Workspace</p>
+                <div class="nav-item active"><span class="dot"></span> 今日创作</div>
+                <div class="nav-item"><span class="dot"></span> 风格参考</div>
+                <div class="nav-item"><span class="dot"></span> 作品库</div>
+                <div class="nav-item"><span class="dot"></span> 提示词</div>
+              </aside>
+              <section class="panel main">
+                <div class="chat-title">
+                  <h3>柔和电影感肖像</h3>
+                  <span class="status">生成中</span>
+                </div>
+                <div class="messages">
+                  <div class="message user">生成一张适合社媒封面的室内肖像，暖色自然光，背景有植物和窗帘。</div>
+                  <div class="message">我会保留温暖自然光，把主体放在画面左侧，右侧留出标题空间。推荐 4:5 构图。</div>
+                  <div class="result-strip">
+                    <div class="image-preview"></div>
+                    <div class="image-preview alt"></div>
+                  </div>
+                </div>
+                <div class="composer">
+                  <div class="input">继续调整：减少复古感，增加高级杂志质感</div>
+                  <div class="send">发送</div>
+                </div>
+              </section>
+              <aside class="right">
+                <section class="panel settings">
+                  <p class="side-label">Controls</p>
+                  <div class="setting-row"><span>模型</span><span class="token">Image Pro</span></div>
+                  <div class="setting-row"><span>比例</span><span class="token">4:5</span></div>
+                  <div class="setting-row"><span>风格</span><span class="token">Cinematic</span></div>
+                </section>
+                <section class="panel gallery">
+                  <p class="side-label">Outputs</p>
+                  <div class="thumbs">
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                  </div>
+                  <p class="caption">适合默认方向：聊天耐看，图片也有创作感。</p>
+                </section>
+              </aside>
+            </div>
+          </div>
+        </article>
+
+        <article class="style-card replicate-cursor">
+          <div class="style-shell">
+            <div class="style-top">
+              <div class="style-meta">
+                <div class="mark"></div>
+                <div>
+                  <h2 class="style-name">Replicate + Cursor</h2>
+                  <p class="style-desc">模型实验台感，参数、状态、批量生成更专业</p>
+                </div>
+              </div>
+              <div class="style-actions">
+                <span class="mini-button">Fork</span>
+                <span class="mini-button primary">Run</span>
+              </div>
+            </div>
+            <div class="app">
+              <aside class="panel sidebar">
+                <p class="side-label">Models</p>
+                <div class="nav-item active"><span class="dot"></span> Flux Studio</div>
+                <div class="nav-item"><span class="dot"></span> Seed History</div>
+                <div class="nav-item"><span class="dot"></span> Batch Jobs</div>
+                <div class="nav-item"><span class="dot"></span> Presets</div>
+              </aside>
+              <section class="panel main">
+                <div class="chat-title">
+                  <h3>Prompt Lab</h3>
+                  <span class="status">Queue 03</span>
+                </div>
+                <div class="messages">
+                  <div class="message user">Use warm window light, magazine portrait, soft contrast, no text.</div>
+                  <div class="message">Parameters locked. I will keep seed variance low and compare two sampler strengths.</div>
+                  <div class="result-strip">
+                    <div class="image-preview"></div>
+                    <div class="image-preview alt"></div>
+                  </div>
+                </div>
+                <div class="composer">
+                  <div class="input">prompt / negative / seed / sampler...</div>
+                  <div class="send">Run</div>
+                </div>
+              </section>
+              <aside class="right">
+                <section class="panel settings">
+                  <p class="side-label">Params</p>
+                  <div class="setting-row"><span>steps</span><span class="token">32</span></div>
+                  <div class="setting-row"><span>cfg</span><span class="token">7.5</span></div>
+                  <div class="setting-row"><span>seed</span><span class="token">18492</span></div>
+                </section>
+                <section class="panel gallery">
+                  <p class="side-label">Runs</p>
+                  <div class="thumbs">
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                  </div>
+                  <p class="caption">适合专业用户：更像模型工作台，工具感强。</p>
+                </section>
+              </aside>
+            </div>
+          </div>
+        </article>
+
+        <article class="style-card linear-vercel">
+          <div class="style-shell">
+            <div class="style-top">
+              <div class="style-meta">
+                <div class="mark"></div>
+                <div>
+                  <h2 class="style-name">Linear + Vercel</h2>
+                  <p class="style-desc">高级 SaaS 控制台，结构克制、产品化强</p>
+                </div>
+              </div>
+              <div class="style-actions">
+                <span class="mini-button">Preview</span>
+                <span class="mini-button primary">Create</span>
+              </div>
+            </div>
+            <div class="app">
+              <aside class="panel sidebar">
+                <p class="side-label">Project</p>
+                <div class="nav-item active"><span class="dot"></span> Canvas</div>
+                <div class="nav-item"><span class="dot"></span> Threads</div>
+                <div class="nav-item"><span class="dot"></span> Assets</div>
+                <div class="nav-item"><span class="dot"></span> Settings</div>
+              </aside>
+              <section class="panel main">
+                <div class="chat-title">
+                  <h3>Campaign Visual</h3>
+                  <span class="status">Live</span>
+                </div>
+                <div class="messages">
+                  <div class="message user">Create a premium launch visual with product reflection and dark background.</div>
+                  <div class="message">Drafting two variants. One keeps a minimal hero composition; the other uses stronger color contrast.</div>
+                  <div class="result-strip">
+                    <div class="image-preview"></div>
+                    <div class="image-preview alt"></div>
+                  </div>
+                </div>
+                <div class="composer">
+                  <div class="input">Refine composition, keep brand-safe lighting</div>
+                  <div class="send">Create</div>
+                </div>
+              </section>
+              <aside class="right">
+                <section class="panel settings">
+                  <p class="side-label">Config</p>
+                  <div class="setting-row"><span>Model</span><span class="token">Studio</span></div>
+                  <div class="setting-row"><span>Mode</span><span class="token">A/B</span></div>
+                  <div class="setting-row"><span>Quality</span><span class="token">High</span></div>
+                </section>
+                <section class="panel gallery">
+                  <p class="side-label">Gallery</p>
+                  <div class="thumbs">
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                  </div>
+                  <p class="caption">适合商业化：清楚、稳重，但创作温度较低。</p>
+                </section>
+              </aside>
+            </div>
+          </div>
+        </article>
+
+        <article class="style-card runway">
+          <div class="style-shell">
+            <div class="style-top">
+              <div class="style-meta">
+                <div class="mark"></div>
+                <div>
+                  <h2 class="style-name">Runway</h2>
+                  <p class="style-desc">深色电影感，图片内容是第一视觉中心</p>
+                </div>
+              </div>
+              <div class="style-actions">
+                <span class="mini-button">Queue</span>
+                <span class="mini-button primary">Render</span>
+              </div>
+            </div>
+            <div class="app">
+              <aside class="panel sidebar">
+                <p class="side-label">Scenes</p>
+                <div class="nav-item active"><span class="dot"></span> Portraits</div>
+                <div class="nav-item"><span class="dot"></span> Motion</div>
+                <div class="nav-item"><span class="dot"></span> References</div>
+                <div class="nav-item"><span class="dot"></span> Archive</div>
+              </aside>
+              <section class="panel main">
+                <div class="chat-title">
+                  <h3>Cinematic Frame</h3>
+                  <span class="status">Rendering</span>
+                </div>
+                <div class="messages">
+                  <div class="message user">A dramatic editorial portrait, low-key lighting, shallow depth of field.</div>
+                  <div class="message">Building a dark composition with the subject separated by rim light and soft background grain.</div>
+                  <div class="result-strip">
+                    <div class="image-preview"></div>
+                    <div class="image-preview alt"></div>
+                  </div>
+                </div>
+                <div class="composer">
+                  <div class="input">Increase lens texture, keep subject readable</div>
+                  <div class="send">Render</div>
+                </div>
+              </section>
+              <aside class="right">
+                <section class="panel settings">
+                  <p class="side-label">Frame</p>
+                  <div class="setting-row"><span>Lens</span><span class="token">50mm</span></div>
+                  <div class="setting-row"><span>Light</span><span class="token">Low</span></div>
+                  <div class="setting-row"><span>Grain</span><span class="token">Soft</span></div>
+                </section>
+                <section class="panel gallery">
+                  <p class="side-label">Frames</p>
+                  <div class="thumbs">
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                    <div class="thumb"></div>
+                  </div>
+                  <p class="caption">适合强视觉：图片最突出，聊天界面更冷。</p>
+                </section>
+              </aside>
+            </div>
+          </div>
+        </article>
+      </section>
+    </main>
+  </body>
+</html>

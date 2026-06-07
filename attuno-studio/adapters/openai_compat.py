@@ -2,6 +2,7 @@ import asyncio
 import base64
 import json
 import re
+from io import BytesIO
 from typing import AsyncIterator
 import httpx
 from openai import AsyncOpenAI
@@ -451,6 +452,24 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
 
         raise ValueError("画图模型未返回可解析的图片数据")
 
+    async def _extract_image_from_images_response(self, resp) -> bytes:
+        data = getattr(resp, "data", None) or []
+        if not data:
+            raise ValueError("画图模型未返回图片数据")
+        first = data[0]
+        b64_json = getattr(first, "b64_json", None)
+        if b64_json:
+            return base64.b64decode(b64_json)
+
+        image_url = getattr(first, "url", None)
+        if isinstance(image_url, str):
+            if image_url.startswith("data:image"):
+                return base64.b64decode(image_url.split(",", 1)[1])
+            if image_url.startswith("http"):
+                return await self._download_remote_image(image_url)
+
+        raise ValueError("画图模型未返回可解析的图片数据")
+
     @staticmethod
     def _compose_generation_text(prompt: PromptSet) -> tuple[str, bool, str]:
         positive = (prompt.positive_prompt or "").strip()
@@ -483,7 +502,7 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
             )
 
         resp = await self._run_with_retries(operation)
-        image_bytes = base64.b64decode(resp.data[0].b64_json)
+        image_bytes = await self._extract_image_from_images_response(resp)
         return NormalizedImage(
             image_bytes=image_bytes,
             source_model=model,
@@ -495,6 +514,45 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
                 "has_floor_plan": False,
                 "has_reference_image": False,
                 "endpoint": "images.generate",
+            },
+        )
+
+    async def _edit_with_images_endpoint(
+        self,
+        *,
+        model: str,
+        prompt_text: str,
+        prompt: PromptSet,
+        negative_applied: bool,
+        negative_mode: str,
+    ) -> NormalizedImage:
+        source_name = "reference_image" if prompt.reference_image else "floor_plan"
+        image_bytes = prompt.reference_image if prompt.reference_image else prompt.floor_plan
+
+        async def operation():
+            image_file = BytesIO(image_bytes or b"")
+            image_file.name = f"{source_name}.png"
+            return await self.client.images.edit(
+                model=model,
+                prompt=prompt_text,
+                image=image_file,
+                response_format="b64_json",
+                n=1,
+            )
+
+        resp = await self._run_with_retries(operation)
+        return NormalizedImage(
+            image_bytes=await self._extract_image_from_images_response(resp),
+            source_model=model,
+            generation_params={
+                "prompt": prompt.positive_prompt,
+                "negative_prompt": prompt.negative_prompt,
+                "negative_prompt_applied": negative_applied,
+                "negative_prompt_mode": negative_mode,
+                "has_floor_plan": bool(prompt.floor_plan),
+                "has_reference_image": bool(prompt.reference_image),
+                "endpoint": "images.edit",
+                "edit_image_source": source_name,
             },
         )
 
@@ -515,6 +573,15 @@ class OpenAICompatAdapter(BaseLLMAdapter, BaseImageAdapter, BaseVisionAdapter):
 
         if not (prompt.floor_plan or prompt.reference_image) and self._prefers_images_endpoint(model):
             return await self._generate_with_images_endpoint(
+                model=model,
+                prompt_text=prompt_text,
+                prompt=prompt,
+                negative_applied=negative_applied,
+                negative_mode=negative_mode,
+            )
+
+        if (prompt.floor_plan or prompt.reference_image) and self._prefers_images_endpoint(model):
+            return await self._edit_with_images_endpoint(
                 model=model,
                 prompt_text=prompt_text,
                 prompt=prompt,

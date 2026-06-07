@@ -1,7 +1,7 @@
 import json
 
 from backend.app.services.design_chat_agent import DesignChatAgent
-from backend.app.services.preferences_store import apply_chat_memory, load_style_profile
+from backend.app.services.preferences_store import apply_chat_memory, create_memory_item, load_style_profile, load_memory_view
 
 
 def test_design_chat_agent_classifies_style_revision_and_builds_draft():
@@ -180,3 +180,17 @@ def test_apply_chat_memory_dedupes_and_preserves_existing_data(tmp_path, monkeyp
     assert "reference_memories" not in profile
     assert saved["preference_summary"]["evaluation_standards"].count("结构还原第一") == 1
     assert saved["preference_summary"]["evaluation_standards"].count("旧标准") == 1
+
+
+def test_create_memory_item_adds_manual_preference(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+
+    memory = create_memory_item("浅色木材和柔和自然光", "long_term_preferences", "p-manual")
+    view = load_memory_view("p-manual")
+
+    sections = {section["id"]: section for section in view["sections"]}
+    assert memory["project_id"] == "p-manual"
+    assert "浅色木材和柔和自然光" in [
+        item["text"] for item in sections["long_term_preferences"]["items"]
+    ]
+    assert "浅色木材和柔和自然光" in load_style_profile("p-manual")["preference_summary"]["long_term_preferences"]

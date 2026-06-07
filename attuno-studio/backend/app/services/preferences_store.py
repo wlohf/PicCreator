@@ -332,6 +332,56 @@ def apply_chat_memory(project_id: str, memory_candidate: dict[str, Any], user_id
     return next_data
 
 
+def create_memory_item(
+    text: str,
+    section_id: str = "long_term_preferences",
+    project_id: str = "default",
+    user_id: str = "default",
+    group: str = "style",
+) -> dict[str, Any]:
+    next_text = str(text or "").strip()
+    if not next_text:
+        raise ValueError("memory text cannot be empty")
+
+    data = _read_preferences(user_id)
+    project_key = project_id or "default"
+    target_section = str(section_id or "long_term_preferences").strip() or "long_term_preferences"
+
+    if target_section == "daily_memories":
+        memories = _normalize_daily_memories(data.get("daily_memories"))
+        if ("preference", next_text) not in {(item["kind"], item["text"]) for item in memories}:
+            memories = [_memory_record(next_text, "preference"), *memories]
+        data["daily_memories"] = memories[:100]
+    elif target_section == "avoid_items":
+        user_style = _normalize_user_style(data.get("user_style_preferences"))
+        user_style["avoid"] = _normalize_text_list([next_text, *user_style["avoid"]], limit=100)
+        data["user_style_preferences"] = user_style
+    elif target_section == "project_preferences":
+        project_memories = data.get("project_style_memories") if isinstance(data.get("project_style_memories"), dict) else {}
+        memory_group = str(group or "style").strip()
+        if memory_group not in {"style", "furniture", "structure", "materials", "lighting", "avoid"}:
+            memory_group = "style"
+        project_memory = _normalize_project_memory(project_memories.get(project_key))
+        project_memory[memory_group] = _normalize_text_list([next_text, *project_memory[memory_group]], limit=100)
+        data["project_style_memories"] = {**project_memories, project_key: project_memory}
+    elif target_section == "evaluation_standards":
+        preference_summary = data.get("preference_summary") if isinstance(data.get("preference_summary"), dict) else {}
+        current_standards = _normalize_text_list(data.get("evaluation_standards")) or _normalize_text_list(preference_summary.get("evaluation_standards"))
+        standards = _normalize_text_list(
+            [next_text, *current_standards],
+            limit=100,
+        )
+        data["evaluation_standards"] = standards
+    else:
+        user_style = _normalize_user_style(data.get("user_style_preferences"))
+        user_style["explicit"] = _normalize_text_list([next_text, *user_style["explicit"]], limit=100)
+        data["user_style_preferences"] = user_style
+
+    data["preference_summary"] = _build_preference_summary(data, project_key)
+    _write_preferences(data, user_id)
+    return load_memory_view(project_key, user_id)
+
+
 def load_memory_view(project_id: str = "default", user_id: str = "default") -> dict[str, Any]:
     data = _read_preferences(user_id)
     project_key = project_id or "default"

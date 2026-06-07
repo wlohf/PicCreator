@@ -1512,6 +1512,36 @@ def test_generate_endpoint_returns_persisted_result_urls(tmp_path, monkeypatch):
     assert client.get(payload["results"][0]["image_url"]).status_code == 200
 
 
+def test_generate_endpoint_rejects_success_without_images(tmp_path, monkeypatch):
+    from backend.app.services import generation_service
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+
+    def fake_run_pipeline(*_args, **_kwargs):
+        yield (
+            None,
+            [],
+            "生成成功",
+            "",
+            "prompt text",
+            "",
+            "upstream completed without image bytes",
+        )
+
+    monkeypatch.setattr(generation_service, "run_pipeline", fake_run_pipeline)
+    client = _auth_client("empty-image-result-user")
+
+    response = client.post("/api/generate", data={"requirement": "make a room"})
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["ok"] is False
+    assert payload["stage"] == "generation"
+    assert "没有返回图片" in payload["error"]
+    assert payload["images"] == []
+    assert payload["results"] == []
+
+
 def test_unauthenticated_core_endpoints_use_default_workspace(tmp_path, monkeypatch):
     from backend.app.services import generation_service
 
@@ -1770,6 +1800,7 @@ def test_generate_endpoint_routes_standard_upload_as_reference_image(tmp_path, m
         captured["mode"] = mode
         captured["floor_plan_count"] = len(floor_plan_paths)
         captured["reference_path"] = reference_path
+        captured["record_output_dir"] = _kwargs.get("record_output_dir")
         yield (
             str(image_path),
             [(str(image_path), "reference edit")],
@@ -1795,6 +1826,7 @@ def test_generate_endpoint_routes_standard_upload_as_reference_image(tmp_path, m
     assert captured["floor_plan_count"] == 0
     assert captured["reference_path"]
     assert Path(captured["reference_path"]).name == "upload_0.png"
+    assert Path(captured["record_output_dir"]) == tmp_path / "data" / "users" / "reference-image-user" / "outputs" / "default"
     assert payload["results"][0]["generation_mode"] == "standard"
     assert payload["results"][0].get("floor_plan_url") in {"", None}
 

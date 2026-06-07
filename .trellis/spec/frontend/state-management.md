@@ -30,6 +30,7 @@ Conversation history should distinguish transient composer state from durable co
 
 - Durable content: submitted user/assistant messages, render messages with an `imageUrl`, active rendering state, or live generation output.
 - Transient content: unsent composer text, selected mode, active result selection, and attached floor-plan files that have not been submitted yet.
+- When image composer attachments are submitted, snapshot the files into the durable user message before clearing composer state. Do not store message attachments as composer blob preview URLs because clearing `floorPlanFiles` revokes those URLs; use independent data URLs or backend asset URLs for message display, then clear transient attachments with the silent clear path.
 - Source of truth: authenticated chat history must persist through `/api/chat-history`, scoped by the backend account session. Browser `localStorage` is only a cache and migration source for legacy sessions; it is not sufficient for deployable multi-user history.
 - If both backend and browser chat history are empty but server-side generated images exist, the frontend may reconstruct minimal historical generation sessions from image management so prior image work still has a conversation entry.
 - The left history list sorts by the last durable conversation update. Opening a historical session, editing an unsent draft, switching workspace/generation mode, or changing the selected result may save that session in place, but must not refresh `updatedAt` or move it to the top.

@@ -1,4 +1,4 @@
-import { formatDateRangeLabel, isResultInDateRange, normalizeDateRange, type DateRange } from "../src/components/ImageManagementPage.js";
+import { formatDateRangeLabel, isResultInDateRange, isSelectionComplete, normalizeDateRange, toggleSelectionScope, type DateRange } from "../src/components/ImageManagementPage.js";
 import type { RenderHistoryItem } from "../src/types/domain.js";
 import { mergeRenderHistoryItems } from "../src/utils/renderHistory.js";
 
@@ -41,3 +41,10 @@ const mergedHistory = mergeRenderHistoryItems(
 );
 assert(mergedHistory.length === 21, "merging new results should preserve full image history instead of truncating to a preview count");
 assert(mergedHistory[0].title === "Updated duplicate", "newer duplicate results should replace older entries at the front");
+
+const partiallySelected = toggleSelectionScope(["outside", "page-1"], ["page-1", "page-2"]);
+assert(partiallySelected.join(",") === "outside,page-1,page-2", "selecting a partial page should add the missing page ids without dropping outside selections");
+assert(isSelectionComplete(["page-1", "page-2"], new Set(partiallySelected)), "selected page scope should report complete");
+const toggledOff = toggleSelectionScope(partiallySelected, ["page-1", "page-2"]);
+assert(toggledOff.join(",") === "outside", "clicking a fully selected page scope should clear just that page selection");
+assert(!isSelectionComplete([], new Set(["anything"])), "empty selection scopes should never appear complete");

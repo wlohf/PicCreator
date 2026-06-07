@@ -7,20 +7,72 @@ function assert(condition: unknown, message: string) {
   }
 }
 
-const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
-const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-const studioDataSource = readFileSync(new URL("../src/data/studioData.ts", import.meta.url), "utf8");
-const domainSource = readFileSync(new URL("../src/types/domain.ts", import.meta.url), "utf8");
+function readSource(path: string) {
+  return readFileSync(new URL(path, import.meta.url), "utf8").replace(/\r\n/g, "\n");
+}
+
+const styles = readSource("../src/styles.css");
+const appSource = readSource("../src/App.tsx");
+const chatWorkspaceSource = readSource("../src/components/chat-workspace.tsx");
+const workspaceSource = `${appSource}\n${chatWorkspaceSource}`;
+const studioDataSource = readSource("../src/data/studioData.ts");
+const domainSource = readSource("../src/types/domain.ts");
+const finalParityMarker = "/* Attuno OpenDesign final parity pass */";
+const finalStyles = styles.slice(styles.lastIndexOf(finalParityMarker));
 
 assert(
-  styles.includes("grid-template-columns: minmax(0, 1fr) auto;"),
-  "desktop composer bar should reserve width for the textarea and trailing actions only",
+  finalStyles.startsWith(finalParityMarker) &&
+  /\.chatgpt-composer__bar,[\s\S]*?\.chatgpt-composer--empty-conversation \.chatgpt-composer__bar\.chatgpt-composer__bar--has-attachments\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);[\s\S]*?grid-template-areas:\s*"attachments"[\s\S]*?"textarea"[\s\S]*?"toolbar";/m.test(finalStyles) &&
+  /\.chatgpt-composer__inline-actions\.composer-toolbar,[\s\S]*?\.chatgpt-composer--empty-conversation \.chatgpt-composer__inline-actions\.composer-toolbar\s*\{[\s\S]*?justify-content:\s*space-between;[\s\S]*?border-top:\s*1px solid rgba\(231,\s*222,\s*209,\s*0\.66\);/m.test(finalStyles),
+  "final OpenDesign composer should use a textarea-over-toolbar layout with the toolbar separated by a warm divider",
 );
 
-const mobileRulePattern = /@media \(max-width: 860px\)[\s\S]*?\.chatgpt-composer__bar\s*\{\s*grid-template-columns:\s*minmax\(0,\s*1fr\);\s*border-radius:\s*20px;/m;
 assert(
-  mobileRulePattern.test(styles),
-  "mobile composer bar should collapse to a single text column before placing actions on the next row",
+  /\.chatgpt-composer\.composer\s*\{[\s\S]*?position:\s*relative;[\s\S]*?left:\s*auto;[\s\S]*?bottom:\s*auto;[\s\S]*?margin:\s*0 auto 24px;[\s\S]*?transform:\s*none;/m.test(finalStyles),
+  "restored non-empty conversations should keep the composer in the main grid flow instead of inheriting the old absolute centered position",
+);
+
+assert(
+  styles.includes("/* Attuno OpenDesign chat redesign integration */") &&
+  finalStyles.includes(finalParityMarker) &&
+  styles.includes("--attuno-bg: #fbf8f2;") &&
+  styles.includes("--attuno-accent: #a65f3f;") &&
+  styles.includes('--app-display-font: "Signifier"'),
+  "OpenDesign-derived Attuno theme tokens should be present in the production stylesheet",
+);
+
+assert(
+  /html,\s*body,\s*#root,\s*\.studio-shell\s*\{[\s\S]*?height:\s*100dvh;[\s\S]*?overflow:\s*hidden;/m.test(styles) &&
+  /\.chatgpt-layout,[\s\S]*?\.chatgpt-layout\.is-sidebar-collapsed\.has-drawer\s*\{[\s\S]*?height:\s*100dvh;[\s\S]*?overflow:\s*hidden;/m.test(finalStyles) &&
+  /\.chatgpt-main\s*\{[\s\S]*?height:\s*100dvh;[\s\S]*?grid-template-rows:\s*68px minmax\(0,\s*1fr\) auto;/m.test(finalStyles),
+  "OpenDesign theme should preserve a fixed viewport app shell with the thread as the scroll owner",
+);
+
+assert(
+  /\.chatgpt-thread\.chat-shell\s*\{[\s\S]*?overflow-y:\s*auto;[\s\S]*?padding:\s*42px 28px 24px;/m.test(finalStyles),
+  "chat thread should keep the OpenDesign desktop spacing while retaining vertical scrolling",
+);
+
+assert(
+  /\.chatgpt-thread\.chat-shell\s*\{[\s\S]*?display:\s*grid;[\s\S]*?align-content:\s*start;[\s\S]*?align-items:\s*start;[\s\S]*?grid-auto-rows:\s*max-content;/m.test(finalStyles),
+  "chat thread grid rows should stay content-sized so short conversations do not stretch message cards into tall empty panels",
+);
+
+const mobileRulePattern = /@media \(max-width: 860px\)[\s\S]*?\.chatgpt-composer\.composer\s*\{[\s\S]*?border-radius:\s*24px;/m;
+assert(
+  mobileRulePattern.test(finalStyles),
+  "mobile composer should keep the OpenDesign rounded shell while the toolbar wraps below the textarea",
+);
+
+assert(
+  /@media \(max-width: 860px\)[\s\S]*?\.chatgpt-composer__inline-actions\.composer-toolbar,[\s\S]*?\.chatgpt-composer--empty-conversation \.chatgpt-composer__inline-actions\.composer-toolbar\s*\{[\s\S]*?flex-wrap:\s*wrap;/m.test(finalStyles),
+  "OpenDesign mobile override should let composer toolbar groups wrap without changing backend controls",
+);
+
+assert(
+  /@media \(max-width: 860px\)[\s\S]*?\.chatgpt-composer textarea,\s*\.chatgpt-composer--empty-conversation textarea\s*\{[\s\S]*?min-height:\s*44px;[\s\S]*?font-size:\s*15px;/m.test(finalStyles) &&
+  /@media \(max-width: 860px\)[\s\S]*?\.chatgpt-composer__tool-group--end\s*\{[\s\S]*?justify-content:\s*space-between;/m.test(finalStyles),
+  "mobile OpenDesign composer should keep the textarea readable and preserve the trailing model/send controls",
 );
 
 assert(
@@ -58,8 +110,8 @@ assert(
   appSource.includes("function applyPromptSkillTemplate(template: string, userPrompt: string)") &&
   appSource.includes("const promptModeOptions") &&
   appSource.includes("const visibleSelectedPromptModeId") &&
-  appSource.includes("promptModeOptions.map((option)") &&
-  appSource.includes("selectPromptMode(option.id)") &&
+  chatWorkspaceSource.includes("promptModeOptions.map((option)") &&
+  appSource.includes("onSelectPromptMode={(modeId) => selectPromptMode(modeId as PromptModeId)}") &&
   appSource.includes("prompt-skill-manager") &&
   appSource.includes("prompt-skill-editor"),
   "image workspace should support account-scoped custom prompt skills beside the built-in default and 3D modes",
@@ -78,28 +130,31 @@ assert(
 assert(
   appSource.includes('handleRunColoredFloorPlanTool') &&
   appSource.includes('runConversationFlow(undefined, "colored_floor_plan", "new-generation", promptModeIdForGenerationMode("colored_floor_plan"))') &&
-  appSource.includes('className="chatgpt-tool-action"'),
+  chatWorkspaceSource.includes('className="chatgpt-tool-action"'),
   "colored floor plan should be available as an explicit floor-plan tool action instead of a primary mode",
 );
 
 assert(
-  appSource.includes('{isImageWorkspace && (\n              <div className="chatgpt-composer__meta">') &&
-  appSource.includes('className="chatgpt-composer__mode-row"') &&
-  !appSource.includes("日常对话不会直接出图") &&
-  !appSource.includes("Daily chat does not render directly") &&
-  !appSource.includes("已输入 ${chatInput.trim().length} 字") &&
-  !appSource.includes("${chatInput.trim().length} characters"),
+  chatWorkspaceSource.includes("{isImageWorkspace && (") &&
+  chatWorkspaceSource.includes('className="chatgpt-composer__meta"') &&
+  chatWorkspaceSource.includes('className="chatgpt-composer__mode-row"') &&
+  !workspaceSource.includes("日常对话不会直接出图") &&
+  !workspaceSource.includes("Daily chat does not render directly") &&
+  !workspaceSource.includes("已输入 ${chatInput.trim().length} 字") &&
+  !workspaceSource.includes("${chatInput.trim().length} characters"),
   "composer meta should only render image controls and should not show chat-mode helper or character count text",
 );
 
 assert(
   appSource.includes('const QUICK_PHRASE_VISIBLE_LIMIT = 10;') &&
-  appSource.includes('className="quick-phrase-popover"') &&
-  appSource.includes('className="quick-phrase-card"') &&
-  appSource.includes("shortcutPhrases.slice(0, QUICK_PHRASE_VISIBLE_LIMIT)") &&
-  appSource.includes('aria-label={locale === "zh" ? "展开快捷短语" : "Open quick phrases"}') &&
-  appSource.includes('title={locale === "zh" ? "插入快捷短语" : "Insert shortcut phrase"}') &&
-  !appSource.includes('className="shortcut-toolbar"'),
+  chatWorkspaceSource.includes('className="quick-phrase-popover"') &&
+  chatWorkspaceSource.includes('className="quick-phrase-card"') &&
+  appSource.includes("quickPhrases={quickPhraseViewItems}") &&
+  appSource.includes("quickPhraseLimit={QUICK_PHRASE_VISIBLE_LIMIT}") &&
+  chatWorkspaceSource.includes("quickPhrases.slice(0, quickPhraseLimit)") &&
+  chatWorkspaceSource.includes('aria-label={localeText(locale, "展开快捷短语", "Open quick phrases")}') &&
+  chatWorkspaceSource.includes('title={localeText(locale, "插入快捷短语", "Insert shortcut phrase")}') &&
+  !workspaceSource.includes('className="shortcut-toolbar"'),
   "shortcut phrases should live in a capped right-header popover instead of the composer bottom row",
 );
 
@@ -112,11 +167,34 @@ assert(
   "quick phrase popover should be styled as a collapsible right-header card with hover shadow feedback",
 );
 
-const composerFormBlock = appSource.match(/<form className=\{`chatgpt-composer[\s\S]*?<\/form>/m)?.[0] ?? "";
+const composerFormBlock = chatWorkspaceSource.match(/<form className=\{`chatgpt-composer[\s\S]*?<\/form>/m)?.[0] ?? "";
 assert(
   !composerFormBlock.includes('className="shortcut-toolbar"') &&
   !composerFormBlock.includes("shortcutPhrases.map"),
   "shortcut phrases should not render inside the composer form",
+);
+
+assert(
+  !workspaceSource.includes("Globe2") &&
+  !workspaceSource.includes("onWebSearch") &&
+  !workspaceSource.includes("onVoice") &&
+  !composerFormBlock.includes("chatgpt-composer__mic-btn") &&
+  !composerFormBlock.includes("chatgpt-composer__web-btn") &&
+  !composerFormBlock.includes("联网搜索") &&
+  !composerFormBlock.includes("语音") &&
+  !composerFormBlock.includes("composer-hint") &&
+  !composerFormBlock.includes("chatgpt-mode-note") &&
+  !workspaceSource.includes("请输入要直接发送给画图模型的提示词") &&
+  !workspaceSource.includes("Enter the prompt to send directly to the image model"),
+  "composer should remove voice/web controls and bottom helper prompt copy from the rendered form",
+);
+
+assert(
+  /\/\* Composer and settings refinement \*\//.test(finalStyles) &&
+  /\.chatgpt-composer textarea,[\s\S]*?\.chatgpt-composer--empty-conversation textarea:focus-visible\s*\{[\s\S]*?border:\s*0 !important;[\s\S]*?outline:\s*0 !important;[\s\S]*?box-shadow:\s*none !important;[\s\S]*?resize:\s*none;/m.test(finalStyles) &&
+  /\.chatgpt-composer__inline-actions\.composer-toolbar,[\s\S]*?\.chatgpt-composer--empty-conversation \.chatgpt-composer__inline-actions\.composer-toolbar\s*\{[\s\S]*?gap:\s*18px;[\s\S]*?padding-top:\s*12px;/m.test(finalStyles) &&
+  /\.chatgpt-composer__tool-group\.tool-group\s*\{[\s\S]*?gap:\s*12px;/m.test(finalStyles),
+  "composer refinement should remove the textarea focus rectangle and loosen toolbar spacing",
 );
 
 assert(
@@ -148,16 +226,16 @@ assert(
   appSource.includes("handleChatModelChange") &&
   appSource.includes("handleDetectModels") &&
   appSource.includes("chatReasoningEffort") &&
-  appSource.includes('className="chatgpt-composer__provider-badge"') &&
-  appSource.includes('className="chatgpt-composer__model-select"') &&
-  appSource.includes('className="chatgpt-composer__effort-select"'),
+  chatWorkspaceSource.includes('className="chatgpt-composer__provider-badge"') &&
+  chatWorkspaceSource.includes('className="chatgpt-composer__model-select chip-btn"') &&
+  chatWorkspaceSource.includes('className="chatgpt-composer__effort-select"'),
   "composer footer should expose provider, model switching, and effort controls near the send button",
 );
 
 assert(
-  /\.chatgpt-composer__provider-badge\s*\{[\s\S]*?max-width:\s*132px;/m.test(styles) &&
-  /\.chatgpt-composer__model-select,\s*\.chatgpt-composer__effort-select\s*\{[\s\S]*?max-width:\s*148px;/m.test(styles) &&
-  styles.includes("font-size: 11px;"),
+  /\.chatgpt-composer__provider-badge\s*\{[\s\S]*?max-width:\s*168px;/m.test(finalStyles) &&
+  /\.chatgpt-composer__model-select,\s*\.chatgpt-composer__effort-select\s*\{[\s\S]*?max-width:\s*148px;/m.test(finalStyles) &&
+  /font-size:\s*14px;/.test(finalStyles),
   "composer provider and model controls should stay visually compact",
 );
 
@@ -262,8 +340,9 @@ assert(
   appSource.includes("function clearComposerDraft()") &&
   dailyChatFlowBlock.includes("clearComposerDraft();") &&
   generationFlowBlock.includes("clearComposerDraft();") &&
+  generationFlowBlock.includes("clearAttachments(true);") &&
   generationFlowBlock.includes("getGenerationBlocker(submitMode, userBrief)"),
-  "composer draft text should clear after a real chat or image submit while validation uses the submitted prompt text",
+  "composer draft text and submitted image attachments should clear after a real chat or image submit while validation uses the submitted prompt text",
 );
 
 assert(
@@ -293,23 +372,36 @@ assert(
 );
 
 assert(
+  appSource.includes("function sanitizeSessionForPersistence") &&
+  appSource.includes('!url.startsWith("data:") && !url.startsWith("blob:")') &&
+  appSource.includes("const persistableSessions = chatSessions.map(sanitizeSessionForPersistence)") &&
+  /try\s*\{\s*window\.localStorage\.setItem\(chatHistoryStorageKey\(currentUserId\),\s*serialized\);\s*\}\s*catch/m.test(appSource),
+  "chat history persistence should not store large inline image attachments or let storage quota failures blank the app",
+);
+
+assert(
   !/权限|permission|temporary access token|临时访问标识/.test(appSource),
   "composer and account UI should not reintroduce permission management or temporary-token copy",
 );
 
 assert(
-  appSource.includes('className="chatgpt-sidebar__footer"') &&
-  appSource.includes('className={`chatgpt-sidebar__account-menu ${isSidebarCollapsed ? "is-collapsed" : ""}`}') &&
+  chatWorkspaceSource.includes('className="chatgpt-sidebar__footer user-card"') &&
+  chatWorkspaceSource.includes('className={`chatgpt-sidebar__footer-settings icon-btn ${isSettingsActive ? "is-active active" : ""} ${isSidebarCollapsed ? "is-collapsed" : ""}`}') &&
+  chatWorkspaceSource.includes('onClick={() => onOpenSettingsPanel("setup")}') &&
+  appSource.includes('isSettingsActive={isSettingsPanel(activeUtilityPanel)}') &&
+  chatWorkspaceSource.includes('className={`chatgpt-sidebar__account-menu ${isSidebarCollapsed ? "is-collapsed" : ""}`}') &&
   appSource.includes("settingsPanelItems.map") &&
-  appSource.includes('panel: "preferences"') &&
-  appSource.includes('panel: "generation"') &&
-  appSource.includes('panel: "setup"') &&
-  appSource.includes('panel: "analysis"') &&
-  appSource.includes('panel: "prompts"') &&
+  appSource.includes('panel: "preferences" as const') &&
+  appSource.includes('panel: "setup" as const') &&
+  appSource.includes('panel: "analysis" as const') &&
+  appSource.includes('panel: "prompts" as const') &&
+  !appSource.includes('panel: "generation" as const') &&
   appSource.includes('activeUtilityPanel === "analysis"') &&
   appSource.includes('activeUtilityPanel === "prompts"') &&
-  appSource.includes('openSettingsPanel(item.panel)'),
-  "sidebar footer should expose a compact account menu with separate setup, advanced, and prompt destinations",
+  appSource.includes('openSettingsPanel(item.panel)') &&
+  /\.chatgpt-sidebar__footer\.user-card\s*\{[\s\S]*?grid-template-columns:\s*38px minmax\(0,\s*1fr\) 36px;/m.test(finalStyles) &&
+  /\.chatgpt-sidebar__footer-settings\s*\{[\s\S]*?grid-column:\s*3;/m.test(finalStyles),
+  "sidebar footer should match the OpenDesign user-card with a separate settings gear and current category settings destinations",
 );
 
 assert(
@@ -317,11 +409,6 @@ assert(
   appSource.includes('analysis: locale === "zh" ? "严格复核、运行阶段和平面图分析集中在这里。" : "Strict review, run stages, and floor-plan analysis live here."') &&
   !appSource.includes('{locale === "zh" ? "分析" : "Analysis"}'),
   "run analysis should live under the Advanced settings entry instead of a main-header action",
-);
-
-assert(
-  appSource.includes('generation: locale === "zh" ? "调整下一次出图使用的模型、备用模型和轮数。" : "Tune the model, fallbacks, and pass count for the next image run."'),
-  "generation settings should not advertise strict review after strict review moves into Advanced",
 );
 
 assert(
@@ -355,7 +442,7 @@ assert(
   appSource.includes("const isEmptyConversation = activePathMessages.length === 0 && !isVisibleRendering && !isVisibleChatResponding") &&
   appSource.includes('isEmptyConversation && !isImageManagementView ? "chatgpt-main--empty-conversation" : ""') &&
   appSource.includes('isEmptyConversation ? "is-empty" : ""') &&
-  appSource.includes('isEmptyConversation ? "chatgpt-composer--empty-conversation" : ""') &&
+  chatWorkspaceSource.includes('isEmptyConversation ? "chatgpt-composer--empty-conversation" : ""') &&
   !appSource.includes('messages.length === 0 && !isRendering && !chatInput.trim()') &&
   !appSource.includes('messages.length === 0 && !isRendering && !hasPromptText'),
   "empty conversation state should not disappear while the user is typing an unsent draft or a background session is running",
@@ -364,28 +451,50 @@ assert(
 assert(
   appSource.includes('visibleComposerPlaceholder') &&
   appSource.includes('locale === "zh" ? "有问题，尽管问" : "Ask anything"') &&
-  appSource.includes('className="chatgpt-empty__suggestions"') &&
-  appSource.includes('aria-label={locale === "zh" ? "快速开始" : "Quick starts"}') &&
-  appSource.includes('onClick={() => isImageWorkspace ? composerRef.current?.focus() : switchWorkspaceMode("image")}') &&
-  appSource.includes('onClick={openImageManagementView}'),
-  "empty state should present one title, short composer placeholder, and compact suggestion chips",
+  appSource.includes("const emptyPromptCards") &&
+  chatWorkspaceSource.includes("ATTUNO WORKSPACE") &&
+  chatWorkspaceSource.includes("我们先把想法变成可执行的下一步。") &&
+  chatWorkspaceSource.includes('className="chatgpt-empty__starter-icon"') &&
+  chatWorkspaceSource.includes('className="chatgpt-empty__starter-copy"') &&
+  appSource.includes("emptyPromptStarterCards") &&
+  appSource.includes("emptyPromptCards.map((card)") &&
+  appSource.includes("insertComposerPhrase(card.prompt)") &&
+  appSource.includes("switchWorkspaceMode(targetMode)") &&
+  chatWorkspaceSource.includes('<span>{localeText(locale, "附件", "Attach")}</span>'),
+  "empty state should present the OpenDesign hero, six prompt cards, and a real attachment control",
+);
+
+assert(
+  !workspaceSource.includes('className="chatgpt-empty__suggestions"') &&
+  !workspaceSource.includes('aria-label={locale === "zh" ? "快速开始" : "Quick starts"}') &&
+  chatWorkspaceSource.includes('className="chatgpt-composer__plus-btn tool-btn"') &&
+  chatWorkspaceSource.includes('<Send size={18} />') &&
+  !workspaceSource.includes("AudioLines"),
+  "empty conversation should use the OpenDesign prompt grid and composer controls without the old quick-start chip row",
 );
 
 assert(
   styles.includes(".chatgpt-main--empty-conversation") &&
-  styles.includes("--empty-composer-width: min(1040px, calc(100% - 48px));") &&
-  styles.includes("grid-template-rows: 58px minmax(28px, 0.28fr) auto minmax(0, 1fr);") &&
+  styles.includes("/* Attuno OpenDesign high-fidelity refinement */") &&
+  styles.includes("@keyframes attuno-rise") &&
+  styles.includes("@keyframes attuno-pop") &&
+  styles.includes("@keyframes attuno-pulse") &&
+  styles.includes("--empty-composer-width: min(920px, calc(100% - 56px));") &&
+  styles.includes("grid-template-rows: 68px minmax(0, 1fr) auto;") &&
   styles.includes("width: var(--empty-composer-width);") &&
   styles.includes(".chatgpt-composer--empty-conversation") &&
-  /\.chatgpt-composer--empty-conversation\s+\.chatgpt-composer__bar\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+auto;/m.test(styles) &&
+  /\.chatgpt-composer--empty-conversation\s+\.chatgpt-composer__bar\s*\{[\s\S]*?min-height:\s*146px;[\s\S]*?grid-template-columns:\s*auto minmax\(0,\s*1fr\) auto;[\s\S]*?grid-template-areas:\s*"textarea textarea textarea"[\s\S]*?"plus spacer actions";/m.test(styles) &&
+  /\.chatgpt-empty__starters button:nth-child\(6\)\s*\{[\s\S]*?animation-delay:\s*200ms;/m.test(styles) &&
+  /@media \(max-width: 860px\)[\s\S]*?\.chatgpt-empty__starters\s*\{[\s\S]*?display:\s*flex;[\s\S]*?overflow-x:\s*auto;/m.test(styles) &&
+  /@media \(max-width: 860px\)[\s\S]*?\.chatgpt-composer--empty-conversation \.chatgpt-composer__bar\s*\{[\s\S]*?grid-template-areas:\s*"plus textarea actions";/m.test(styles) &&
   styles.includes(".chatgpt-composer textarea:focus-visible"),
-  "empty conversation composer should be centered, compact, lower on the page, reserve a send-button column, and avoid an inner textarea focus box",
+  "empty conversation should match the OpenDesign hero/cards/composer layout with responsive motion-safe refinements",
 );
 
 assert(
-  appSource.includes('className="chatgpt-composer__attachments-inner"') &&
-  appSource.includes('className="chatgpt-composer__attachment-card"') &&
-  appSource.includes('className="chatgpt-composer__attachment-card-close"') &&
+  chatWorkspaceSource.includes('className="chatgpt-composer__attachments-inner"') &&
+  chatWorkspaceSource.includes('className="chatgpt-composer__attachment-card"') &&
+  chatWorkspaceSource.includes('className="chatgpt-composer__attachment-card-close"') &&
   /\.chatgpt-composer--empty-conversation\s+\.chatgpt-composer__bar\.chatgpt-composer__bar--has-attachments\s*\{[\s\S]*?min-height:\s*292px;[\s\S]*?grid-template-areas:\s*"attachments attachments attachments"[\s\S]*?"plus textarea actions";[\s\S]*?border-radius:\s*32px;/m.test(styles) &&
   /\.chatgpt-composer__attachment-card-header\s*\{[\s\S]*?display:\s*contents;/m.test(styles) &&
   /\.chatgpt-composer__attachment-card-thumb,\s*\.chatgpt-composer__attachment-card-name\s*\{[\s\S]*?display:\s*none;/m.test(styles) &&
@@ -397,10 +506,9 @@ assert(
 assert(
   styles.includes("/* Productized app UI */") &&
   styles.includes("--app-sidebar-hover") &&
-  styles.includes(".chatgpt-empty__suggestions") &&
   styles.includes(".chatgpt-drawer.chatgpt-drawer--settings-dialog") &&
   styles.includes("@media (max-width: 860px)"),
-  "productized UI overrides should define final tokens, empty suggestion chips, settings dialog polish, and mobile constraints",
+  "productized UI overrides should define final tokens, settings dialog polish, and mobile constraints",
 );
 
 assert(
@@ -417,8 +525,10 @@ assert(
   generationBlockerBlock.includes('mode === "colored_floor_plan" && floorPlanFiles.length === 0') &&
   !generationBlockerBlock.includes('if (floorPlanFiles.length === 0)') &&
   appSource.includes(': hasPromptText;') &&
-  appSource.includes('3D 提示词增强会在你的输入上追加效果图表达') &&
-  generationModeOptionsBlock.includes("3D 提示词增强"),
+  generationBlockerBlock.includes('mode === "render3d" && !hasSubmitPromptText') &&
+  generationBlockerBlock.includes('请填写画面需求，或使用快捷短语补充 3D 效果提示词') &&
+  generationModeOptionsBlock.includes("3D 提示词增强") &&
+  !workspaceSource.includes("请输入要直接发送给画图模型的提示词"),
   "3D render generation should behave as prompt enhancement while colored floor plan still requires an uploaded plan",
 );
 
@@ -434,9 +544,12 @@ assert(
 
 assert(
   appSource.includes("function setComposerImageAttachments") &&
-  appSource.includes("setComposerImageAttachments(e.target.files, true)") &&
+  appSource.includes("setComposerImageAttachments(event.target.files, true)") &&
   appSource.includes("setComposerImageAttachments(images, true)") &&
-  appSource.includes('isChatWorkspace\n      ? locale === "zh" ? `已添加 ${imageFiles.length} 张聊天图片`'),
+  chatWorkspaceSource.includes("onChange={onFileChange}") &&
+  (appSource.match(/function setComposerImageAttachments[\s\S]*?function removeFloorPlan/m)?.[0] ?? "").includes("isChatWorkspace") &&
+  (appSource.match(/function setComposerImageAttachments[\s\S]*?function removeFloorPlan/m)?.[0] ?? "").includes("张聊天图片") &&
+  (appSource.match(/function setComposerImageAttachments[\s\S]*?function removeFloorPlan/m)?.[0] ?? "").includes("chat image(s) attached"),
   "composer uploads and pasted images should stay in chat mode as chat attachments",
 );
 
@@ -467,6 +580,46 @@ assert(
 );
 
 assert(
+  appSource.includes("function buildGenerationPreviewAttachments") &&
+  generationFlowBlock.includes("await buildGenerationPreviewAttachments(submittedFiles)") &&
+  generationFlowBlock.includes("const submittedFiles = [...floorPlanFiles]") &&
+  generationFlowBlock.includes("const submittedFloorPlanUrl = submittedFloorPlanPreview?.dataUrl") &&
+  generationFlowBlock.includes("attachments: generationAttachments") &&
+  generationFlowBlock.includes("floorPlanFiles: submittedFiles"),
+  "submitted image-generation uploads should stay visible in the user message and result metadata while using the same file snapshot sent to generation",
+);
+
+assert(
+  generationFlowBlock.includes('id: `m-live-analysis-${idBase}`') &&
+  generationFlowBlock.includes("已提交生成请求，正在等待图片服务返回结果。") &&
+  generationFlowBlock.includes("If the upstream service fails, the reason will appear here") &&
+  generationFlowBlock.includes("removeLiveAnalysisMessage(runGuard, idBase);") &&
+  appSource.includes("正在画图中，未卡住") &&
+  appSource.includes("generation-progress-status") &&
+  styles.includes(".generation-progress-status"),
+  "image generation should immediately show a visible assistant pending state and clear it before final success or failure output",
+);
+
+assert(
+  appSource.includes("function hasGenerationImageResult") &&
+  appSource.includes("function emptyGenerationResultError") &&
+  appSource.includes("画图服务没有返回图片结果") &&
+  generationFlowBlock.includes("if (!hasGenerationImageResult(result, backendItems))") &&
+  generationFlowBlock.includes("throw emptyGenerationResultError(result, locale);"),
+  "image generation should treat ok responses without any returned image as failures instead of rendering an empty result card",
+);
+
+assert(
+  appSource.includes("function formatGenerationErrorMessage") &&
+  appSource.includes('lowerMessage.includes("upstream")') &&
+  appSource.includes('lowerMessage.includes("没有返回图片")') &&
+  appSource.includes("画图服务暂时没有成功返回图片") &&
+  generationFlowBlock.includes("formatGenerationErrorMessage(error, locale, t.requestFailed)") &&
+  !generationFlowBlock.includes("content: `${t.requestFailed}: ${error instanceof Error ? error.message : String(error)}`"),
+  "image-generation failures should be summarized as user-friendly upstream service errors instead of raw JSON/SSE text",
+);
+
+assert(
   appSource.includes('if (activeMessage.kind === "render" && activeMessage.imageUrl)') &&
   appSource.includes("await handleCopyImage(activeMessage.imageUrl, activeMessage.imageLabel)") &&
   appSource.includes('const isStreamingAssistantMessage = isVisibleChatResponding') &&
@@ -477,9 +630,12 @@ assert(
 );
 
 assert(
-  /\.chatgpt-drawer--settings-dialog\s+\.chatgpt-drawer__stack\s*\{[\s\S]*?align-content:\s*start;[\s\S]*?padding:\s*14px 16px 18px;/m.test(styles) &&
-  /\.chatgpt-drawer--settings-dialog\s+\.config-action-row\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*wrap;/m.test(styles) &&
-  /\.chatgpt-drawer--settings-dialog\s+\.config-toggle\s*\{[\s\S]*?min-height:\s*38px;/m.test(styles) &&
-  /\.chatgpt-drawer--settings-dialog\s+\.api-config-grid\s*\{[\s\S]*?gap:\s*10px;[\s\S]*?padding:\s*10px;/m.test(styles),
-  "settings and generation control drawers should keep compact cards, controls, and top-aligned content",
+  /\.chatgpt-drawer\.chatgpt-drawer--settings-dialog\s*\{[\s\S]*?width:\s*min\(1320px,\s*calc\(100vw - 32px\)\);[\s\S]*?height:\s*min\(900px,\s*calc\(100dvh - 32px\)\);[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\);[\s\S]*?border-radius:\s*28px;/m.test(finalStyles) &&
+  /\.chatgpt-drawer\.chatgpt-drawer--settings-dialog\s*\{[\s\S]*?grid-template-columns:\s*326px minmax\(0,\s*1fr\);[\s\S]*?grid-template-rows:\s*auto minmax\(0,\s*1fr\);/m.test(finalStyles) &&
+  /\.chatgpt-drawer--settings-dialog\s+\.chatgpt-drawer__header\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*1;/m.test(finalStyles) &&
+  /\.chatgpt-drawer--settings-dialog\s+\.chatgpt-drawer__content\.settings-shell\s*\{[\s\S]*?display:\s*contents;/m.test(finalStyles) &&
+  /\.chatgpt-drawer--settings-dialog\s+\.chatgpt-drawer__nav\.settings-nav\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*1 \/ -1;[\s\S]*?padding:\s*28px 20px;[\s\S]*?background:\s*#f5ecdf;/m.test(finalStyles) &&
+  /\.chatgpt-drawer--settings-dialog\s+\.chatgpt-drawer__stack\.settings-content\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*2;[\s\S]*?gap:\s*24px;[\s\S]*?padding:\s*34px 46px 44px;[\s\S]*?overflow-y:\s*auto;/m.test(finalStyles) &&
+  /@media \(max-width:\s*980px\)[\s\S]*?\.chatgpt-drawer\.chatgpt-drawer--settings-dialog\s*\{[\s\S]*?grid-template-columns:\s*1fr;[\s\S]*?grid-template-rows:\s*auto auto minmax\(0,\s*1fr\);/m.test(finalStyles),
+  "settings dialog should use the wide two-column settings-center layout with a warm sidebar and responsive single-column fallback",
 );

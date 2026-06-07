@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task entry point and checklist."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Verify chat shell, sidebar/history, workspace mode, settings and API-state contracts remain intact."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check UI state type safety around workspace and image modes."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Review component structure and accessibility."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality and verification expectations."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide entry point."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check reuse of existing UI/API patterns."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Check backend API contracts were not changed."}

@@ -3,6 +3,7 @@ from pydantic import BaseModel, Field
 
 from backend.app.services.auth_service import get_current_or_default_user
 from backend.app.services.preferences_store import (
+    create_memory_item,
     delete_memory_item,
     load_memory_view,
     load_prompt_skills,
@@ -46,6 +47,8 @@ class PreferenceEventPayload(BaseModel):
 class MemoryItemPayload(BaseModel):
     text: str = ""
     project_id: str = "default"
+    section_id: str = "long_term_preferences"
+    group: str = "style"
 
 
 @router.get("/shortcuts")
@@ -84,6 +87,25 @@ def get_memory(project_id: str = "default", user=Depends(get_current_or_default_
         "ok": True,
         "memory": load_memory_view(project_id, user["user_id"]),
         "profile": load_style_profile(project_id, user["user_id"]),
+    }
+
+
+@router.post("/memory")
+def post_memory_item(payload: MemoryItemPayload, user=Depends(get_current_or_default_user)):
+    try:
+        memory = create_memory_item(
+            payload.text,
+            payload.section_id,
+            payload.project_id,
+            user["user_id"],
+            payload.group,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "ok": True,
+        "memory": memory,
+        "profile": load_style_profile(payload.project_id, user["user_id"]),
     }
 
 

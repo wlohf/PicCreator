@@ -2,6 +2,8 @@
 .aionrs/
 .browser_screenshots/
 .claude/
+.codegraph/
+.codex/
 .downloads/
 .vscode/
 bash_events/
@@ -11,6 +13,7 @@ attuno-studio/.env
 attuno-studio/config.json
 attuno-studio/outputs/
 attuno-studio/.attuno-studio-data/
+.attuno-studio-data/
 attuno-studio/.render-agent-data/
 node_modules/
 dist/
@@ -28,6 +31,7 @@ output/
 .agent-night/
 .tmp-*.png
 fix.patch
+.trellis.zip
 .codex/*.bak-*
 attuno-studio/.tmp-pydeps/
 attuno-studio/.tmp-pytest-cache/

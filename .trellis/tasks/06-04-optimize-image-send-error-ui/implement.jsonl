@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task entry and guideline index."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Composer attachments are transient state; submitted chat messages are durable content."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Maintain typed generation modes and API/UI boundaries."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality checklist for scoped changes and verification."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index for pre-modification checks."}

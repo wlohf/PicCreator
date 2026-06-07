@@ -25,6 +25,8 @@
 - Runtime data must be outside the Git working tree:
   - Preferred: `ATTUNO_STUDIO_DATA_DIR=/var/lib/attuno`
   - Legacy fallback: `RENDER_AGENT_DATA_DIR`
+- Generation runtime artifacts, including intermediate output images and validation records, must be written under the runtime data namespace, not `attuno-studio/outputs` in the Git checkout.
+- Per-user generation output directories should use `get_user_data_dir(user_id) / "outputs" / <normalized project_id>` so API generation, result storage, and asset serving share the same writable namespace.
 - Nginx serves `attuno-studio/ui-prototype/dist` and reverse-proxies `/api/` to `http://127.0.0.1:8787`.
 - Deployment scripts must not overwrite existing `.env` or `config.json`; they may create them from examples when missing.
 
@@ -35,18 +37,21 @@
 - `git pull --ff-only` conflict -> fail without overwriting server-local changes.
 - API service restart succeeds but `/api/health` does not respond -> fail update.
 - Nginx config test fails -> do not reload Nginx.
+- API generation cannot create the runtime output directory -> return a clear permission/configuration error that names `ATTUNO_STUDIO_DATA_DIR` or `RENDER_AGENT_DATA_DIR`.
 
 ### 5. Good/Base/Bad Cases
 
 - Good: `deploy/update.sh` pulls fast-forward changes, refreshes dependencies, builds frontend, restarts `attuno-api`, verifies health, then reloads Nginx.
 - Base: `SKIP_GIT_PULL=1 bash deploy/update.sh` updates dependencies and runtime when code was already changed manually.
 - Bad: running `npm run dev` or `start_attuno_studio.bat` as the production server.
+- Bad: generation writes to `/opt/attuno/PicCreator/attuno-studio/outputs`; the service user may not own the Git checkout, and updates can replace or lock that path.
 
 ### 6. Tests Required
 
 - Run `bash -n deploy/install.sh` and `bash -n deploy/update.sh` with a real Bash implementation.
 - Run frontend production build: `npm run build`.
 - Run a backend API check, at minimum `python -m pytest tests/test_backend_api.py -q` or a live `/api/health` check on the server.
+- Backend generation tests should assert `record_output_dir` resolves under `ATTUNO_STUDIO_DATA_DIR`/user namespace rather than the repository `outputs` directory.
 
 ### 7. Wrong vs Correct
 
@@ -67,3 +72,19 @@ bash deploy/update.sh
 ```
 
 The update script rebuilds static frontend assets, restarts the systemd API service, verifies `/api/health`, and reloads Nginx only after config validation.
+
+#### Wrong
+
+```python
+record_output_dir = Path(__file__).resolve().parent / "outputs"
+```
+
+This writes runtime artifacts into the deployed Git checkout and can fail with `PermissionError` under systemd.
+
+#### Correct
+
+```python
+record_output_dir = get_user_data_dir(user_id) / "outputs" / normalize_user_id(project_id)
+```
+
+Generation artifacts stay in the configured runtime data directory, alongside persisted result assets.

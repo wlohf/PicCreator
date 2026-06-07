@@ -12,7 +12,7 @@ from app_runtime import run_pipeline
 from backend.app.schemas.generation import GenerateForm
 from backend.app.services.file_service import image_record, save_uploads
 from backend.app.services.preferences_store import format_style_profile_context, record_behavior_signal
-from backend.app.services.result_store import create_result
+from backend.app.services.result_store import create_result, get_user_data_dir, normalize_user_id
 
 
 class NoopProgress:
@@ -41,6 +41,17 @@ def _split_uploaded_image_inputs(mode: str, uploaded_paths: list[str]) -> tuple[
     if mode == "standard":
         return [], uploaded_paths[0] if uploaded_paths else None
     return uploaded_paths, None
+
+
+def _generation_output_dir(user_id: str, project_id: str) -> Path:
+    path = get_user_data_dir(user_id) / "outputs" / normalize_user_id(project_id or "default")
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise PermissionError(
+            f"生成输出目录不可写：{path}。请检查 ATTUNO_STUDIO_DATA_DIR/RENDER_AGENT_DATA_DIR 配置和服务用户权限。{exc}"
+        ) from exc
+    return path
 
 
 def build_generation_payload(
@@ -72,6 +83,20 @@ def build_generation_payload(
     image_sources = [(path, label) for path, label in output_images if path]
     if not image_sources and isinstance(current_preview, str):
         image_sources.append((current_preview, "current_preview"))
+    if not image_sources:
+        message = status_text or logs or "画图服务没有返回图片结果"
+        return {
+            "ok": False,
+            "stage": "generation",
+            "status": status_text,
+            "floor_desc": floor_desc,
+            "prompt": prompt_text,
+            "evaluation": eval_report,
+            "logs": logs,
+            "error": f"画图服务没有返回图片结果：{message}",
+            "images": [],
+            "results": [],
+        }
 
     results = []
     images = []
@@ -180,6 +205,7 @@ async def generate_render(form: GenerateForm, style_profile: dict | None = None)
     try:
         uploaded_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
         floor_plan_paths, reference_image_path = _split_uploaded_image_inputs(form.mode, uploaded_paths)
+        output_dir = _generation_output_dir(form.user_id, form.project_id)
         learned_preferences_text = format_style_profile_context(style_profile)
 
         def _run_sync():
@@ -209,6 +235,7 @@ async def generate_render(form: GenerateForm, style_profile: dict | None = None)
                 project_id=form.project_id,
                 user_id=form.config_user_id,
                 learned_preferences_text=learned_preferences_text,
+                record_output_dir=str(output_dir),
                 progress=NoopProgress(),
             ):
                 result = snapshot
@@ -226,7 +253,7 @@ async def generate_render(form: GenerateForm, style_profile: dict | None = None)
         if payload is None:
             return error_response("generation", "生成流程没有返回结果")
         if not payload.get("ok"):
-            return error_response("generation", payload.get("error") or payload.get("status") or "生成失败")
+            return JSONResponse(status_code=400, content=payload)
         return payload
     except Exception as exc:
         return error_response("generation", f"{type(exc).__name__}: {exc}")
@@ -244,6 +271,7 @@ async def stream_generate_render(form: GenerateForm, style_profile: dict | None 
         try:
             uploaded_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
             floor_plan_paths, reference_image_path = _split_uploaded_image_inputs(form.mode, uploaded_paths)
+            output_dir = _generation_output_dir(form.user_id, form.project_id)
             learned_preferences_text = format_style_profile_context(style_profile)
 
             initial_progress = {
@@ -289,6 +317,7 @@ async def stream_generate_render(form: GenerateForm, style_profile: dict | None 
                         project_id=form.project_id,
                         user_id=form.config_user_id,
                         learned_preferences_text=learned_preferences_text,
+                        record_output_dir=str(output_dir),
                         progress=NoopProgress(),
                     ):
                         snapshot_queue.put(("snapshot", snapshot))
