@@ -262,14 +262,19 @@ async def generate_render(form: GenerateForm, style_profile: dict | None = None)
 
 
 async def stream_generate_render(form: GenerateForm, style_profile: dict | None = None):
+    temp_dir = tempfile.TemporaryDirectory(prefix="attuno-studio-api-")
+    try:
+        uploaded_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
+    except Exception:
+        temp_dir.cleanup()
+        raise
+
     async def event_generator():
-        temp_dir = tempfile.TemporaryDirectory(prefix="attuno-studio-api-")
         heartbeat_seconds = 10
         last_progress_key = None
         last_progress_payload = None
         latest = None
         try:
-            uploaded_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
             floor_plan_paths, reference_image_path = _split_uploaded_image_inputs(form.mode, uploaded_paths)
             output_dir = _generation_output_dir(form.user_id, form.project_id)
             learned_preferences_text = format_style_profile_context(style_profile)

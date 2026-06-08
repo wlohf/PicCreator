@@ -209,15 +209,15 @@ assert(
 assert(
   appSource.includes("function isRenderMessageComparisonDisabled") &&
   appSource.includes("sourceResultId: historyItem.id") &&
-  appSource.includes("sourceResultId: message.sourceResultId") &&
+  appSource.includes("sourceResultId: activeMessage.sourceResultId") &&
   appSource.includes("const comparableImageCount = uniqueImageComparisonCandidates(comparisonCandidates).length;") &&
   appSource.includes("comparableImageCount >= 2") &&
   appSource.includes('source: "library"') &&
   appSource.includes("A 基准图 / B 对比图") &&
-  appSource.includes("默认优先选当前聊天最近两张生成图") &&
-  appSource.includes("至少需要两张不同的生成图才能对比") &&
+  appSource.includes("默认优先选当前聊天的上传源图和最新结果") &&
+  appSource.includes("至少需要两张不同图片才能对比") &&
   appSource.includes("!messageSourceResult?.floorPlanUrl && !floorPlanPreviews[0]?.url"),
-  "chat-thread compare actions should use A/B image comparison with current-chat defaults, image-library fallback, and floor-plan fallback when needed",
+  "chat-thread compare actions should use A/B image comparison with current-chat source/result defaults, image-library fallback, and floor-plan fallback when needed",
 );
 
 assert(
@@ -322,7 +322,7 @@ assert(
   dailyChatFlowBlock.includes("message: userBrief") &&
   dailyChatFlowBlock.includes("api_config: requestApiConfig") &&
   dailyChatFlowBlock.includes("reasoning_effort: chatReasoningEffort") &&
-  dailyChatFlowBlock.includes("buildLinearChatContext([...messages, nextPatch[0]], userMessageId)") &&
+  dailyChatFlowBlock.includes("buildLinearChatContext([...baseMessages, nextPatch[0]], userMessageId)") &&
   dailyChatFlowBlock.includes("messages: requestMessages"),
   "daily chat submit should call the backend chat stream API with active provider/model config, effort, and the linear active path context",
 );
@@ -341,7 +341,7 @@ assert(
   dailyChatFlowBlock.includes("clearComposerDraft();") &&
   generationFlowBlock.includes("clearComposerDraft();") &&
   generationFlowBlock.includes("clearAttachments(true);") &&
-  generationFlowBlock.includes("getGenerationBlocker(submitMode, userBrief)"),
+  generationFlowBlock.includes("getGenerationBlocker(submitMode, userBrief, submittedFiles.length)"),
   "composer draft text and submitted image attachments should clear after a real chat or image submit while validation uses the submitted prompt text",
 );
 
@@ -354,8 +354,8 @@ assert(
   appSource.includes('handleMessageFeedback(message, "dislike")') &&
   appSource.includes("handleBranchFromMessage(message)") &&
   appSource.includes("handleCopyMessage(message)") &&
-  appSource.includes("handleOpenComparison({ url: message.imageUrl") &&
-  appSource.includes("handleDownloadResult(renderMessageDownloadItem)") &&
+  appSource.includes("handleOpenComparison({ url: activeMessage.imageUrl") &&
+  appSource.includes("handleDownloadResult(renderMessageDownloadItem ?? fallbackRenderMessageDownloadItem)") &&
   !appSource.includes('className="render-card-actions"') &&
   styles.includes(".assistant-output-actions") &&
   styles.includes(".assistant-output-actions button.is-selected"),
@@ -373,10 +373,11 @@ assert(
 
 assert(
   appSource.includes("function sanitizeSessionForPersistence") &&
-  appSource.includes('!url.startsWith("data:") && !url.startsWith("blob:")') &&
+  appSource.includes('url.startsWith("data:image/") || !url.startsWith("data:")') &&
+  appSource.includes('!url.startsWith("blob:")') &&
   appSource.includes("const persistableSessions = chatSessions.map(sanitizeSessionForPersistence)") &&
   /try\s*\{\s*window\.localStorage\.setItem\(chatHistoryStorageKey\(currentUserId\),\s*serialized\);\s*\}\s*catch/m.test(appSource),
-  "chat history persistence should not store large inline image attachments or let storage quota failures blank the app",
+  "chat history persistence should keep durable image attachments, filter blob previews, and catch storage quota failures",
 );
 
 assert(
@@ -465,6 +466,37 @@ assert(
 );
 
 assert(
+  appSource.includes('const CUSTOM_PROMPT_PLAZA_STORAGE_KEY = "attuno-custom-prompt-plaza-v1";') &&
+  appSource.includes('const PROMPT_PLAZA_FAVORITES_STORAGE_KEY = "attuno-prompt-plaza-favorites-v1";') &&
+  appSource.includes('const PROMPT_PLAZA_LIKES_STORAGE_KEY = "attuno-prompt-plaza-likes-v1";') &&
+  appSource.includes('type PromptPlazaSource = "official" | "community" | "team" | "user";') &&
+  appSource.includes("function parseImportedPromptPlazaItems") &&
+  appSource.includes("function savePromptPlazaDraft") &&
+  appSource.includes("handleImportPromptPlazaFile") &&
+  appSource.includes("function togglePromptPlazaLike") &&
+  appSource.includes("PROMPT_PLAZA_COMMUNITY_LIKE_THRESHOLD") &&
+  appSource.includes('className="visually-hidden-input"') &&
+  appSource.includes("customPromptPlazaItems") &&
+  appSource.includes("添加提示词") &&
+  appSource.includes("导入文件") &&
+  appSource.includes("我的提示词"),
+  "prompt plaza should support locally persisted custom prompts and file import",
+);
+
+assert(
+  appSource.includes('id: "image-edit-reference"') &&
+  appSource.includes('id: "ui-screenshot-review"') &&
+  appSource.includes('id: "extract-table"') &&
+  appSource.includes('id: "social-post"') &&
+  /grid-template-columns:\s*repeat\(auto-fit,\s*minmax\(320px,\s*1fr\)\);/.test(styles) &&
+  styles.includes("max-width: 420px;") &&
+  styles.includes("justify-content: start;") &&
+  /\.plaza-card\s*\{[\s\S]*?min-height:\s*286px;/m.test(styles) &&
+  /\.plaza-preview\s*\{[\s\S]*?min-height:\s*58px;/m.test(styles),
+  "prompt plaza cards should keep fixed widths, seed basic examples, and avoid large empty image placeholders",
+);
+
+assert(
   !workspaceSource.includes('className="chatgpt-empty__suggestions"') &&
   !workspaceSource.includes('aria-label={locale === "zh" ? "快速开始" : "Quick starts"}') &&
   chatWorkspaceSource.includes('className="chatgpt-composer__plus-btn tool-btn"') &&
@@ -522,7 +554,7 @@ assert(
 
 const generationBlockerBlock = appSource.match(/function getGenerationBlocker[\s\S]*?const canEditSelectedResult/m)?.[0] ?? "";
 assert(
-  generationBlockerBlock.includes('mode === "colored_floor_plan" && floorPlanFiles.length === 0') &&
+  generationBlockerBlock.includes('mode === "colored_floor_plan" && floorPlanFileCount === 0') &&
   !generationBlockerBlock.includes('if (floorPlanFiles.length === 0)') &&
   appSource.includes(': hasPromptText;') &&
   generationBlockerBlock.includes('mode === "render3d" && !hasSubmitPromptText') &&
@@ -582,11 +614,35 @@ assert(
 assert(
   appSource.includes("function buildGenerationPreviewAttachments") &&
   generationFlowBlock.includes("await buildGenerationPreviewAttachments(submittedFiles)") &&
-  generationFlowBlock.includes("const submittedFiles = [...floorPlanFiles]") &&
+  generationFlowBlock.includes("const submittedFiles = requestedFiles ?? [...floorPlanFiles]") &&
   generationFlowBlock.includes("const submittedFloorPlanUrl = submittedFloorPlanPreview?.dataUrl") &&
   generationFlowBlock.includes("attachments: generationAttachments") &&
   generationFlowBlock.includes("floorPlanFiles: submittedFiles"),
   "submitted image-generation uploads should stay visible in the user message and result metadata while using the same file snapshot sent to generation",
+);
+
+const comparisonCandidateBlock = appSource.match(/const conversationComparisonCandidates = useMemo[\s\S]*?const maxIterations/m)?.[0] ?? "";
+const defaultComparisonPairBlock = appSource.match(/function resolveDefaultComparisonPair[\s\S]*?function handleOpenComparison/m)?.[0] ?? "";
+assert(
+  appSource.includes('type ImageComparisonCandidateAssetType = "source-image" | "result-image"') &&
+  comparisonCandidateBlock.includes("activeMessage.attachments?.length") &&
+  comparisonCandidateBlock.includes('assetType: "source-image"') &&
+  comparisonCandidateBlock.includes('assetType: "result-image"') &&
+  comparisonCandidateBlock.includes("上传源图") &&
+  defaultComparisonPairBlock.includes('candidate.assetType === "source-image"') &&
+  defaultComparisonPairBlock.includes('candidate.assetType === "result-image"') &&
+  appSource.includes("默认优先选当前聊天的上传源图和最新结果"),
+  "uploaded source images should become compare candidates and default against the latest generated or edited result",
+);
+
+assert(
+  appSource.includes("function getImageEditBlocker") &&
+  appSource.includes("!sourceResultHasImage && sourceFileCount === 0") &&
+  generationFlowBlock.includes("getImageEditBlocker(userBrief, submittedFiles.length, Boolean(activeResult?.imageUrl))") &&
+  generationFlowBlock.includes("const shouldEditUploadedReference = submittedFiles.length > 0") &&
+  generationFlowBlock.includes('mode: "standard"') &&
+  generationFlowBlock.includes("floorPlanFiles: submittedFiles"),
+  "edit mode should allow uploaded reference images to use the standard image-to-image generation path without requiring a selected history result",
 );
 
 assert(

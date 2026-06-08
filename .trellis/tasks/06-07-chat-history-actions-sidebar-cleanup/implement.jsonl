@@ -1,0 +1,6 @@
+{"file":".trellis/spec/frontend/index.md","reason":"frontend task entrypoint and linked guideline index"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"chat history state and persistence conventions"}
+{"file":".trellis/spec/frontend/component-guidelines.md","reason":"component prop and accessibility conventions for sidebar UI"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"TypeScript safety expectations for frontend changes"}
+{"file":".trellis/spec/backend/generation-contracts.md","reason":"Images API response parsing contract for backend image generation adapter"}
+{"file":".trellis/spec/guides/index.md","reason":"shared thinking guide index for code reuse and cross-layer checks"}

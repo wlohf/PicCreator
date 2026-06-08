@@ -107,6 +107,81 @@ export function getMessagePathTo(messages: ChatMessage[], messageId: string) {
   return getActiveMessagePath(messages, messageId);
 }
 
+function isImageWorkflowOwnMessage(message: ChatMessage) {
+  const activeMessage = withActiveMessageVariant(message);
+  return (
+    activeMessage.workflowMode === "image" ||
+    activeMessage.id.startsWith("m-user-") ||
+    activeMessage.id.startsWith("m-api-") ||
+    activeMessage.id.startsWith("m-live-analysis-") ||
+    activeMessage.id.startsWith("recovered-user-") ||
+    activeMessage.id.startsWith("recovered-render-") ||
+    activeMessage.kind === "analysis" ||
+    activeMessage.kind === "render" ||
+    Boolean(activeMessage.imageUrl || activeMessage.sourceResultId || activeMessage.promptText)
+  );
+}
+
+function hasImageWorkflowDescendant(messages: ChatMessage[], messageId: string) {
+  const childrenByParent = new Map<string | null, ChatMessage[]>();
+  for (const message of messages) {
+    const parentId = message.parentId ?? null;
+    childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), message]);
+  }
+  const queue = [...(childrenByParent.get(messageId) ?? [])];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const child = queue.shift();
+    if (!child || seen.has(child.id)) continue;
+    seen.add(child.id);
+    if (isImageWorkflowOwnMessage(child)) {
+      return true;
+    }
+    queue.push(...(childrenByParent.get(child.id) ?? []));
+  }
+  return false;
+}
+
+export function isImageWorkflowMessage(messages: ChatMessage[], messageId: string) {
+  const message = messages.find((item) => item.id === messageId);
+  if (!message) return false;
+  const activeMessage = withActiveMessageVariant(message);
+  if (activeMessage.workflowMode === "chat") return false;
+  if (isImageWorkflowOwnMessage(activeMessage)) return true;
+  const path = getMessagePathTo(messages, activeMessage.id).map(withActiveMessageVariant);
+  const hasChatBoundary = path.some((item) => item.workflowMode === "chat");
+  if (hasChatBoundary) return false;
+  return path.some(isImageWorkflowOwnMessage) || hasImageWorkflowDescendant(messages, activeMessage.id);
+}
+
+export function inferMessageGenerationMode(
+  messages: ChatMessage[],
+  messageId: string,
+  fallbackMode: GenerationMode
+): GenerationMode {
+  const path = getMessagePathTo(messages, messageId).map(withActiveMessageVariant);
+  for (let index = path.length - 1; index >= 0; index -= 1) {
+    const mode = path[index].generationMode;
+    if (mode) return mode;
+  }
+  const childrenByParent = new Map<string | null, ChatMessage[]>();
+  for (const message of messages) {
+    const parentId = message.parentId ?? null;
+    childrenByParent.set(parentId, [...(childrenByParent.get(parentId) ?? []), message]);
+  }
+  const queue = [...(childrenByParent.get(messageId) ?? [])];
+  const seen = new Set<string>();
+  while (queue.length > 0) {
+    const child = queue.shift();
+    if (!child || seen.has(child.id)) continue;
+    seen.add(child.id);
+    const activeChild = withActiveMessageVariant(child);
+    if (activeChild.generationMode) return activeChild.generationMode;
+    queue.push(...(childrenByParent.get(child.id) ?? []));
+  }
+  return fallbackMode;
+}
+
 export function cloneMessagePath(path: ChatMessage[], idPrefix: string) {
   const idMap = new Map<string, string>();
   return path.map((message, index) => {
@@ -181,6 +256,9 @@ export function inferStoredWorkspaceMode({
 export function messageToVariant(message: ChatMessage): ChatMessageVariant {
   return {
     id: `${message.id}-variant-0`,
+    kind: message.kind,
+    workflowMode: message.workflowMode,
+    generationMode: message.generationMode,
     content: message.content,
     bullets: message.bullets,
     promptText: message.promptText,
@@ -211,6 +289,9 @@ export function withActiveMessageVariant(message: ChatMessage): ChatMessage {
   const activeVariant = getActiveMessageVariant(message);
   return {
     ...message,
+    kind: activeVariant.kind ?? message.kind,
+    workflowMode: activeVariant.workflowMode ?? message.workflowMode,
+    generationMode: activeVariant.generationMode ?? message.generationMode,
     content: activeVariant.content,
     bullets: activeVariant.bullets,
     promptText: activeVariant.promptText,

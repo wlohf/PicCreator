@@ -7,6 +7,7 @@ import type {
   ReactNode,
   RefObject,
 } from "react";
+import { createPortal } from "react-dom";
 import {
   Aperture,
   Camera,
@@ -99,12 +100,39 @@ function localeText(locale: Locale, zh: string, en: string) {
   return locale === "zh" ? zh : en;
 }
 
+function SidebarHistoryMenu({
+  locale,
+  item,
+  style,
+}: {
+  locale: Locale;
+  item: SidebarHistoryViewItem;
+  style?: { top: number; left: number };
+}) {
+  return (
+    <div className="chatgpt-sidebar__history-menu" role="menu" style={style}>
+      <button type="button" role="menuitem" onClick={item.onStartRename}>
+        <Edit3 size={16} />
+        <span>{localeText(locale, "重命名", "Rename")}</span>
+      </button>
+      <button type="button" role="menuitem" onClick={item.onTogglePin}>
+        <Pin size={16} />
+        <span>{item.pinned ? localeText(locale, "取消置顶", "Unpin chat") : localeText(locale, "置顶聊天", "Pin chat")}</span>
+      </button>
+      <div className="chatgpt-sidebar__history-menu-separator" />
+      <button type="button" role="menuitem" className="is-danger" onClick={item.onDelete}>
+        <Trash2 size={16} />
+        <span>{localeText(locale, "删除", "Delete")}</span>
+      </button>
+    </div>
+  );
+}
+
 export function ChatSidebar({
   locale,
   appName,
   isSidebarCollapsed,
   canStartNewConversation,
-  isRendering,
   isChatHistoryOpen,
   historyTotal,
   historyGroups,
@@ -131,7 +159,6 @@ export function ChatSidebar({
   appName: string;
   isSidebarCollapsed: boolean;
   canStartNewConversation: boolean;
-  isRendering: boolean;
   isChatHistoryOpen: boolean;
   historyTotal: number;
   historyGroups: SidebarHistoryViewGroup[];
@@ -186,7 +213,6 @@ export function ChatSidebar({
         type="button"
         className={`chatgpt-sidebar__new-chat primary-action ${isSidebarCollapsed ? "is-collapsed" : ""} ${canStartNewConversation ? "" : "is-empty-session"}`}
         onClick={onNewChat}
-        disabled={isRendering}
         title={
           canStartNewConversation
             ? localeText(locale, "新建对话", "Start a new chat")
@@ -306,22 +332,9 @@ export function ChatSidebar({
                             <MoreHorizontal size={16} />
                           </button>
                         )}
-                        {item.hasMenu && (
-                          <div className="chatgpt-sidebar__history-menu" role="menu" style={historyMenuStyle}>
-                            <button type="button" role="menuitem" onClick={item.onStartRename}>
-                              <Edit3 size={16} />
-                              <span>{localeText(locale, "重命名", "Rename")}</span>
-                            </button>
-                            <button type="button" role="menuitem" onClick={item.onTogglePin}>
-                              <Pin size={16} />
-                              <span>{item.pinned ? localeText(locale, "取消置顶", "Unpin chat") : localeText(locale, "置顶聊天", "Pin chat")}</span>
-                            </button>
-                            <div className="chatgpt-sidebar__history-menu-separator" />
-                            <button type="button" role="menuitem" className="is-danger" onClick={item.onDelete}>
-                              <Trash2 size={16} />
-                              <span>{localeText(locale, "删除", "Delete")}</span>
-                            </button>
-                          </div>
+                        {item.hasMenu && typeof document !== "undefined" && createPortal(
+                          <SidebarHistoryMenu locale={locale} item={item} style={historyMenuStyle} />,
+                          document.body
                         )}
                       </div>
                     ))}

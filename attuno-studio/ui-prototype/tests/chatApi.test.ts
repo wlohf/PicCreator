@@ -46,6 +46,7 @@ assert(
 );
 
 const dailyChatFlowBlock = appSource.match(/async function runDailyChatFlow[\s\S]*?async function runConversationFlow/m)?.[0] ?? "";
+const chatSidebarBlock = chatWorkspaceSource.match(/export function ChatSidebar[\s\S]*?export function WorkspaceTopbar/m)?.[0] ?? "";
 assert(
   dailyChatFlowBlock.includes("streamDesignChat(") &&
   dailyChatFlowBlock.includes("api_config: requestApiConfig") &&
@@ -67,9 +68,14 @@ assert(
 );
 
 assert(
-  appSource.includes("disabled={isRendering}") &&
+  !chatSidebarBlock.includes("disabled={isRendering}") &&
+  !chatSidebarBlock.includes("isRendering") &&
+  appSource.includes("function handleResetWorkspace()") &&
+  !appSource.includes("function handleResetWorkspace() {\n    if (isRendering) return;") &&
+  dailyChatFlowBlock.includes("if (chatRespondingSessionIds.includes(currentSessionIdRef.current)) return;") &&
+  !dailyChatFlowBlock.includes("if (isRendering || chatRespondingSessionIds.includes(currentSessionIdRef.current)) return;") &&
   appSource.includes("const isConversationBusy = isRendering || isVisibleChatResponding"),
-  "new conversations should not be blocked by another session's in-flight chat response",
+  "new conversations and daily chat should not be blocked by another session's in-flight image generation",
 );
 
 assert(

@@ -194,29 +194,29 @@ def _resolve_reference_path(form: EditImageForm, source_path: Path) -> tuple[str
             form.img_base_url,
             form.img_api_key,
             form.img_model,
-        form.fallback_models_text,
-        form.model_switch_after_failures,
-        form.stop_after_last_model_failures,
-        user_id=form.config_user_id,
-    )
+            form.fallback_models_text,
+            form.model_switch_after_failures,
+            form.stop_after_last_model_failures,
+            validate_analysis=False,
+            user_id=form.config_user_id,
+        )
     except Exception as exc:
-        warning = f"配置解析失败，使用源图作为参考图：{exc}"
-        return str(source_path), warning, form.img_model
+        raise ValueError(f"改图配置解析失败，无法确认画图模型是否支持参考图输入：{exc}") from exc
     model_queue = [cfg.image_gen.model] + list(cfg.image_model_fallbacks or [])
     supported = [model_name for model_name in model_queue if adapter_supports_image_inputs(cfg.image_gen, model_name)]
     if supported:
         return str(source_path), "", supported[0]
-    warning = (
-        "当前画图模型链不支持参考图输入，后端已改为仅使用分析后的文本提示词尽量重建；"
-        "这类模型无法严格保持源图局部一致。"
+    model_chain = ", ".join(model_queue) or form.img_model or "未设置"
+    raise ValueError(
+        "当前画图模型链不支持参考图/图生图输入，无法基于源图继续局部修改。"
+        f"当前模型链：{model_chain}；请切换到支持 images.edit 的图像模型。"
     )
-    return None, warning, model_queue[0] if model_queue else form.img_model
 
 
 def _run_edit_pipeline(form: EditImageForm, reference_path: str | None, requirement: str):
     return _latest_snapshot(
         run_pipeline(
-            GenerationMode.RENDER3D.value,
+            GenerationMode.STANDARD.value,
             [],
             reference_path,
             requirement,
@@ -321,9 +321,9 @@ async def edit_render(form: EditImageForm, style_profile: dict | None = None):
         return error_response("image-edit", "请输入要修改的内容")
 
     project_context = format_style_profile_context(style_profile or {})
-    reference_path, model_warning, model_used = _resolve_reference_path(form, source_path)
-    requirement = _build_edit_requirement(source, form.edit_instruction, project_context, model_warning)
     try:
+        reference_path, model_warning, model_used = _resolve_reference_path(form, source_path)
+        requirement = _build_edit_requirement(source, form.edit_instruction, project_context, model_warning)
         snapshot = await asyncio.to_thread(_run_edit_pipeline, form, reference_path, requirement)
     except Exception as exc:
         return error_response("image-edit", f"{type(exc).__name__}: {exc}")

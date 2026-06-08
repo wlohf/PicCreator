@@ -1,0 +1,1 @@
+2026-06-08: User reported an unwanted inner line frame in the secondary edit input screenshot. Investigation found the relevant UI is the inline editor for historical user messages, not the bottom ChatComposer.

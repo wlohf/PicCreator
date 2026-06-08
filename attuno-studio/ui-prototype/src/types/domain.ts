@@ -57,6 +57,9 @@ export type ChatImageAttachment = {
 
 export type ChatMessageVariant = {
   id: string;
+  kind?: "text" | "analysis" | "render" | "error";
+  workflowMode?: "chat" | "image";
+  generationMode?: GenerationMode;
   content: LocalizedText | string;
   bullets?: Record<Locale, string[]>;
   promptText?: string;
@@ -75,6 +78,8 @@ export type ChatMessage = {
   parentId?: string | null;
   role: "user" | "assistant";
   kind: "text" | "analysis" | "render" | "error";
+  workflowMode?: "chat" | "image";
+  generationMode?: GenerationMode;
   content: LocalizedText | string;
   bullets?: Record<Locale, string[]>;
   promptText?: string;

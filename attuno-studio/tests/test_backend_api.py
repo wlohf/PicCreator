@@ -1,6 +1,9 @@
 from pathlib import Path
+import asyncio
+import io
 import json
 
+from fastapi import UploadFile
 from fastapi.testclient import TestClient
 
 from backend.app.main import create_app
@@ -1368,7 +1371,7 @@ def _write_test_png(path: Path):
     )
 
 
-def test_results_endpoints_persist_serve_and_delete_images(tmp_path, monkeypatch):
+def test_results_endpoints_persist_serve_and_soft_delete_images(tmp_path, monkeypatch):
     from backend.app.services.result_store import create_result
 
     monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
@@ -1402,6 +1405,9 @@ def test_results_endpoints_persist_serve_and_delete_images(tmp_path, monkeypatch
     delete_response = client.delete(f"/api/results/{created['id']}")
     assert delete_response.status_code == 200
     assert client.get("/api/results").json()["results"] == []
+    historical_image_response = client.get(payload["results"][0]["image_url"])
+    assert historical_image_response.status_code == 200
+    assert historical_image_response.headers["content-type"] == "image/png"
 
 
 def test_results_endpoint_returns_full_management_history(tmp_path, monkeypatch):
@@ -1829,6 +1835,257 @@ def test_generate_endpoint_routes_standard_upload_as_reference_image(tmp_path, m
     assert Path(captured["record_output_dir"]) == tmp_path / "data" / "users" / "reference-image-user" / "outputs" / "default"
     assert payload["results"][0]["generation_mode"] == "standard"
     assert payload["results"][0].get("floor_plan_url") in {"", None}
+
+
+def test_stream_generate_saves_uploads_before_file_lifecycle_closes(tmp_path, monkeypatch):
+    from backend.app.schemas.generation import GenerateForm
+    from backend.app.services import generation_service
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    image_path = tmp_path / "stream-render.png"
+    floor_plan = tmp_path / "stream-floor.png"
+    _write_test_png(image_path)
+    _write_test_png(floor_plan)
+    captured = {}
+
+    def fake_run_pipeline(mode, floor_plan_paths, reference_path, *_args, **_kwargs):
+        captured["mode"] = mode
+        captured["floor_plan_count"] = len(floor_plan_paths)
+        captured["reference_path"] = reference_path
+        yield (
+            str(image_path),
+            [(str(image_path), "stream render")],
+            "生成成功",
+            "floor desc",
+            "prompt text",
+            "",
+            "",
+        )
+
+    async def consume_stream_after_upload_closed():
+        upload = UploadFile(filename="floor.png", file=io.BytesIO(floor_plan.read_bytes()))
+        response = await generation_service.stream_generate_render(
+            GenerateForm(
+                user_id="stream-upload-user",
+                config_user_id="stream-upload-user",
+                project_id="default",
+                mode="colored_floor_plan",
+                requirement="清晰分区配色",
+                direction_stack_text="",
+                manual_prompt="",
+                max_iterations=1,
+                analysis_provider_name="",
+                analysis_api_format="",
+                analysis_base_url="",
+                analysis_api_key="",
+                analysis_model="",
+                img_provider_name="",
+                img_api_format="",
+                img_base_url="",
+                img_api_key="",
+                img_model="",
+                fallback_models_text="",
+                model_switch_after_failures=2,
+                stop_after_last_model_failures=2,
+                enable_quality_evaluation=False,
+                floor_plans=[upload],
+            )
+        )
+        await upload.close()
+        chunks = []
+        async for chunk in response.body_iterator:
+            chunks.append(chunk.decode("utf-8") if isinstance(chunk, bytes) else chunk)
+        return "".join(chunks)
+
+    monkeypatch.setattr(generation_service, "run_pipeline", fake_run_pipeline)
+
+    raw_events = asyncio.run(consume_stream_after_upload_closed())
+    events = _parse_sse_events(raw_events)
+
+    assert captured == {"mode": "colored_floor_plan", "floor_plan_count": 1, "reference_path": None}
+    assert events[-1]["event"] == "complete"
+    assert events[-1]["data"]["ok"] is True
+    assert "read of closed file" not in raw_events
+
+
+def test_edit_result_uses_source_image_as_standard_reference(tmp_path, monkeypatch):
+    from backend.app.services import image_edit_service
+    from backend.app.services.result_store import create_result
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    source_image = tmp_path / "source.png"
+    edited_image = tmp_path / "edited.png"
+    _write_test_png(source_image)
+    _write_test_png(edited_image)
+    source = create_result(
+        title="Demo render",
+        status="生成成功",
+        image_path=str(source_image),
+        image_label="demo-label",
+        prompt="original prompt",
+        evaluation="",
+        logs="",
+        user_id="edit-standard-user",
+    )
+    captured = {}
+
+    def fake_run_pipeline(mode, floor_plan_paths, reference_path, requirement, *_args, **kwargs):
+        captured["mode"] = mode
+        captured["floor_plan_count"] = len(floor_plan_paths)
+        captured["reference_path"] = reference_path
+        captured["requirement"] = requirement
+        captured["user_id"] = kwargs.get("user_id")
+        yield (
+            str(edited_image),
+            [(str(edited_image), "edited render")],
+            "生成成功",
+            "",
+            "edited prompt",
+            "",
+            "",
+        )
+
+    monkeypatch.setattr(image_edit_service, "run_pipeline", fake_run_pipeline)
+    client = _auth_client("edit-standard-user")
+
+    response = client.post(
+        f"/api/results/{source['id']}/edit",
+        data={
+            "edit_instruction": "只把灯光改暖，其他保持不变",
+            "img_provider_name": "Image Provider",
+            "img_api_format": "openai_image",
+            "img_base_url": "https://image.example/v1",
+            "img_api_key": "image-key",
+            "img_model": "gpt-image-2",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured["mode"] == "standard"
+    assert captured["floor_plan_count"] == 0
+    assert captured["reference_path"]
+    assert Path(captured["reference_path"]).name.startswith("result-")
+    assert "只把灯光改暖" in captured["requirement"]
+    assert captured["user_id"] == "edit-standard-user"
+    assert payload["result"]["parent_id"] == source["id"]
+    assert payload["result"]["generation_type"] == "edit"
+    assert payload["result"]["edit_mode"] == "text"
+    assert payload["result"]["version_index"] == 2
+
+
+def test_edit_result_rejects_text_only_image_model(tmp_path, monkeypatch):
+    from backend.app.services.result_store import create_result
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    source_image = tmp_path / "source.png"
+    _write_test_png(source_image)
+    source = create_result(
+        title="Demo render",
+        status="生成成功",
+        image_path=str(source_image),
+        image_label="demo-label",
+        prompt="original prompt",
+        evaluation="",
+        logs="",
+        user_id="edit-text-only-user",
+    )
+    client = _auth_client("edit-text-only-user")
+
+    response = client.post(
+        f"/api/results/{source['id']}/edit",
+        data={
+            "edit_instruction": "只把灯光改暖，其他保持不变",
+            "img_provider_name": "DALL-E",
+            "img_api_format": "openai_image",
+            "img_base_url": "https://image.example/v1",
+            "img_api_key": "image-key",
+            "img_model": "dall-e-3",
+        },
+    )
+
+    assert response.status_code == 400
+    payload = response.json()
+    assert payload["stage"] == "image-edit"
+    assert "不支持参考图/图生图输入" in payload["error"]
+    assert "dall-e-3" in payload["error"]
+
+
+def test_annotated_edit_uses_clean_source_as_standard_reference(tmp_path, monkeypatch):
+    from backend.app.services import image_edit_service
+    from backend.app.services.result_store import create_result
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    source_image = tmp_path / "source.png"
+    edited_image = tmp_path / "edited.png"
+    annotation_image = tmp_path / "annotation.png"
+    _write_test_png(source_image)
+    _write_test_png(edited_image)
+    _write_test_png(annotation_image)
+    source = create_result(
+        title="Demo render",
+        status="生成成功",
+        image_path=str(source_image),
+        image_label="demo-label",
+        prompt="original prompt",
+        evaluation="",
+        logs="",
+        user_id="annotated-standard-user",
+    )
+    captured = {}
+
+    async def fake_analyze_annotation(*_args, **_kwargs):
+        return {
+            "marked_region": "沙发",
+            "user_intent": "换成浅灰色",
+            "preserve_regions": ["墙面", "窗户"],
+            "edit_prompt": "只把沙发换成浅灰色，其他不变",
+            "negative_prompt": "不要红圈、箭头、涂鸦",
+        }
+
+    def fake_run_pipeline(mode, floor_plan_paths, reference_path, requirement, *_args, **kwargs):
+        captured["mode"] = mode
+        captured["floor_plan_count"] = len(floor_plan_paths)
+        captured["reference_path"] = reference_path
+        captured["requirement"] = requirement
+        captured["user_id"] = kwargs.get("user_id")
+        yield (
+            str(edited_image),
+            [(str(edited_image), "edited render")],
+            "生成成功",
+            "",
+            "edited prompt",
+            "",
+            "",
+        )
+
+    monkeypatch.setattr(image_edit_service, "_analyze_annotation", fake_analyze_annotation)
+    monkeypatch.setattr(image_edit_service, "run_pipeline", fake_run_pipeline)
+    client = _auth_client("annotated-standard-user")
+
+    response = client.post(
+        f"/api/results/{source['id']}/annotated-edit",
+        data={
+            "edit_instruction": "沙发换浅灰色",
+            "img_provider_name": "Image Provider",
+            "img_api_format": "openai_image",
+            "img_base_url": "https://image.example/v1",
+            "img_api_key": "image-key",
+            "img_model": "gpt-image-2",
+        },
+        files={"annotation_image": ("annotation.png", annotation_image.read_bytes(), "image/png")},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert captured["mode"] == "standard"
+    assert captured["floor_plan_count"] == 0
+    assert captured["reference_path"]
+    assert Path(captured["reference_path"]).name.startswith("result-")
+    assert "只把沙发换成浅灰色" in captured["requirement"]
+    assert "不要红圈、箭头、涂鸦" in captured["requirement"]
+    assert captured["user_id"] == "annotated-standard-user"
+    assert payload["result"]["edit_mode"] == "annotation"
 
 
 def test_generate_endpoint_passes_project_memory_context_to_runtime(tmp_path, monkeypatch):

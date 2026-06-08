@@ -1,0 +1,6 @@
+{"file":".trellis/spec/frontend/index.md","reason":"frontend quality check entrypoint"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"verify chat history persistence behavior"}
+{"file":".trellis/spec/frontend/quality-guidelines.md","reason":"frontend quality checklist"}
+{"file":".trellis/spec/frontend/type-safety.md","reason":"TypeScript safety review"}
+{"file":".trellis/spec/backend/generation-contracts.md","reason":"verify backend image adapter follows image response parsing contract"}
+{"file":".trellis/spec/guides/index.md","reason":"shared quality review guide index"}

@@ -20,7 +20,6 @@ import {
   KeyRound,
   LogOut,
   Maximize2,
-  MessageCircle,
   Moon,
   MousePointer,
   PanelLeftClose,
@@ -75,10 +74,10 @@ import {
   directionItems,
   modelOptions
 } from "./data/studioData";
-import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatReasoningEffort, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
-import { buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getBranchInfo, getMessagePathTo, hasConversationContent, hasDurableConversationContent, inferStoredWorkspaceMode, isCurrentConversationRun, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, switchMessageSibling, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
+import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatMessageVariant, ChatReasoningEffort, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
+import { appendMessageVariant, buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariantIndex, getBranchInfo, getMessagePathTo, getMessageVariants, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, updateActiveMessageVariant, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
 import { apiConfigStorageKey, apiConfigStorageReadKeys } from "./utils/apiConfigStorage";
-import { filesFromList, imageFilesFromClipboardItems, imageFilesFromFiles, mergeFloorPlanFiles } from "./utils/fileAttachments";
+import { filesFromList, imageFilesFromClipboardItems, imageFilesFromFiles, imageSourcesFromClipboardData, mergeFloorPlanFiles } from "./utils/fileAttachments";
 import { mergeRenderHistoryItems } from "./utils/renderHistory";
 import { compactLines, localized } from "./utils/text";
 
@@ -87,6 +86,11 @@ const LEGACY_CHAT_HISTORY_STORAGE_KEY = "render-director-chat-history-v1";
 const SHORTCUT_PHRASES_STORAGE_KEY = "attuno-shortcut-phrases-v1";
 const LEGACY_SHORTCUT_PHRASES_STORAGE_KEY = "render-director-shortcut-phrases-v1";
 const PROMPT_SKILLS_STORAGE_KEY = "attuno-prompt-skills-v1";
+const CUSTOM_PROMPT_PLAZA_STORAGE_KEY = "attuno-custom-prompt-plaza-v1";
+const PROMPT_PLAZA_FAVORITES_STORAGE_KEY = "attuno-prompt-plaza-favorites-v1";
+const PROMPT_PLAZA_LIKES_STORAGE_KEY = "attuno-prompt-plaza-likes-v1";
+const PROMPT_PLAZA_USER_LIKES_STORAGE_KEY = "attuno-prompt-plaza-user-likes-v1";
+const PROMPT_PLAZA_COMMUNITY_LIKE_THRESHOLD = 3;
 const ANALYSIS_MODEL_OPTIONS_STORAGE_KEY = "attuno-analysis-model-options-v1";
 const LAYOUT_SIDEBAR_WIDTH_STORAGE_KEY = "attuno-sidebar-width-v1";
 const LEGACY_LAYOUT_SIDEBAR_WIDTH_STORAGE_KEY = "render-director-sidebar-width-v1";
@@ -123,7 +127,7 @@ type PromptSkillDraft = {
 
 type PromptModeId = "builtin-standard" | "builtin-render3d" | `skill-${string}`;
 type PromptPlazaView = "all" | "favorite";
-type PromptPlazaSource = "official" | "community" | "team";
+type PromptPlazaSource = "official" | "community" | "team" | "user";
 type PromptPlazaLanguage = "zh" | "en";
 type PromptPlazaCategory = "product" | "image" | "research" | "copy" | "code";
 type PromptPlazaMode = "chat" | "image" | "deep";
@@ -145,7 +149,16 @@ type PromptPlazaItem = {
   mode: PromptPlazaMode;
   tags: string[];
   favorite: boolean;
+  likes?: number;
   tone: "product" | "image" | "research" | "code";
+};
+type PromptPlazaDraft = {
+  title: string;
+  description: string;
+  prompt: string;
+  category: PromptPlazaCategory;
+  mode: PromptPlazaMode;
+  tags: string;
 };
 
 type PreviewImage = {
@@ -229,6 +242,22 @@ function promptSkillsStorageKey(userId: string) {
   return `${PROMPT_SKILLS_STORAGE_KEY}:${userId || "default"}`;
 }
 
+function customPromptPlazaStorageKey(userId: string) {
+  return CUSTOM_PROMPT_PLAZA_STORAGE_KEY;
+}
+
+function promptPlazaFavoritesStorageKey(userId: string) {
+  return `${PROMPT_PLAZA_FAVORITES_STORAGE_KEY}:${userId || "default"}`;
+}
+
+function promptPlazaUserLikesStorageKey(userId: string) {
+  return `${PROMPT_PLAZA_USER_LIKES_STORAGE_KEY}:${userId || "default"}`;
+}
+
+function promptPlazaLikesStorageKey() {
+  return PROMPT_PLAZA_LIKES_STORAGE_KEY;
+}
+
 function analysisModelOptionsStorageKey(userId: string) {
   return `${ANALYSIS_MODEL_OPTIONS_STORAGE_KEY}:${userId || "default"}`;
 }
@@ -263,6 +292,33 @@ function fileToDataUrl(file: File) {
     reader.onerror = () => reject(reader.error || new Error("Failed to read image attachment"));
     reader.readAsDataURL(file);
   });
+}
+
+async function dataUrlAttachmentToFile(attachment: ChatImageAttachment, fallbackName: string) {
+  const response = await fetch(attachment.dataUrl);
+  const blob = await response.blob();
+  return new File([blob], attachment.name || fallbackName, { type: attachment.mimeType || blob.type || "image/png" });
+}
+
+function imageFileExtension(mimeType: string) {
+  const subtype = mimeType.split("/")[1]?.split(";")[0]?.trim().toLowerCase();
+  if (!subtype) return "png";
+  return subtype === "jpeg" ? "jpg" : subtype;
+}
+
+async function imageFileFromClipboardSource(source: string, index: number) {
+  const response = await fetch(source, { credentials: "include" });
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  const blob = await response.blob();
+  const mimeType = blob.type || "image/png";
+  if (!mimeType.startsWith("image/")) {
+    throw new Error(`Not an image: ${mimeType}`);
+  }
+  const urlLabel = source.startsWith("data:") ? "pasted-image" : source.split(/[?#]/)[0]?.split("/").filter(Boolean).pop() || "pasted-image";
+  const safeName = slugifyFilename(urlLabel.replace(/\.[a-z0-9]+$/i, "")) || "pasted-image";
+  return new File([blob], `${safeName}-${index + 1}.${imageFileExtension(mimeType)}`, { type: mimeType });
 }
 
 type LiveGenerationState = {
@@ -332,6 +388,7 @@ type ComparisonImage =
     };
 
 type ImageComparisonCandidateSource = "conversation" | "library";
+type ImageComparisonCandidateAssetType = "source-image" | "result-image";
 
 type ImageComparisonCandidate = {
   id: string;
@@ -339,6 +396,7 @@ type ImageComparisonCandidate = {
   label: string;
   alt: string;
   source: ImageComparisonCandidateSource;
+  assetType: ImageComparisonCandidateAssetType;
   sourceResultId?: string;
   result?: RenderHistoryItem;
 };
@@ -372,6 +430,14 @@ const DEFAULT_PROMPT_SKILL_DRAFT: PromptSkillDraft = {
   name: "",
   description: "",
   prompt: "",
+};
+const DEFAULT_PROMPT_PLAZA_DRAFT: PromptPlazaDraft = {
+  title: "",
+  description: "",
+  prompt: "",
+  category: "image",
+  mode: "chat",
+  tags: "",
 };
 
 const chatReasoningEffortOptions: Array<{ value: ChatReasoningEffort; zh: string; en: string }> = [
@@ -740,6 +806,23 @@ function hasGenerationImageResult(result: GenerateResponse, backendItems: Render
   );
 }
 
+function stripBranchSuffix(title: string) {
+  return title.replace(/\s*(?:·\s*)?(?:分支|Branch)\s*\d+\s*$/i, "").trim();
+}
+
+function buildBranchSessionTitle(baseTitle: string, existingSessions: ChatSessionRecord[], locale: Locale) {
+  const normalizedBaseTitle = stripBranchSuffix(baseTitle) || (locale === "zh" ? "分支对话" : "Branch chat");
+  const existingTitles = new Set(existingSessions.map((session) => session.title.trim()).filter(Boolean));
+  const branchLabel = locale === "zh" ? "分支" : "Branch";
+  let index = 1;
+  let candidate = `${normalizedBaseTitle} · ${branchLabel} ${index}`;
+  while (existingTitles.has(candidate)) {
+    index += 1;
+    candidate = `${normalizedBaseTitle} · ${branchLabel} ${index}`;
+  }
+  return candidate;
+}
+
 function emptyGenerationResultError(result: GenerateResponse, locale: Locale) {
   const detail = [result.status, result.error, result.logs].map((item) => String(item || "").trim()).find(Boolean);
   return new Error(locale === "zh"
@@ -866,7 +949,7 @@ function createEmptySession(): ChatSessionRecord {
 function persistableAttachments(attachments?: ChatImageAttachment[]) {
   return (attachments ?? []).filter((attachment) => {
     const url = String(attachment.dataUrl || "");
-    return url && !url.startsWith("data:") && !url.startsWith("blob:");
+    return url && (url.startsWith("data:image/") || !url.startsWith("data:")) && !url.startsWith("blob:");
   });
 }
 
@@ -1056,6 +1139,8 @@ function sessionFromHistoryResult(item: RenderHistoryItem): ChatSessionRecord {
       parentId: null,
       role: "user",
       kind: "text",
+      workflowMode: "image",
+      generationMode,
       content: prompt || item.title || "历史生成记录",
     },
     {
@@ -1063,6 +1148,8 @@ function sessionFromHistoryResult(item: RenderHistoryItem): ChatSessionRecord {
       parentId: `recovered-user-${item.id}`,
       role: "assistant",
       kind: "render",
+      workflowMode: "image",
+      generationMode,
       content: {
         zh: compactLines([
           item.generationType === "edit" ? "已从图片管理恢复一条历史改图记录。" : "已从图片管理恢复一条历史生成记录。",
@@ -1168,6 +1255,7 @@ const PROMPT_PLAZA_ITEMS: PromptPlazaItem[] = [
     mode: "chat",
     tags: ["产品", "工作流", "验收标准"],
     favorite: true,
+    likes: 2,
     tone: "product",
   },
   {
@@ -1188,6 +1276,7 @@ const PROMPT_PLAZA_ITEMS: PromptPlazaItem[] = [
     mode: "image",
     tags: ["文生图", "官网", "视觉"],
     favorite: true,
+    likes: 4,
     tone: "image",
   },
   {
@@ -1208,6 +1297,7 @@ const PROMPT_PLAZA_ITEMS: PromptPlazaItem[] = [
     mode: "deep",
     tags: ["资料", "引用", "深度思考"],
     favorite: false,
+    likes: 3,
     tone: "research",
   },
   {
@@ -1310,7 +1400,254 @@ const PROMPT_PLAZA_ITEMS: PromptPlazaItem[] = [
     favorite: false,
     tone: "research",
   },
+  {
+    id: "image-edit-reference",
+    title: { zh: "基于参考图做二次修改", en: "Edit from a reference image" },
+    description: {
+      zh: "适合上传原图后说明保留项和修改项，让模型只改指定区域或风格。",
+      en: "Use after uploading a source image. State what to keep and what to change.",
+    },
+    prompt: {
+      zh: "请基于我上传的图片进行二次编辑：保留【主体/构图/人物/产品】不变，将【需要修改的区域】调整为【目标效果】，整体风格保持【风格关键词】，不要改变无关区域。",
+      en: "Edit the uploaded image. Keep [subject/composition/person/product] unchanged, change [target area] to [desired result], keep the overall style [style keywords], and avoid changing unrelated areas.",
+    },
+    author: "Attuno Image",
+    source: "official",
+    language: "zh",
+    category: "image",
+    mode: "image",
+    tags: ["图生图", "二次编辑", "局部修改"],
+    favorite: false,
+    tone: "image",
+  },
+  {
+    id: "ui-screenshot-review",
+    title: { zh: "截图界面走查", en: "Review a UI screenshot" },
+    description: {
+      zh: "上传界面截图后，从布局、层级、文案、可点击性和移动端风险做快速评审。",
+      en: "Review a UI screenshot for layout, hierarchy, copy, affordance, and mobile risks.",
+    },
+    prompt: {
+      zh: "请评审这张界面截图，按布局层级、信息密度、按钮可识别性、文案清晰度、移动端风险分别指出问题，并给出优先级排序的修改建议。",
+      en: "Review this UI screenshot. Identify issues in layout hierarchy, density, button affordance, copy clarity, and mobile risks, then list prioritized fixes.",
+    },
+    author: "Design QA",
+    source: "official",
+    language: "zh",
+    category: "product",
+    mode: "deep",
+    tags: ["UI 评审", "截图", "优先级"],
+    favorite: false,
+    tone: "product",
+  },
+  {
+    id: "extract-table",
+    title: { zh: "资料整理成表格", en: "Turn notes into a table" },
+    description: {
+      zh: "把杂乱文字、网页摘要或调研笔记整理成字段清晰的 Markdown 表格。",
+      en: "Turn messy notes, page summaries, or research snippets into a structured Markdown table.",
+    },
+    prompt: {
+      zh: "请把下面资料整理成 Markdown 表格，字段包括：主题、关键信息、证据/来源、风险、下一步动作。信息不足处请标注“待补充”。",
+      en: "Convert the following material into a Markdown table with columns: topic, key information, evidence/source, risk, and next action. Mark missing information as TBD.",
+    },
+    author: "Research Kit",
+    source: "community",
+    language: "zh",
+    category: "research",
+    mode: "chat",
+    tags: ["表格", "资料", "整理"],
+    favorite: false,
+    tone: "research",
+  },
+  {
+    id: "social-post",
+    title: { zh: "产品更新动态文案", en: "Product update post" },
+    description: {
+      zh: "把功能更新写成克制清楚的发布动态，适合社媒、群公告或版本说明摘要。",
+      en: "Turn a product update into a clear post for social, team announcements, or release notes.",
+    },
+    prompt: {
+      zh: "请把下面功能更新写成一段产品动态文案：先说明用户能获得什么，再列 3 个重点变化，语气克制具体，不要夸张营销。",
+      en: "Turn the following product update into a concise product post. Start with what users gain, list three key changes, and keep the tone specific rather than promotional.",
+    },
+    author: "Copy Studio",
+    source: "team",
+    language: "zh",
+    category: "copy",
+    mode: "chat",
+    tags: ["发布", "更新", "文案"],
+    favorite: false,
+    tone: "product",
+  },
 ];
+
+function promptPlazaToneForCategory(category: PromptPlazaCategory): PromptPlazaItem["tone"] {
+  if (category === "image") return "image";
+  if (category === "research") return "research";
+  if (category === "code") return "code";
+  return "product";
+}
+
+function normalizePromptPlazaCategory(value: unknown): PromptPlazaCategory {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "image" || text.includes("图") || text.includes("visual")) return "image";
+  if (text === "research" || text.includes("资料") || text.includes("研究")) return "research";
+  if (text === "copy" || text.includes("文案") || text.includes("写作")) return "copy";
+  if (text === "code" || text.includes("代码") || text.includes("开发")) return "code";
+  return "product";
+}
+
+function normalizePromptPlazaMode(value: unknown): PromptPlazaMode {
+  const text = String(value || "").trim().toLowerCase();
+  if (text === "image" || text.includes("图像")) return "image";
+  if (text === "deep" || text.includes("深度") || text.includes("reason")) return "deep";
+  return "chat";
+}
+
+function normalizePromptPlazaLanguage(value: unknown, fallback: Locale): PromptPlazaLanguage {
+  return String(value || fallback).trim().toLowerCase().startsWith("en") ? "en" : "zh";
+}
+
+function promptPlazaLocalizedText(value: unknown, fallback = ""): Record<Locale, string> {
+  if (value && typeof value === "object") {
+    const record = value as Partial<Record<Locale, unknown>>;
+    const zh = String(record.zh || record.en || fallback || "").trim();
+    const en = String(record.en || record.zh || fallback || "").trim();
+    return { zh, en };
+  }
+  const text = String(value || fallback || "").trim();
+  return { zh: text, en: text };
+}
+
+function promptPlazaText(value: unknown) {
+  if (value && typeof value === "object") {
+    const record = value as Partial<Record<Locale, unknown>>;
+    return String(record.zh || record.en || "").trim();
+  }
+  return String(value || "").trim();
+}
+
+function promptPlazaTags(value: unknown, category: PromptPlazaCategory) {
+  const rawTags = Array.isArray(value)
+    ? value
+    : String(value || "").split(/[,，、\n]/);
+  const normalized = rawTags.map((tag) => String(tag || "").trim()).filter(Boolean);
+  return normalized.length ? normalized.slice(0, 5) : [category];
+}
+
+function normalizeCustomPromptPlazaItem(value: unknown, index: number, locale: Locale, sourceName = ""): PromptPlazaItem | null {
+  const objectValue = value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+  const rawPrompt = objectValue
+    ? objectValue.prompt ?? objectValue.content ?? objectValue.template ?? objectValue.text
+    : value;
+  const promptText = promptPlazaText(rawPrompt);
+  if (!promptText) return null;
+  const titleFallback = promptText.split(/\r?\n/).map((line) => line.trim()).find(Boolean)?.slice(0, 40) || sourceName || "Custom prompt";
+  const category = normalizePromptPlazaCategory(objectValue?.category);
+  const mode = normalizePromptPlazaMode(objectValue?.mode);
+  const language = normalizePromptPlazaLanguage(objectValue?.language, locale);
+  return {
+    id: String(objectValue?.id || `custom-prompt-${Date.now()}-${index}-${Math.random().toString(36).slice(2, 7)}`).trim(),
+    title: promptPlazaLocalizedText(objectValue?.title ?? objectValue?.name, titleFallback),
+    description: promptPlazaLocalizedText(
+      objectValue?.description ?? objectValue?.summary,
+      locale === "zh" ? "用户自定义提示词，可直接复制或套用到当前输入框。" : "Custom prompt that can be copied or inserted into the composer."
+    ),
+    prompt: promptPlazaLocalizedText(rawPrompt, promptText),
+    author: String(objectValue?.author || (locale === "zh" ? "我的提示词" : "My prompts")).trim(),
+    source: "user",
+    language,
+    category,
+    mode,
+    tags: promptPlazaTags(objectValue?.tags, category),
+    favorite: Boolean(objectValue?.favorite),
+    tone: promptPlazaToneForCategory(category),
+  };
+}
+
+function normalizeCustomPromptPlazaItems(value: unknown, locale: Locale, sourceName = "") {
+  const rawItems = Array.isArray(value) ? value : [value];
+  const normalized: PromptPlazaItem[] = [];
+  const seen = new Set<string>();
+  rawItems.forEach((item, index) => {
+    const promptItem = normalizeCustomPromptPlazaItem(item, index, locale, sourceName);
+    if (!promptItem || seen.has(promptItem.id)) return;
+    seen.add(promptItem.id);
+    normalized.push(promptItem);
+  });
+  return normalized.slice(0, 80);
+}
+
+function parseImportedPromptPlazaItems(rawText: string, fileName: string, locale: Locale) {
+  const text = rawText.trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    const items = normalizeCustomPromptPlazaItems(parsed, locale, fileName);
+    if (items.length > 0) return items;
+  } catch {
+    // Fall through to plain text import.
+  }
+  const chunks = text
+    .split(/\n\s*(?:---{3,}|\*\*\*)\s*\n|\n{3,}/)
+    .map((chunk) => chunk.trim())
+    .filter(Boolean);
+  return normalizeCustomPromptPlazaItems(chunks.length ? chunks : [text], locale, fileName);
+}
+
+function loadStoredCustomPromptPlazaItems(userId: string) {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(customPromptPlazaStorageKey(userId));
+    return raw ? normalizeCustomPromptPlazaItems(JSON.parse(raw), "zh") : [];
+  } catch {
+    return [];
+  }
+}
+
+function loadStoredPromptPlazaFavoriteIds(userId: string) {
+  const defaultIds = PROMPT_PLAZA_ITEMS.filter((item) => item.favorite).map((item) => item.id);
+  if (typeof window === "undefined") return new Set(defaultIds);
+  try {
+    const raw = window.localStorage.getItem(promptPlazaFavoritesStorageKey(userId));
+    const parsed = raw ? JSON.parse(raw) : defaultIds;
+    return new Set((Array.isArray(parsed) ? parsed : defaultIds).map((id) => String(id || "").trim()).filter(Boolean));
+  } catch {
+    return new Set(defaultIds);
+  }
+}
+
+function loadStoredPromptPlazaLikes() {
+  const defaults = Object.fromEntries(PROMPT_PLAZA_ITEMS.map((item) => [item.id, item.likes ?? 0]));
+  if (typeof window === "undefined") return defaults;
+  try {
+    const raw = window.localStorage.getItem(promptPlazaLikesStorageKey());
+    const parsed = raw ? JSON.parse(raw) : {};
+    if (!parsed || typeof parsed !== "object") return defaults;
+    const next: Record<string, number> = { ...defaults };
+    Object.entries(parsed as Record<string, unknown>).forEach(([id, value]) => {
+      const count = Math.max(0, Math.trunc(Number(value) || 0));
+      if (id.trim()) next[id] = count;
+    });
+    return next;
+  } catch {
+    return defaults;
+  }
+}
+
+function loadStoredPromptPlazaUserLikeIds(userId: string) {
+  if (typeof window === "undefined") return new Set<string>();
+  try {
+    const raw = window.localStorage.getItem(promptPlazaUserLikesStorageKey(userId));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return new Set((Array.isArray(parsed) ? parsed : []).map((id) => String(id || "").trim()).filter(Boolean));
+  } catch {
+    return new Set<string>();
+  }
+}
 
 function cloneDefaultShortcutPhrases() {
   return render3DShortcutPhrases.map((item) => ({ ...item }));
@@ -1457,7 +1794,12 @@ function App() {
   const [promptPlazaQuery, setPromptPlazaQuery] = useState("");
   const [promptPlazaView, setPromptPlazaView] = useState<PromptPlazaView>("all");
   const [promptPlazaFilters, setPromptPlazaFilters] = useState<PromptPlazaFilters>({ source: "all", language: "all", category: "all", mode: "all" });
-  const [promptPlazaFavoriteIds, setPromptPlazaFavoriteIds] = useState<Set<string>>(() => new Set(PROMPT_PLAZA_ITEMS.filter((item) => item.favorite).map((item) => item.id)));
+  const [promptPlazaFavoriteIds, setPromptPlazaFavoriteIds] = useState<Set<string>>(() => loadStoredPromptPlazaFavoriteIds(""));
+  const [promptPlazaLikes, setPromptPlazaLikes] = useState<Record<string, number>>(() => loadStoredPromptPlazaLikes());
+  const [promptPlazaUserLikeIds, setPromptPlazaUserLikeIds] = useState<Set<string>>(() => loadStoredPromptPlazaUserLikeIds(""));
+  const [customPromptPlazaItems, setCustomPromptPlazaItems] = useState<PromptPlazaItem[]>([]);
+  const [isPromptPlazaEditorOpen, setIsPromptPlazaEditorOpen] = useState(false);
+  const [promptPlazaDraft, setPromptPlazaDraft] = useState<PromptPlazaDraft>(DEFAULT_PROMPT_PLAZA_DRAFT);
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [isRefreshingResults, setIsRefreshingResults] = useState(false);
@@ -1500,6 +1842,7 @@ function App() {
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const chatSearchInputRef = useRef<HTMLInputElement | null>(null);
   const promptPlazaSearchInputRef = useRef<HTMLInputElement | null>(null);
+  const promptPlazaImportInputRef = useRef<HTMLInputElement | null>(null);
   const dragDepthRef = useRef(0);
   const activeResizeRef = useRef<{ panel: ResizablePanel; startX: number; startWidth: number } | null>(null);
   const previousGenerationModeRef = useRef<GenerationMode>("standard");
@@ -1587,6 +1930,31 @@ function App() {
     const seen = new Set<string>();
     return activePathMessages.reduce<ImageComparisonCandidate[]>((items, message) => {
       const activeMessage = withActiveMessageVariant(message);
+      if (activeMessage.workflowMode === "image" && activeMessage.attachments?.length) {
+        activeMessage.attachments.forEach((attachment) => {
+          if (!attachment.dataUrl || !attachment.dataUrl.startsWith("data:image/")) {
+            return;
+          }
+          const id = `attachment-${attachment.id || attachment.name || items.length}`;
+          if (seen.has(id) || seen.has(attachment.dataUrl)) {
+            return;
+          }
+          seen.add(id);
+          seen.add(attachment.dataUrl);
+          const sourceIndex = items.filter((item) => item.assetType === "source-image").length + 1;
+          const labelPrefix = locale === "zh" ? `上传源图 ${sourceIndex}` : `Uploaded source ${sourceIndex}`;
+          const baseLabel = (attachment.name || "").trim();
+          const labelParts = [labelPrefix, baseLabel].filter(Boolean);
+          items.push({
+            id,
+            imageUrl: attachment.dataUrl,
+            label: labelParts.join(" · "),
+            alt: baseLabel || labelPrefix,
+            source: "conversation",
+            assetType: "source-image",
+          });
+        });
+      }
       if (activeMessage.kind !== "render" || !activeMessage.imageUrl) {
         return items;
       }
@@ -1609,6 +1977,7 @@ function App() {
         label: labelParts.join(" · "),
         alt: baseLabel || labelPrefix,
         source: "conversation",
+        assetType: "result-image",
         sourceResultId: activeMessage.sourceResultId,
         result,
       });
@@ -1644,6 +2013,7 @@ function App() {
         label: labelParts.join(" · "),
         alt: baseLabel || labelPrefix,
         source: "library",
+        assetType: "result-image",
         sourceResultId: item.id,
         result: item,
       });
@@ -1788,21 +2158,6 @@ function App() {
     window.setTimeout(() => composerRef.current?.focus(), 0);
   }
 
-  function openChatWorkspace() {
-    setActivePrimaryView("workspace");
-    setActiveUtilityPanel(null);
-    setIsQuickPhraseCardOpen(false);
-    setIsPromptPlazaOpen(false);
-    setIsChatSearchOpen(false);
-    setIsAccountMenuOpen(false);
-    if (workspaceMode !== "chat") {
-      if (isVisibleConversationBusy) return;
-      switchWorkspaceMode("chat");
-      return;
-    }
-    window.setTimeout(() => composerRef.current?.focus(), 0);
-  }
-
   function syncComposerHeight(textarea: HTMLTextAreaElement | null) {
     if (!textarea) return;
     if (!textarea.value) {
@@ -1846,6 +2201,26 @@ function App() {
       }))
     );
     return attachments.filter((item) => item.dataUrl.startsWith("data:image/"));
+  }
+
+  async function buildResultPreviewAttachment(item: RenderHistoryItem | null | undefined): Promise<ChatImageAttachment | null> {
+    if (!item?.imageUrl) return null;
+    try {
+      const file = await imageFileFromClipboardSource(item.imageUrl, 0);
+      return {
+        id: `result-preview-${Date.now()}-${item.id}`,
+        name: item.imageLabel || item.title || file.name,
+        mimeType: file.type || "image/png",
+        dataUrl: await fileToDataUrl(file),
+      };
+    } catch {
+      return {
+        id: `result-preview-${Date.now()}-${item.id}`,
+        name: item.imageLabel || item.title || "source image",
+        mimeType: "image/png",
+        dataUrl: item.imageUrl,
+      };
+    }
   }
 
   function normalizeSessionForDisplay(session: ChatSessionRecord) {
@@ -1993,6 +2368,12 @@ function App() {
     setSelectedPromptModeId(BUILTIN_STANDARD_PROMPT_MODE_ID);
     setEditingPromptSkillId(null);
     setPromptSkillDraft(DEFAULT_PROMPT_SKILL_DRAFT);
+    setCustomPromptPlazaItems([]);
+    setPromptPlazaFavoriteIds(loadStoredPromptPlazaFavoriteIds(""));
+    setPromptPlazaLikes(loadStoredPromptPlazaLikes());
+    setPromptPlazaUserLikeIds(loadStoredPromptPlazaUserLikeIds(""));
+    setIsPromptPlazaEditorOpen(false);
+    setPromptPlazaDraft(DEFAULT_PROMPT_PLAZA_DRAFT);
   }
 
   function applyAuthenticatedUser(user: AuthUser) {
@@ -2025,6 +2406,12 @@ function App() {
     setIsQuickPhraseCardOpen(false);
     setEditingShortcutId(null);
     setShortcutDraft({ text: "" });
+    setCustomPromptPlazaItems([]);
+    setPromptPlazaFavoriteIds(loadStoredPromptPlazaFavoriteIds(""));
+    setPromptPlazaLikes(loadStoredPromptPlazaLikes());
+    setPromptPlazaUserLikeIds(loadStoredPromptPlazaUserLikeIds(""));
+    setIsPromptPlazaEditorOpen(false);
+    setPromptPlazaDraft(DEFAULT_PROMPT_PLAZA_DRAFT);
     resetPromptSkillState();
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
@@ -2077,9 +2464,14 @@ function App() {
   function appendMessagesToRunSession(guard: ConversationRunGuard, patch: ChatMessage[]) {
     if (!isActiveConversationRun(guard)) return;
     if (currentSessionIdRef.current === guard.sessionId) {
-      const nextActiveMessageId = patch[patch.length - 1]?.id ?? activeMessageId;
-      setMessages((current) => mergeMessageTreeById(current, patch, nextActiveMessageId).messages);
-      setActiveMessageId(nextActiveMessageId);
+      const nextActiveMessageId = patch[patch.length - 1]?.id ?? activeMessageIdRef.current;
+      setMessages((current) => {
+        const nextTree = mergeMessageTreeById(current, patch, nextActiveMessageId);
+        messagesRef.current = nextTree.messages;
+        activeMessageIdRef.current = nextTree.activeMessageId;
+        setActiveMessageId(nextTree.activeMessageId);
+        return nextTree.messages;
+      });
       return;
     }
     setChatSessions((current) => mergeMessagesIntoSessionSnapshot(current, guard.sessionId, patch, new Date().toISOString()));
@@ -2116,7 +2508,10 @@ function App() {
     if (currentSessionIdRef.current === guard.sessionId) {
       setMessages((current) => {
         const nextMessages = current.filter((message) => message.id !== messageId);
-        const nextTree = normalizeMessageTree(nextMessages, activeMessageId === messageId ? null : activeMessageId);
+        const currentActiveMessageId = activeMessageIdRef.current;
+        const nextTree = normalizeMessageTree(nextMessages, currentActiveMessageId === messageId ? null : currentActiveMessageId);
+        messagesRef.current = nextTree.messages;
+        activeMessageIdRef.current = nextTree.activeMessageId;
         setActiveMessageId(nextTree.activeMessageId);
         return nextTree.messages;
       });
@@ -2190,7 +2585,7 @@ function App() {
   }
 
   const hasAuthenticatedUser = Boolean(currentUserId);
-  function getGenerationBlocker(mode: GenerationMode, promptText = chatInput) {
+  function getGenerationBlocker(mode: GenerationMode, promptText = chatInput, floorPlanFileCount = floorPlanFiles.length) {
     const hasSubmitPromptText = promptText.trim().length > 0;
     if (!hasAuthenticatedUser) {
       return locale === "zh" ? "请先登录或注册账号" : "Sign in or create an account first";
@@ -2202,7 +2597,7 @@ function App() {
           ? "请输入画面需求"
           : "Enter an image brief";
     }
-    if (mode === "colored_floor_plan" && floorPlanFiles.length === 0) {
+    if (mode === "colored_floor_plan" && floorPlanFileCount === 0) {
       return locale === "zh" ? "请先粘贴或拖入至少一张平面图" : "Paste or drop at least one floor plan first";
     }
     if (mode === "render3d" && !hasSubmitPromptText) {
@@ -2212,6 +2607,24 @@ function App() {
     }
     return "";
   }
+
+  function getImageEditBlocker(promptText = chatInput, sourceFileCount = floorPlanFiles.length, sourceResultHasImage = Boolean(activeResult?.imageUrl)) {
+    if (!hasAuthenticatedUser) {
+      return locale === "zh" ? "请先登录或注册账号" : "Sign in or create an account first";
+    }
+    if (!sourceResultHasImage && sourceFileCount === 0) {
+      return locale === "zh"
+        ? "请先选择一张已有结果，或上传一张参考图"
+        : "Select an existing result or upload a reference image first";
+    }
+    if (!promptText.trim()) {
+      return locale === "zh"
+        ? "请输入要修改的内容"
+        : "Describe what to edit";
+    }
+    return "";
+  }
+
   const hasUploadedImageReference = floorPlanFiles.length > 0;
   const canEditSelectedResult = hasAuthenticatedUser && isImageWorkspace && composerMode === "edit-selected-result" && (Boolean(activeResult?.imageUrl) || hasUploadedImageReference) && hasPromptText;
   const canGenerateNew = !isImageWorkspace || !hasAuthenticatedUser
@@ -2267,19 +2680,7 @@ function App() {
         : "Type a chat message before sending"
     : "";
   const generationBlocker = composerMode === "edit-selected-result"
-    ? !hasAuthenticatedUser
-      ? locale === "zh"
-        ? "请先登录或注册账号"
-        : "Sign in or create an account first"
-      : !activeResult?.imageUrl
-      ? locale === "zh"
-        ? "请先选择一张已有结果，或上传一张参考图"
-        : "Select an existing result or upload a reference image first"
-      : !hasPromptText
-        ? locale === "zh"
-          ? "请输入要修改的内容"
-          : "Describe what to edit"
-        : ""
+    ? getImageEditBlocker()
     : getGenerationBlocker(generationMode);
   const coloredFloorPlanActionBlocker = composerMode === "edit-selected-result"
     ? locale === "zh"
@@ -2385,9 +2786,18 @@ function App() {
       insertComposerPhrase(card.prompt);
     },
   }));
+  const promptPlazaItems = useMemo(() => (
+    [...PROMPT_PLAZA_ITEMS, ...customPromptPlazaItems].map((item) => {
+      const likes = promptPlazaLikes[item.id] ?? item.likes ?? 0;
+      const promotedSource: PromptPlazaSource = item.source !== "official" && likes >= PROMPT_PLAZA_COMMUNITY_LIKE_THRESHOLD
+        ? "community"
+        : item.source;
+      return { ...item, likes, source: promotedSource };
+    })
+  ), [customPromptPlazaItems, promptPlazaLikes]);
   const promptPlazaVisibleItems = useMemo(() => {
     const query = promptPlazaQuery.trim().toLowerCase();
-    return PROMPT_PLAZA_ITEMS.filter((item) => {
+    return promptPlazaItems.filter((item) => {
       const isFavorite = promptPlazaFavoriteIds.has(item.id);
       if (promptPlazaView === "favorite" && !isFavorite) return false;
       if (promptPlazaFilters.source !== "all" && item.source !== promptPlazaFilters.source) return false;
@@ -2411,9 +2821,9 @@ function App() {
       ].join(" ").toLowerCase();
       return haystack.includes(query);
     });
-  }, [promptPlazaFavoriteIds, promptPlazaFilters, promptPlazaQuery, promptPlazaView]);
-  const promptPlazaFavoriteCount = promptPlazaFavoriteIds.size;
-  const promptPlazaCountLabel = `${promptPlazaVisibleItems.length} / ${PROMPT_PLAZA_ITEMS.length}`;
+  }, [promptPlazaFavoriteIds, promptPlazaFilters, promptPlazaItems, promptPlazaQuery, promptPlazaView]);
+  const promptPlazaFavoriteCount = promptPlazaItems.filter((item) => promptPlazaFavoriteIds.has(item.id)).length;
+  const promptPlazaCountLabel = `${promptPlazaVisibleItems.length} / ${promptPlazaItems.length}`;
   const workflowActiveStep = visibleActiveStep === "idle" && latestResult ? "completed" : visibleActiveStep;
   const workflowSteps = [
     {
@@ -2489,15 +2899,6 @@ function App() {
     : currentWorkspaceLabel;
   const sidebarPrimaryActions: ChatWorkspaceAction[] = [
     {
-      id: "workspace",
-      title: locale === "zh" ? "AI 聊天" : "AI chat",
-      description: locale === "zh" ? "问答、写作、分析" : "Ask, write, and analyze",
-      icon: <MessageCircle size={15} />,
-      isActive: activePrimaryView === "workspace" && activeUtilityPanel === null && isChatWorkspace,
-      disabled: isVisibleConversationBusy && !isChatWorkspace,
-      onClick: openChatWorkspace,
-    },
-    {
       id: "image-management",
       title: locale === "zh" ? "图片管理" : "Image management",
       description: locale === "zh" ? `管理 ${renderHistory.length} 张历史生成图` : `Manage ${renderHistory.length} generated images`,
@@ -2565,6 +2966,46 @@ function App() {
       ? locale === "zh" ? "分析中" : "Analyzing"
       : locale === "zh" ? "等待分析" : "Waiting for analysis";
   const isGenerationSlow = isVisibleRendering && generationElapsedMs >= GENERATION_SLOW_NOTICE_MS;
+  const generationProgressCard = isVisibleRendering ? (
+    <div className="generation-progress-card" role="status" aria-live="polite">
+      <div className="progress-orb"><span /></div>
+      <div className="generation-progress-content">
+        <div className="generation-progress-head">
+          <strong>{locale === "zh" ? "后端正在执行生成流程" : "Backend generation is running"}</strong>
+          <span>{generationElapsedLabel}</span>
+        </div>
+        <div className="generation-progress-status">
+          <Sparkles size={14} aria-hidden="true" />
+          <span>{locale === "zh" ? "正在画图中，未卡住" : "Drawing in progress, not stuck"}</span>
+        </div>
+        <p>
+          {locale === "zh"
+            ? `当前阶段：${generationStageLabel}。分析/提示词会先显示，图片继续在后台等待真实返回。`
+            : `Current stage: ${generationStageLabel}. Analysis and prompt details may appear before the image is returned.`}
+        </p>
+        <div className="generation-progress-meta">
+          <span>{locale === "zh" ? `已用 ${generationElapsedLabel}` : `Elapsed ${generationElapsedLabel}`}</span>
+          <span>{locale === "zh" ? "等待真实返回" : "Waiting for real result"}</span>
+        </div>
+        <div className="generation-progress-bar generation-progress-bar--indeterminate" aria-label={locale === "zh" ? "生成状态" : "Generation status"}>
+          <span />
+        </div>
+        <div className="generation-progress-steps">
+          <span className={["submitted", "analysis", "rendering", "evaluating", "completed"].includes(visibleActiveStep) ? "is-active" : ""}>{locale === "zh" ? "已提交" : "Submitted"}</span>
+          <span className={["analysis", "rendering", "evaluating", "completed"].includes(visibleActiveStep) || hasCurrentAnalysisResult ? "is-active" : ""}>{progressAnalysisStepLabel}</span>
+          <span className={["rendering", "evaluating", "completed"].includes(visibleActiveStep) ? "is-active" : ""}>{currentIteration ? (locale === "zh" ? `第 ${currentIteration} 轮出图` : `Rendering iteration ${currentIteration}`) : (locale === "zh" ? "等待图片" : "Waiting for image")}</span>
+          <span className={enableQualityEvaluation && ["evaluating", "completed"].includes(visibleActiveStep) ? "is-active" : !enableQualityEvaluation ? "is-muted" : ""}>{enableQualityEvaluation ? (locale === "zh" ? "严格复核" : "Strict review") : (locale === "zh" ? "默认关闭" : "Off by default")}</span>
+        </div>
+        {isGenerationSlow && (
+          <p className="generation-slow-note">
+            {locale === "zh"
+              ? "已经超过 5 分钟，可能是模型排队或图片生成较慢；只要没有报错，后端仍在等待结果。"
+              : "This has taken over 5 minutes. The model may be queued or rendering slowly; without an error, the backend is still waiting."}
+          </p>
+        )}
+      </div>
+    </div>
+  ) : null;
 
   useEffect(() => {
     let isMounted = true;
@@ -2850,6 +3291,12 @@ function App() {
       setEditingShortcutId(null);
       setShortcutDraft({ text: "" });
       resetPromptSkillState();
+      setCustomPromptPlazaItems([]);
+      setPromptPlazaFavoriteIds(loadStoredPromptPlazaFavoriteIds(""));
+      setPromptPlazaLikes(loadStoredPromptPlazaLikes());
+      setPromptPlazaUserLikeIds(loadStoredPromptPlazaUserLikeIds(""));
+      setIsPromptPlazaEditorOpen(false);
+      setPromptPlazaDraft(DEFAULT_PROMPT_PLAZA_DRAFT);
       return;
     }
     const localPhrases = loadStoredShortcutPhrases(currentUserId);
@@ -2858,6 +3305,12 @@ function App() {
     setShortcutDraft({ text: "" });
     const localPromptSkills = loadStoredPromptSkills(currentUserId);
     setPromptSkills(localPromptSkills);
+    setCustomPromptPlazaItems(loadStoredCustomPromptPlazaItems(currentUserId));
+    setPromptPlazaFavoriteIds(loadStoredPromptPlazaFavoriteIds(currentUserId));
+    setPromptPlazaLikes(loadStoredPromptPlazaLikes());
+    setPromptPlazaUserLikeIds(loadStoredPromptPlazaUserLikeIds(currentUserId));
+    setIsPromptPlazaEditorOpen(false);
+    setPromptPlazaDraft(DEFAULT_PROMPT_PLAZA_DRAFT);
     setSelectedPromptModeId((current) => {
       if (!current.startsWith("skill-")) return current;
       const skillId = current.slice("skill-".length);
@@ -3116,8 +3569,104 @@ function App() {
       } else {
         next.add(id);
       }
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(promptPlazaFavoritesStorageKey(currentUserId), JSON.stringify([...next]));
+      }
       return next;
     });
+  }
+
+  function togglePromptPlazaLike(id: string) {
+    const willLike = !promptPlazaUserLikeIds.has(id);
+    setPromptPlazaUserLikeIds((current) => {
+      const next = new Set(current);
+      if (willLike) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(promptPlazaUserLikesStorageKey(currentUserId), JSON.stringify([...next]));
+      }
+      return next;
+    });
+    setPromptPlazaLikes((current) => {
+      const currentCount = current[id] ?? 0;
+      const next = {
+        ...current,
+        [id]: Math.max(0, currentCount + (willLike ? 1 : -1)),
+      };
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(promptPlazaLikesStorageKey(), JSON.stringify(next));
+      }
+      return next;
+    });
+  }
+
+  function persistCustomPromptPlazaItems(nextItems: PromptPlazaItem[]) {
+    const normalized = normalizeCustomPromptPlazaItems(nextItems, locale);
+    setCustomPromptPlazaItems(normalized);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(customPromptPlazaStorageKey(currentUserId), JSON.stringify(normalized));
+    }
+  }
+
+  function savePromptPlazaDraft() {
+    const title = promptPlazaDraft.title.trim();
+    const prompt = promptPlazaDraft.prompt.trim();
+    if (!title || !prompt) {
+      showToast(locale === "zh" ? "请填写标题和提示词内容" : "Add a title and prompt text");
+      return;
+    }
+    const category = promptPlazaDraft.category;
+    const nextItem: PromptPlazaItem = {
+      id: `custom-plaza-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+      title: { zh: title, en: title },
+      description: {
+        zh: promptPlazaDraft.description.trim() || "用户自定义提示词，可直接复制或套用到当前输入框。",
+        en: promptPlazaDraft.description.trim() || "Custom prompt that can be copied or inserted into the composer.",
+      },
+      prompt: { zh: prompt, en: prompt },
+      author: locale === "zh" ? "我的提示词" : "My prompts",
+      source: "user",
+      language: locale === "en" ? "en" : "zh",
+      category,
+      mode: promptPlazaDraft.mode,
+      tags: promptPlazaTags(promptPlazaDraft.tags, category),
+      favorite: false,
+      tone: promptPlazaToneForCategory(category),
+    };
+    persistCustomPromptPlazaItems([nextItem, ...customPromptPlazaItems]);
+    setPromptPlazaDraft(DEFAULT_PROMPT_PLAZA_DRAFT);
+    setIsPromptPlazaEditorOpen(false);
+    setPromptPlazaFilters((current) => ({ ...current, source: "all" }));
+    setPromptPlazaView("all");
+    showToast(locale === "zh" ? "自定义提示词已添加" : "Custom prompt added");
+  }
+
+  async function handleImportPromptPlazaFile(event: ChangeEvent<HTMLInputElement>) {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (files.length === 0) return;
+    const importedItems: PromptPlazaItem[] = [];
+    for (const file of files) {
+      const text = await file.text();
+      importedItems.push(...parseImportedPromptPlazaItems(text, file.name, locale));
+    }
+    if (importedItems.length === 0) {
+      showToast(locale === "zh" ? "没有识别到可导入的提示词" : "No importable prompts found");
+      return;
+    }
+    const existingIds = new Set([...PROMPT_PLAZA_ITEMS, ...customPromptPlazaItems].map((item) => item.id));
+    const nextImportedItems = importedItems.map((item, index) => ({
+      ...item,
+      id: existingIds.has(item.id) ? `${item.id}-${Date.now()}-${index}` : item.id,
+      source: "user" as const,
+    }));
+    persistCustomPromptPlazaItems([...nextImportedItems, ...customPromptPlazaItems]);
+    setPromptPlazaView("all");
+    setPromptPlazaFilters((current) => ({ ...current, source: "all" }));
+    showToast(locale === "zh" ? `已导入 ${nextImportedItems.length} 条提示词` : `Imported ${nextImportedItems.length} prompt(s)`);
   }
 
   async function handleCopyPromptPlazaItem(item: PromptPlazaItem) {
@@ -3387,9 +3936,19 @@ function App() {
     const clipboardFiles = filesFromList(event.clipboardData.files);
     const files = clipboardFiles.length > 0 ? clipboardFiles : imageFilesFromClipboardItems(event.clipboardData.items);
     const images = imageFilesFromFiles(files);
-    if (images.length === 0) return;
+    if (images.length > 0) {
+      event.preventDefault();
+      setComposerImageAttachments(images, true);
+      return;
+    }
+    const imageSources = imageSourcesFromClipboardData(event.clipboardData);
+    if (imageSources.length === 0) return;
     event.preventDefault();
-    setComposerImageAttachments(images, true);
+    void Promise.all(imageSources.map((source, index) => imageFileFromClipboardSource(source, index)))
+      .then((sourceImages) => setComposerImageAttachments(sourceImages, true))
+      .catch((error) => {
+        showToast(`${locale === "zh" ? "读取剪贴板图片失败" : "Failed to read pasted image"}: ${error instanceof Error ? error.message : String(error)}`);
+      });
   }
 
   function toggleUtilityPanel(panel: UtilityPanel) {
@@ -3560,11 +4119,33 @@ function App() {
   }
 
   function handleResetWorkspace() {
-    if (isRendering) return;
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
     if (!currentConversationHasContent()) {
-      resetVisibleConversationState();
+      messagesRef.current = [];
+      activeMessageIdRef.current = null;
+      setMessages([]);
+      setActiveMessageId(null);
+      setChatInput("");
+      setWorkspaceMode(DEFAULT_WORKSPACE_MODE);
+      setGenerationMode("standard");
+      setSelectedPromptModeId(BUILTIN_STANDARD_PROMPT_MODE_ID);
+      setComposerMode("new-generation");
+      setFloorPlanFiles([]);
+      setPreviewImage(null);
+      setComparisonImage(null);
+      setIsComparisonOpen(false);
+      setAnnotationTarget(null);
+      setActiveUtilityPanel(null);
+      setActiveHistoryMenuId(null);
+      setHistoryMenuPosition(null);
+      setRenamingSessionId(null);
+      setRetryPopover(null);
+      setEditingMessage(null);
+      setRememberingMessageId(null);
+      setIsSubmittingAnnotation(false);
+      setActiveResultId(null);
+      setActiveStep("idle");
       setTimeout(() => composerRef.current?.focus(), 0);
       showToast(locale === "zh" ? "当前已是空白新对话" : "Already on a blank new chat");
       return;
@@ -3588,13 +4169,17 @@ function App() {
   }
 
   function handleOpenSession(sessionId: string) {
-    if (!sessionId || sessionId === currentSessionId) return;
+    if (!sessionId) return;
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
     setIsChatSearchOpen(false);
     setActiveHistoryMenuId(null);
     setHistoryMenuPosition(null);
     setRenamingSessionId(null);
+    if (sessionId === currentSessionId) {
+      window.setTimeout(() => composerRef.current?.focus(), 0);
+      return;
+    }
     const currentSnapshot = snapshotCurrentSession();
     const target = chatSessions.find((session) => session.id === sessionId);
     if (!target) return;
@@ -3620,14 +4205,16 @@ function App() {
       return;
     }
     const rect = anchor.getBoundingClientRect();
-    const menuWidth = 178;
+    const menuWidth = 190;
+    const menuHeight = 150;
     const viewportPadding = 10;
-    const left = Math.min(
-      Math.max(viewportPadding, rect.right - menuWidth),
-      window.innerWidth - menuWidth - viewportPadding,
-    );
+    const rightSideLeft = rect.right + 8;
+    const leftSideLeft = rect.left - menuWidth - 8;
+    const left = rightSideLeft + menuWidth + viewportPadding <= window.innerWidth
+      ? rightSideLeft
+      : Math.max(viewportPadding, Math.min(leftSideLeft, window.innerWidth - menuWidth - viewportPadding));
     setHistoryMenuPosition({
-      top: Math.max(viewportPadding, Math.min(rect.bottom + 6, window.innerHeight - 164)),
+      top: Math.max(viewportPadding, Math.min(rect.top - 12, window.innerHeight - menuHeight - viewportPadding)),
       left,
     });
     setActiveHistoryMenuId(sessionId);
@@ -3670,16 +4257,7 @@ function App() {
       setRenameDraft("");
       return;
     }
-    setChatSessions((current) => current.map((session) => (
-      session.id === sessionId
-        ? {
-          ...session,
-          title,
-          titleLocked: true,
-          updatedAt: new Date().toISOString(),
-        }
-        : session
-    )));
+    const timestamp = new Date().toISOString();
     if (currentSessionId === sessionId) {
       const currentSnapshot = snapshotCurrentSession(sessionId);
       if (currentSnapshot) {
@@ -3687,8 +4265,20 @@ function App() {
           ...currentSnapshot,
           title,
           titleLocked: true,
+          updatedAt: timestamp,
         }));
       }
+    } else {
+      setChatSessions((current) => current.map((session) => (
+        session.id === sessionId
+          ? {
+            ...session,
+            title,
+            titleLocked: true,
+            updatedAt: timestamp,
+          }
+          : session
+      )));
     }
     setRenamingSessionId(null);
     setRenameDraft("");
@@ -3700,6 +4290,15 @@ function App() {
     const seededSessions = currentSnapshot ? upsertSession(chatSessions, currentSnapshot) : chatSessions;
     const sessionToDelete = seededSessions.find((session) => session.id === sessionId);
     if (!sessionToDelete) return;
+    const title = sessionDisplayTitle(sessionToDelete);
+    const confirmation = locale === "zh"
+      ? `确定删除「${title}」吗？此操作不可撤销。`
+      : `Delete "${title}"? This cannot be undone.`;
+    if (typeof window !== "undefined" && !window.confirm(confirmation)) {
+      setActiveHistoryMenuId(null);
+      setHistoryMenuPosition(null);
+      return;
+    }
     const nextSessions = seededSessions.filter((session) => session.id !== sessionId);
     const fallbackSession = nextSessions.find((session) => hasDurableConversationContent(session.messages)) ?? nextSessions[0] ?? createEmptySession();
     setChatSessions(nextSessions.length > 0 ? nextSessions : [fallbackSession]);
@@ -3760,6 +4359,42 @@ function App() {
       setActiveMessageId(normalized.activeMessageId);
       return normalized.messages;
     });
+  }
+
+  function appendRunSessionMessageVariant(
+    guard: ConversationRunGuard,
+    messageId: string,
+    patch: Partial<ChatMessageVariant>
+  ) {
+    updateRunSessionMessage(guard, messageId, (message) => appendMessageVariant(message, patch));
+  }
+
+  function updateRunSessionActiveMessageVariant(
+    guard: ConversationRunGuard,
+    messageId: string,
+    patch: Partial<ChatMessageVariant>
+  ) {
+    updateRunSessionMessage(guard, messageId, (message) => updateActiveMessageVariant(message, patch));
+  }
+
+  function variantPatchToAssistantMessage(
+    patch: Partial<ChatMessageVariant>,
+    fallback: Pick<ChatMessage, "kind" | "content"> & Pick<Partial<ChatMessage>, "workflowMode" | "generationMode">
+  ): Omit<ChatMessage, "id" | "role" | "parentId" | "feedback" | "variants" | "activeVariantIndex"> {
+    return {
+      kind: patch.kind ?? fallback.kind,
+      workflowMode: patch.workflowMode ?? fallback.workflowMode,
+      generationMode: patch.generationMode ?? fallback.generationMode,
+      content: patch.content ?? fallback.content,
+      bullets: patch.bullets,
+      promptText: patch.promptText,
+      imageUrl: patch.imageUrl,
+      imageLabel: patch.imageLabel,
+      attachments: patch.attachments,
+      sourceResultId: patch.sourceResultId,
+      draftInstruction: patch.draftInstruction,
+      memoryCandidate: patch.memoryCandidate,
+    };
   }
 
   function buildDailyChatMessageExtras(draftInstructionRaw: string, memoryCandidateRaw?: ChatMemoryCandidate) {
@@ -3850,7 +4485,7 @@ function App() {
       return;
     }
     const activeMessage = withActiveMessageVariant(message);
-    if (activeMessage.kind === "analysis" || activeMessage.kind === "render") {
+    if (isImageWorkflowMessage(messagesRef.current, message.id)) {
       handleRegenerateMessage(message, "");
       return;
     }
@@ -3860,6 +4495,11 @@ function App() {
         messageId: message.id,
         model: apiConfig.analysisModel || retryModelOptions[0] || "",
       });
+  }
+
+  async function imageFilesFromMessageAttachments(attachments?: ChatImageAttachment[]) {
+    if (!attachments?.length) return undefined;
+    return Promise.all(attachments.map((attachment, index) => dataUrlAttachmentToFile(attachment, `image-${index + 1}.png`)));
   }
 
   function handleRegenerateMessage(message: ChatMessage, retryModel = retryPopover?.model || apiConfig.analysisModel) {
@@ -3875,14 +4515,19 @@ function App() {
     const previousUserMessage = findPreviousUserMessage(message.id);
     setActivePrimaryView("workspace");
     const activeMessage = withActiveMessageVariant(message);
-    if (activeMessage.kind === "analysis" || activeMessage.kind === "render") {
+    if (isImageWorkflowMessage(messagesRef.current, message.id)) {
       const sourceResult = activeMessage.sourceResultId ? renderHistory.find((item) => item.id === activeMessage.sourceResultId) : null;
-      const nextMode = sourceResult?.generationMode || generationMode;
+      const nextMode = sourceResult?.generationMode || inferMessageGenerationMode(messagesRef.current, message.id, generationMode);
       setWorkspaceMode("image");
       setComposerMode("new-generation");
       setGenerationMode(nextMode);
       setSelectedPromptModeId(promptModeIdForGenerationMode(nextMode));
-      void runConversationFlow(prompt, nextMode, "new-generation", promptModeIdForGenerationMode(nextMode));
+      setRetryPopover(null);
+      void imageFilesFromMessageAttachments(previousUserMessage?.attachments)
+        .then((files) => runConversationFlow(prompt, nextMode, "new-generation", promptModeIdForGenerationMode(nextMode), files, message.id))
+        .catch((error) => {
+          showToast(`${locale === "zh" ? "读取历史图片失败" : "Failed to read previous images"}: ${error instanceof Error ? error.message : String(error)}`);
+        });
       return;
     }
     setWorkspaceMode("chat");
@@ -3905,7 +4550,7 @@ function App() {
       return;
     }
     setActivePrimaryView("workspace");
-    setWorkspaceMode("chat");
+    setWorkspaceMode(isImageWorkflowMessage(messagesRef.current, message.id) ? "image" : "chat");
     setComposerMode("new-generation");
     setEditingMessage({ messageId: message.id, parentId: message.parentId ?? null, draft });
     setRetryPopover(null);
@@ -3929,9 +4574,22 @@ function App() {
     }
     const activeMessage = withActiveMessageVariant(message);
     setActivePrimaryView("workspace");
-    setWorkspaceMode("chat");
     setComposerMode("new-generation");
     setRetryPopover(null);
+    if (isImageWorkflowMessage(messagesRef.current, message.id)) {
+      const nextMode = inferMessageGenerationMode(messagesRef.current, message.id, generationMode);
+      setWorkspaceMode("image");
+      setGenerationMode(nextMode);
+      setSelectedPromptModeId(promptModeIdForGenerationMode(nextMode));
+      setEditingMessage(null);
+      void imageFilesFromMessageAttachments(activeMessage.attachments)
+        .then((files) => runConversationFlow(draft, nextMode, "new-generation", promptModeIdForGenerationMode(nextMode), files))
+        .catch((error) => {
+          showToast(`${locale === "zh" ? "读取历史图片失败" : "Failed to read previous images"}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      return;
+    }
+    setWorkspaceMode("chat");
     void runDailyChatFlow({
       userPrompt: draft,
       editParentId: editingMessage.parentId,
@@ -3951,9 +4609,17 @@ function App() {
     const normalized = normalizeMessageTree(messages, activeMessageId);
     if (normalized.messages !== messages) {
       setMessages(normalized.messages);
+      messagesRef.current = normalized.messages;
     }
     const nextActiveId = switchMessageSibling(normalized.messages, messageId, offset);
+    activeMessageIdRef.current = nextActiveId;
     setActiveMessageId(nextActiveId);
+  }
+
+  function handleSwitchMessageVariant(messageId: string, offset: number) {
+    updateMessageById(messageId, (message) => (
+      setActiveMessageVariantIndex(message, getActiveMessageVariantIndex(message) + offset)
+    ));
   }
 
   function handleMessageFeedback(message: ChatMessage, feedback: "like" | "dislike") {
@@ -3991,9 +4657,15 @@ function App() {
     const nextSession = createEmptySession();
     const clonedTree = normalizeMessageTree(cloneMessagePath(path, `branch-${Date.now()}`));
     const clonedMessages = clonedTree.messages;
+    const currentSession = chatSessions.find((session) => session.id === currentSessionId);
+    const currentTitle = currentSession
+      ? sessionDisplayTitle(currentSession)
+      : buildSessionTitle(clonedMessages, "", generationMode, workspaceMode);
+    const title = buildBranchSessionTitle(currentTitle, chatSessions, locale);
     const branchedSession: ChatSessionRecord = {
       ...nextSession,
-      title: buildSessionTitle(clonedMessages, "", generationMode, workspaceMode),
+      title,
+      titleLocked: true,
       messages: clonedMessages,
       activeMessageId: clonedTree.activeMessageId,
       workspaceMode: message.kind === "analysis" || message.kind === "render" ? "image" : "chat",
@@ -4014,10 +4686,6 @@ function App() {
 
   async function handleCopyMessage(message: ChatMessage) {
     const activeMessage = withActiveMessageVariant(message);
-    if (activeMessage.kind === "render" && activeMessage.imageUrl) {
-      await handleCopyImage(activeMessage.imageUrl, activeMessage.imageLabel);
-      return;
-    }
     const text = buildMessageClipboardText(activeMessage, locale) || activeMessage.imageUrl || "";
     if (!text) {
       showToast(locale === "zh" ? "暂无可复制内容" : "No content to copy yet");
@@ -4293,12 +4961,25 @@ function App() {
       const preferredCandidates = targetCandidate.source === "conversation"
         ? uniqueImageComparisonCandidates(conversationComparisonCandidates)
         : uniqueCandidates;
-      const leftResult = [...preferredCandidates].reverse().find((candidate) => !areSameImageComparisonCandidate(candidate, targetCandidate)) ??
+      const leftResult = targetCandidate.assetType === "result-image"
+        ? [...preferredCandidates].reverse().find((candidate) => candidate.assetType === "source-image" && !areSameImageComparisonCandidate(candidate, targetCandidate)) ?? null
+        : null;
+      const fallbackLeftResult = [...preferredCandidates].reverse().find((candidate) => !areSameImageComparisonCandidate(candidate, targetCandidate)) ??
         [...uniqueCandidates].reverse().find((candidate) => !areSameImageComparisonCandidate(candidate, targetCandidate)) ??
         null;
-      return leftResult ? { leftResult, rightResult: targetCandidate } : null;
+      const selectedLeftResult = leftResult ?? fallbackLeftResult;
+      return selectedLeftResult ? { leftResult: selectedLeftResult, rightResult: targetCandidate } : null;
     }
-    const conversationDefaults = uniqueImageComparisonCandidates(conversationComparisonCandidates).slice(-2);
+    const uniqueConversationCandidates = uniqueImageComparisonCandidates(conversationComparisonCandidates);
+    const latestConversationResult = [...uniqueConversationCandidates].reverse().find((candidate) => candidate.assetType === "result-image") ?? null;
+    const latestConversationSource = [...uniqueConversationCandidates].reverse().find((candidate) => (
+      candidate.assetType === "source-image" &&
+      (!latestConversationResult || !areSameImageComparisonCandidate(candidate, latestConversationResult))
+    )) ?? null;
+    if (latestConversationSource && latestConversationResult) {
+      return { leftResult: latestConversationSource, rightResult: latestConversationResult };
+    }
+    const conversationDefaults = uniqueConversationCandidates.slice(-2);
     if (conversationDefaults.length >= 2) {
       return { leftResult: conversationDefaults[0], rightResult: conversationDefaults[1] };
     }
@@ -4323,7 +5004,7 @@ function App() {
     if (comparableImageCount >= 2) {
       const defaultPair = resolveDefaultComparisonPair(item, selectedResult);
       if (!defaultPair) {
-        showToast(locale === "zh" ? "至少需要两张不同的生成图才能对比" : "At least two different generated images are required to compare");
+        showToast(locale === "zh" ? "至少需要两张不同图片才能对比" : "At least two different images are required to compare");
         return;
       }
       setComparisonImage({ mode: "history-vs-history", leftResultId: defaultPair.leftResult.id, rightResultId: defaultPair.rightResult.id });
@@ -4333,7 +5014,7 @@ function App() {
     }
     const resultMode = selectedResult?.generationMode || generationMode;
     if (resultMode === "standard") {
-      showToast(locale === "zh" ? "至少需要两张不同的生成图才能对比" : "At least two different generated images are required to compare");
+      showToast(locale === "zh" ? "至少需要两张不同图片才能对比" : "At least two different images are required to compare");
       return;
     }
     const floorPlanUrl = selectedResult?.floorPlanUrl || floorPlanPreviews[0]?.url;
@@ -4356,6 +5037,15 @@ function App() {
       return activeResult;
     }
     return renderHistory.find((item) => item.id === activeMessage.sourceResultId) ?? activeResult;
+  }
+
+  function getEditableRenderMessageResult(message: ChatMessage) {
+    const activeMessage = withActiveMessageVariant(message);
+    if (!activeMessage.sourceResultId) {
+      return null;
+    }
+    const sourceResult = renderHistory.find((item) => item.id === activeMessage.sourceResultId) ?? null;
+    return sourceResult?.imageUrl ? sourceResult : null;
   }
 
   function isRenderMessageComparisonDisabled(message: ChatMessage) {
@@ -4514,12 +5204,16 @@ function App() {
         id: `m-user-annotation-${idBase}`,
         role: "user",
         kind: "text",
+        workflowMode: "image",
+        generationMode: target.generationMode || generationMode,
         content: locale === "zh" ? `标注续改：${userBrief}` : `Annotated edit: ${userBrief}`
       },
       {
         id: `m-ai-annotation-${idBase}`,
         role: "assistant",
         kind: "analysis",
+        workflowMode: "image",
+        generationMode: target.generationMode || generationMode,
         content: {
           zh: "已提交标注图。后端会先让分析模型理解标注区域，再用干净源图生成新版本。",
           en: "Annotation submitted. The backend will analyze the marked region first, then generate from the clean source image."
@@ -4581,6 +5275,8 @@ function App() {
           id: `m-api-annotation-analysis-${idBase}`,
           role: "assistant",
           kind: "analysis",
+          workflowMode: "image",
+          generationMode: historyItem.generationMode || target.generationMode || generationMode,
           content: {
             zh: "标注改图完成。新版本已保存在历史图片中，并记录了标注图、修改文字和分析结果。",
             en: "Annotated edit completed. The new version is stored with its annotation image, edit request, and analysis result."
@@ -4605,9 +5301,12 @@ function App() {
           id: `m-api-annotation-render-${idBase}`,
           role: "assistant",
           kind: "render",
+          workflowMode: "image",
+          generationMode: historyItem.generationMode || target.generationMode || generationMode,
           content: response.ok ? (locale === "zh" ? "标注修改后的真实渲染结果已返回" : "Annotated edit result returned") : response.error || t.requestFailed,
           imageUrl: historyItem.imageUrl,
-          imageLabel: historyItem.imageLabel || historyItem.title
+          imageLabel: historyItem.imageLabel || historyItem.title,
+          sourceResultId: historyItem.id,
         }
       ]);
     } catch (error) {
@@ -4620,6 +5319,8 @@ function App() {
         id: `m-api-annotation-error-${idBase}`,
         role: "assistant",
         kind: "error",
+        workflowMode: "image",
+        generationMode: target.generationMode || generationMode,
         content: formatGenerationErrorMessage(error, locale, t.requestFailed)
       }]);
     } finally {
@@ -4633,7 +5334,14 @@ function App() {
     }
   }
 
-  function applyGenerationProgress(runGuard: ConversationRunGuard, idBase: number, progress: GenerationProgress, parentId?: string | null) {
+  function applyGenerationProgress(
+    runGuard: ConversationRunGuard,
+    idBase: number,
+    progress: GenerationProgress,
+    parentId?: string | null,
+    progressGenerationMode: GenerationMode = generationMode,
+    retryTargetMessageId?: string,
+  ) {
     const nextStep = progress.stage === "failed"
       ? "failed"
       : progress.stage === "completed"
@@ -4684,11 +5392,10 @@ function App() {
         : hasSpatialAnalysis || hasPrompt
           ? "Spatial analysis or prompt returned. Still waiting for image generation."
           : "Backend generation is still running.";
-      appendMessagesToRunSession(runGuard, [{
-        id: `m-live-analysis-${idBase}`,
-        parentId: parentId ?? null,
-        role: "assistant",
+      const progressPatch: Partial<ChatMessageVariant> = {
         kind: "analysis",
+        workflowMode: "image",
+        generationMode: progressGenerationMode,
         content: {
           zh: zhContent,
           en: enContent
@@ -4709,7 +5416,25 @@ function App() {
             hasEvaluation ? "Strict review result returned" : hasImage ? (enableQualityEvaluation ? "Waiting for strict review" : "Strict review left off") : ""
           ])
         },
-        promptText: progress.prompt
+        promptText: progress.prompt,
+        imageUrl: undefined,
+        imageLabel: undefined,
+        sourceResultId: undefined,
+      };
+      if (retryTargetMessageId) {
+        updateRunSessionActiveMessageVariant(runGuard, retryTargetMessageId, progressPatch);
+        return;
+      }
+      appendMessagesToRunSession(runGuard, [{
+        id: `m-live-analysis-${idBase}`,
+        parentId: parentId ?? null,
+        role: "assistant",
+        ...variantPatchToAssistantMessage(progressPatch, {
+          kind: "analysis",
+          workflowMode: "image",
+          generationMode: progressGenerationMode,
+          content: { zh: zhContent, en: enContent },
+        }),
       }]);
     }
   }
@@ -4729,7 +5454,7 @@ function App() {
   }) {
     const flowOptions = typeof options === "string" ? { userPrompt: options } : options ?? {};
     const { userPrompt, retryTargetMessageId, retryParentUserMessageId, editParentId, retryModel, retryAttachments, submittedAttachments } = flowOptions;
-    if (isRendering || chatRespondingSessionIds.includes(currentSessionIdRef.current)) return;
+    if (chatRespondingSessionIds.includes(currentSessionIdRef.current)) return;
     const userBrief = (userPrompt ?? chatInput).trim();
     if (!userBrief) {
       showToast(chatBlocker || (locale === "zh" ? "请先输入聊天内容" : "Type a chat message first"));
@@ -4739,8 +5464,9 @@ function App() {
     const idBase = Date.now();
     const submittedFiles = [...floorPlanFiles];
     const runGuard = createConversationRunGuard();
-    const userMessageId = retryParentUserMessageId ? `m-chat-user-retry-${idBase}` : `m-chat-user-${idBase}`;
-    const assistantMessageId = retryTargetMessageId ? `m-chat-ai-retry-${idBase}` : `m-chat-ai-${idBase}`;
+    const isRetry = Boolean(retryTargetMessageId);
+    const userMessageId = `m-chat-user-${idBase}`;
+    const assistantMessageId = retryTargetMessageId || `m-chat-ai-${idBase}`;
     const requestApiConfig = buildRetryApiConfig(apiConfig, retryModel || "");
     const normalizedBaseTree = normalizeMessageTree(messagesRef.current, activeMessageIdRef.current);
     if (normalizedBaseTree.messages !== messagesRef.current) {
@@ -4752,8 +5478,18 @@ function App() {
       setActiveMessageId(normalizedBaseTree.activeMessageId);
     }
     const baseMessages = normalizedBaseTree.messages;
-    const messages = baseMessages;
     const baseActiveMessageId = normalizedBaseTree.activeMessageId;
+    const retryTargetMessage = retryTargetMessageId
+      ? baseMessages.find((message) => message.id === retryTargetMessageId)
+      : undefined;
+    if (retryTargetMessageId && !retryTargetMessage) {
+      showToast(locale === "zh" ? "没有找到要重试的 AI 回复" : "Could not find the assistant reply to retry");
+      return;
+    }
+    if (retryTargetMessageId) {
+      activeMessageIdRef.current = retryTargetMessageId;
+      setActiveMessageId(retryTargetMessageId);
+    }
     const userParentId = retryParentUserMessageId
       ? (baseMessages.find((message) => message.id === retryParentUserMessageId)?.parentId ?? null)
       : editParentId !== undefined
@@ -4763,18 +5499,19 @@ function App() {
     let chatAttachments: ChatImageAttachment[] = providedAttachments ?? [];
     try {
       if (providedAttachments === undefined) {
-        chatAttachments = await buildChatImageAttachments(submittedFiles);
+        chatAttachments = isRetry ? [] : await buildChatImageAttachments(submittedFiles);
       }
     } catch (error) {
       showToast(`${locale === "zh" ? "读取图片失败" : "Failed to read image"}: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    const nextPatch: ChatMessage[] = [
+    const nextPatch: ChatMessage[] = isRetry ? [] : [
       {
         id: userMessageId,
         parentId: userParentId,
         role: "user",
         kind: "text",
+        workflowMode: "chat",
         content: userBrief,
         attachments: chatAttachments,
       },
@@ -4783,12 +5520,31 @@ function App() {
         parentId: userMessageId,
         role: "assistant",
         kind: "text",
+        workflowMode: "chat",
         content: ""
       }
     ];
-    appendMessagesToRunSession(runGuard, nextPatch);
-    messagesRef.current = mergeMessageTreeById(baseMessages, nextPatch, assistantMessageId).messages;
-    activeMessageIdRef.current = assistantMessageId;
+    if (retryTargetMessageId) {
+      appendRunSessionMessageVariant(runGuard, retryTargetMessageId, {
+        id: `${retryTargetMessageId}-retry-${idBase}`,
+        kind: "text",
+        workflowMode: "chat",
+        content: "",
+        bullets: undefined,
+        promptText: undefined,
+        imageUrl: undefined,
+        imageLabel: undefined,
+        attachments: undefined,
+        sourceResultId: undefined,
+        draftInstruction: undefined,
+        memoryCandidate: undefined,
+        model: retryModel || apiConfig.analysisModel || undefined,
+      });
+    } else {
+      appendMessagesToRunSession(runGuard, nextPatch);
+      messagesRef.current = mergeMessageTreeById(baseMessages, nextPatch, assistantMessageId).messages;
+      activeMessageIdRef.current = assistantMessageId;
+    }
     if (editParentId !== undefined) {
       setEditingMessage(null);
     }
@@ -4803,14 +5559,21 @@ function App() {
     addChatRespondingSession(runGuard.sessionId);
 
     let streamedReply = "";
+    const updateAssistantMessage = (patch: Partial<ChatMessageVariant>) => {
+      if (retryTargetMessageId) {
+        updateRunSessionActiveMessageVariant(runGuard, retryTargetMessageId, patch);
+        return;
+      }
+      updateRunSessionMessage(runGuard, assistantMessageId, (message) => ({
+        ...message,
+        ...patch,
+      }));
+    };
     try {
-      const requestMessages = buildLinearChatContext([...messages, nextPatch[0]], userMessageId);
-      const updateAssistantMessage = (patch: Partial<ChatMessage>) => {
-        updateRunSessionMessage(runGuard, assistantMessageId, (message) => ({
-          ...message,
-          ...patch,
-        }));
-      };
+      const retryContextMessageId = retryParentUserMessageId || findPreviousUserMessage(retryTargetMessageId || "")?.id;
+      const requestMessages = retryTargetMessageId && retryContextMessageId
+        ? buildLinearChatContext(baseMessages, retryContextMessageId)
+        : buildLinearChatContext([...baseMessages, nextPatch[0]], userMessageId);
       const response = await streamDesignChat(
         {
           message: userBrief,
@@ -4872,25 +5635,23 @@ function App() {
     } catch (error) {
       if (!isActiveConversationRun(runGuard)) return;
       if (isChatStreamAbortedError(error)) {
-        updateRunSessionMessage(runGuard, assistantMessageId, (message) => ({
-          ...message,
+        updateAssistantMessage({
           kind: streamedReply ? "text" : "error",
           content: streamedReply || (locale === "zh" ? "已停止输出。" : "Response stopped."),
           bullets: undefined,
           draftInstruction: undefined,
           memoryCandidate: undefined,
-        }));
+        });
         return;
       }
       const errorText = `${t.requestFailed}: ${error instanceof Error ? error.message : String(error)}`;
-      updateRunSessionMessage(runGuard, assistantMessageId, (message) => ({
-        ...message,
+      updateAssistantMessage({
         kind: "error",
         content: errorText,
         bullets: undefined,
         draftInstruction: undefined,
         memoryCandidate: undefined,
-      }));
+      });
     } finally {
       if (isActiveConversationRun(runGuard)) {
         chatAbortControllersRef.current.delete(runGuard.sessionId);
@@ -4903,7 +5664,9 @@ function App() {
     userPrompt?: string,
     requestedMode: GenerationMode = generationMode,
     requestedComposerMode: ComposerMode = composerMode,
-    requestedPromptModeId: PromptModeId = selectedPromptModeId
+    requestedPromptModeId: PromptModeId = selectedPromptModeId,
+    requestedFiles?: File[],
+    retryTargetMessageId?: string,
   ) {
     if (isConversationBusy) return;
     const submitMode = requestedMode;
@@ -4913,9 +5676,10 @@ function App() {
       : promptModeIdForGenerationMode(submitMode);
     const prompt = buildGenerationPrompt(userPrompt, submitMode, submitPromptModeId);
     const userBrief = (userPrompt ?? chatInput).trim();
+    const submittedFiles = requestedFiles ?? [...floorPlanFiles];
     const submitBlocker = submitComposerMode === "edit-selected-result"
-      ? generationBlocker
-      : getGenerationBlocker(submitMode, userBrief);
+      ? getImageEditBlocker(userBrief, submittedFiles.length, Boolean(activeResult?.imageUrl))
+      : getGenerationBlocker(submitMode, userBrief, submittedFiles.length);
     if (submitBlocker) {
       showToast(submitBlocker || (locale === "zh" ? "请先补齐生成输入" : "Complete the generation inputs first"));
       return;
@@ -4924,10 +5688,15 @@ function App() {
       ? locale === "zh" ? "生成彩色平面图" : "Generate a colored floor plan"
       : "");
     const isFloorPlanInputMode = submitMode === "render3d" || submitMode === "colored_floor_plan";
-    const submittedFiles = [...floorPlanFiles];
     let generationAttachments: ChatImageAttachment[] = [];
     try {
       generationAttachments = await buildGenerationPreviewAttachments(submittedFiles);
+      if (submitComposerMode === "edit-selected-result" && generationAttachments.length === 0) {
+        const sourceAttachment = await buildResultPreviewAttachment(activeResult);
+        if (sourceAttachment) {
+          generationAttachments = [sourceAttachment];
+        }
+      }
     } catch (error) {
       showToast(`${locale === "zh" ? "读取图片失败" : "Failed to read image"}: ${error instanceof Error ? error.message : String(error)}`);
       return;
@@ -4937,14 +5706,37 @@ function App() {
     const submittedFloorPlanName = submittedFloorPlanPreview?.name;
     const idBase = Date.now();
     const runGuard = createConversationRunGuard();
+    const isRetry = Boolean(retryTargetMessageId);
     const userMessageId = `m-user-${idBase}`;
-    const userParentId = activeMessageId;
+    const normalizedBaseTree = normalizeMessageTree(messagesRef.current, activeMessageIdRef.current);
+    if (normalizedBaseTree.messages !== messagesRef.current) {
+      messagesRef.current = normalizedBaseTree.messages;
+      setMessages(normalizedBaseTree.messages);
+    }
+    if (normalizedBaseTree.activeMessageId !== activeMessageIdRef.current) {
+      activeMessageIdRef.current = normalizedBaseTree.activeMessageId;
+      setActiveMessageId(normalizedBaseTree.activeMessageId);
+    }
+    const retryTargetMessage = retryTargetMessageId
+      ? normalizedBaseTree.messages.find((message) => message.id === retryTargetMessageId)
+      : undefined;
+    if (retryTargetMessageId && !retryTargetMessage) {
+      showToast(locale === "zh" ? "没有找到要重试的 AI 回复" : "Could not find the assistant reply to retry");
+      return;
+    }
+    if (retryTargetMessageId) {
+      activeMessageIdRef.current = retryTargetMessageId;
+      setActiveMessageId(retryTargetMessageId);
+    }
+    const userParentId = normalizedBaseTree.activeMessageId;
     const nextMessages: ChatMessage[] = [
       {
         id: userMessageId,
         parentId: userParentId,
         role: "user",
         kind: "text",
+        workflowMode: "image",
+        generationMode: submitMode,
         content: displayedBrief,
         attachments: generationAttachments,
       },
@@ -4953,6 +5745,8 @@ function App() {
         parentId: userMessageId,
         role: "assistant",
         kind: "analysis",
+        workflowMode: "image",
+        generationMode: submitMode,
         content: {
           zh: "已提交生成请求，正在等待图片服务返回结果。",
           en: "Generation request submitted. Waiting for the image service to return a result."
@@ -4971,7 +5765,36 @@ function App() {
         }
       }
     ];
-    appendMessagesToRunSession(runGuard, nextMessages);
+    if (retryTargetMessageId) {
+      appendRunSessionMessageVariant(runGuard, retryTargetMessageId, {
+        id: `${retryTargetMessageId}-retry-${idBase}`,
+        kind: "analysis",
+        workflowMode: "image",
+        generationMode: submitMode,
+        content: {
+          zh: "已提交生成请求，正在等待图片服务返回结果。",
+          en: "Generation request submitted. Waiting for the image service to return a result."
+        },
+        bullets: {
+          zh: compactLines([
+            "后端已收到请求",
+            submitMode === "standard" ? "默认模式会直接请求画图模型" : "正在准备分析与出图流程",
+            "如果上游失败，会在这里显示原因"
+          ]),
+          en: compactLines([
+            "Backend received the request",
+            submitMode === "standard" ? "Default mode calls the image model directly" : "Preparing analysis and rendering",
+            "If the upstream service fails, the reason will appear here"
+          ])
+        },
+        promptText: undefined,
+        imageUrl: undefined,
+        imageLabel: undefined,
+        sourceResultId: undefined,
+      });
+    } else {
+      appendMessagesToRunSession(runGuard, nextMessages);
+    }
     if (userPrompt === undefined) {
       clearComposerDraft();
       if (submittedFiles.length > 0) {
@@ -5010,7 +5833,7 @@ function App() {
             },
             (progress) => {
               if (!isActiveConversationRun(runGuard)) return;
-              applyGenerationProgress(runGuard, idBase, progress, userMessageId);
+              applyGenerationProgress(runGuard, idBase, progress, userMessageId, submitMode, retryTargetMessageId);
             },
             { signal: abortController.signal }
           );
@@ -5053,33 +5876,51 @@ function App() {
           }
           removeLiveAnalysisMessage(runGuard, idBase);
           const finalPrompt = result.prompt || prompt;
-          appendMessagesToRunSession(runGuard, [
-            {
-              id: `m-api-analysis-${idBase}`,
-              parentId: userMessageId,
-              role: "assistant",
-              kind: "analysis",
-              content: {
-                zh: "上传图续改完成。默认模式已把上传图片作为参考图，并按输入框要求生成新图。",
-                en: "Uploaded image edit completed. Default mode used the uploaded image as a reference and generated a new image from the request."
-              },
-              bullets: {
-                zh: compactLines([result.status || "", finalPrompt ? "最终提示词已生成" : ""]),
-                en: compactLines([result.status || "", finalPrompt ? "Final prompt generated" : ""])
-              },
-              promptText: finalPrompt
+          const renderPatch: Partial<ChatMessageVariant> = {
+            kind: "render",
+            workflowMode: "image",
+            generationMode: submitMode,
+            content: result.ok ? (locale === "zh" ? "基于上传图的生成结果已返回" : "Reference-image result returned") : result.error || t.requestFailed,
+            bullets: {
+              zh: compactLines([result.status || "", finalPrompt ? "最终提示词已生成" : ""]),
+              en: compactLines([result.status || "", finalPrompt ? "Final prompt generated" : ""])
             },
-            {
-              id: `m-api-render-${idBase}`,
-              parentId: `m-api-analysis-${idBase}`,
-              role: "assistant",
-              kind: "render",
-              content: result.ok ? (locale === "zh" ? "基于上传图的生成结果已返回" : "Reference-image result returned") : result.error || t.requestFailed,
-              imageUrl: historyItem.imageUrl || firstImage?.data_url || firstImage?.url,
-              imageLabel: historyItem.imageLabel || firstImage?.label,
-              sourceResultId: historyItem.id,
-            }
-          ]);
+            promptText: finalPrompt,
+            imageUrl: historyItem.imageUrl || firstImage?.url || firstImage?.data_url,
+            imageLabel: historyItem.imageLabel || firstImage?.label,
+            sourceResultId: historyItem.id,
+          };
+          if (retryTargetMessageId) {
+            updateRunSessionActiveMessageVariant(runGuard, retryTargetMessageId, renderPatch);
+          } else {
+            appendMessagesToRunSession(runGuard, [
+              {
+                id: `m-api-analysis-${idBase}`,
+                parentId: userMessageId,
+                role: "assistant",
+                kind: "analysis",
+                workflowMode: "image",
+                generationMode: submitMode,
+                content: {
+                  zh: "上传图续改完成。默认模式已把上传图片作为参考图，并按输入框要求生成新图。",
+                  en: "Uploaded image edit completed. Default mode used the uploaded image as a reference and generated a new image from the request."
+                },
+                bullets: renderPatch.bullets,
+                promptText: finalPrompt
+              },
+              {
+                id: `m-api-render-${idBase}`,
+                parentId: `m-api-analysis-${idBase}`,
+                role: "assistant",
+                ...variantPatchToAssistantMessage(renderPatch, {
+                  kind: "render",
+                  workflowMode: "image",
+                  generationMode: submitMode,
+                  content: result.ok ? (locale === "zh" ? "基于上传图的生成结果已返回" : "Reference-image result returned") : result.error || t.requestFailed,
+                }),
+              }
+            ]);
+          }
           return;
         }
         const editResult = await requestImageEdit({
@@ -5116,33 +5957,51 @@ function App() {
           void refreshLearnedProfile(activeResult.projectId || DEFAULT_PROJECT_ID, activeResult.userId || currentUserId || DEFAULT_PROJECT_ID);
         }
         removeLiveAnalysisMessage(runGuard, idBase);
-        appendMessagesToRunSession(runGuard, [
-          {
-            id: `m-api-analysis-${idBase}`,
-            parentId: userMessageId,
-            role: "assistant",
-            kind: "analysis",
-            content: {
-              zh: "改图完成。新版本已保存在历史图片中，并与上一版建立版本关系。",
-              en: "Image edit completed. The new version is saved in image history and linked to the previous version."
-            },
-            bullets: {
-              zh: compactLines([historyItem.status || "", historyItem.editInstruction ? `修改要求：${historyItem.editInstruction}` : "", historyItem.versionIndex ? `版本 v${historyItem.versionIndex}` : ""]),
-              en: compactLines([historyItem.status || "", historyItem.editInstruction ? `Edit: ${historyItem.editInstruction}` : "", historyItem.versionIndex ? `Version v${historyItem.versionIndex}` : ""])
-            },
-            promptText: historyItem.prompt
+        const renderPatch: Partial<ChatMessageVariant> = {
+          kind: "render",
+          workflowMode: "image",
+          generationMode: submitMode,
+          content: editResult.ok ? (locale === "zh" ? "修改后的真实渲染结果已返回" : "Edited render result returned") : editResult.error || t.requestFailed,
+          bullets: {
+            zh: compactLines([historyItem.status || "", historyItem.editInstruction ? `修改要求：${historyItem.editInstruction}` : "", historyItem.versionIndex ? `版本 v${historyItem.versionIndex}` : ""]),
+            en: compactLines([historyItem.status || "", historyItem.editInstruction ? `Edit: ${historyItem.editInstruction}` : "", historyItem.versionIndex ? `Version v${historyItem.versionIndex}` : ""])
           },
-          {
-            id: `m-api-render-${idBase}`,
-            parentId: `m-api-analysis-${idBase}`,
-            role: "assistant",
-            kind: "render",
-            content: editResult.ok ? (locale === "zh" ? "修改后的真实渲染结果已返回" : "Edited render result returned") : editResult.error || t.requestFailed,
-            imageUrl: historyItem.imageUrl,
-            imageLabel: historyItem.imageLabel || historyItem.title,
-            sourceResultId: historyItem.id,
-          }
-        ]);
+          promptText: historyItem.prompt,
+          imageUrl: historyItem.imageUrl,
+          imageLabel: historyItem.imageLabel || historyItem.title,
+          sourceResultId: historyItem.id,
+        };
+        if (retryTargetMessageId) {
+          updateRunSessionActiveMessageVariant(runGuard, retryTargetMessageId, renderPatch);
+        } else {
+          appendMessagesToRunSession(runGuard, [
+            {
+              id: `m-api-analysis-${idBase}`,
+              parentId: userMessageId,
+              role: "assistant",
+              kind: "analysis",
+              workflowMode: "image",
+              generationMode: submitMode,
+              content: {
+                zh: "改图完成。新版本已保存在历史图片中，并与上一版建立版本关系。",
+                en: "Image edit completed. The new version is saved in image history and linked to the previous version."
+              },
+              bullets: renderPatch.bullets,
+              promptText: historyItem.prompt
+            },
+            {
+              id: `m-api-render-${idBase}`,
+              parentId: `m-api-analysis-${idBase}`,
+              role: "assistant",
+              ...variantPatchToAssistantMessage(renderPatch, {
+                kind: "render",
+                workflowMode: "image",
+                generationMode: submitMode,
+                content: editResult.ok ? (locale === "zh" ? "修改后的真实渲染结果已返回" : "Edited render result returned") : editResult.error || t.requestFailed,
+              }),
+            }
+          ]);
+        }
         return;
       }
 
@@ -5161,7 +6020,7 @@ function App() {
         },
         (progress) => {
           if (!isActiveConversationRun(runGuard)) return;
-          applyGenerationProgress(runGuard, idBase, progress, userMessageId);
+          applyGenerationProgress(runGuard, idBase, progress, userMessageId, submitMode, retryTargetMessageId);
         },
         { signal: abortController.signal }
       );
@@ -5208,34 +6067,52 @@ function App() {
       }
       const finalPrompt = result.prompt || prompt;
       removeLiveAnalysisMessage(runGuard, idBase);
+      const renderPatch: Partial<ChatMessageVariant> = {
+        kind: "render",
+        workflowMode: "image",
+        generationMode: submitMode,
+        content: result.ok ? (locale === "zh" ? "真实渲染结果已返回" : "Real render result returned") : result.error || t.requestFailed,
+        bullets: {
+          zh: compactLines([result.status || "", finalPrompt ? "最终提示词已生成" : "", result.evaluation ? "评估报告已返回" : ""]),
+          en: compactLines([result.status || "", finalPrompt ? "Final prompt generated" : "", result.evaluation ? "Evaluation returned" : ""])
+        },
+        promptText: finalPrompt,
+        imageUrl: historyItem.imageUrl || firstImage?.url || firstImage?.data_url,
+        imageLabel: historyItem.imageLabel || firstImage?.label,
+        sourceResultId: historyItem.id,
+      };
       const resultMessages: ChatMessage[] = [
         {
           id: `m-api-analysis-${idBase}`,
           parentId: userMessageId,
           role: "assistant",
           kind: "analysis",
+          workflowMode: "image",
+          generationMode: submitMode,
           content: {
             zh: submitMode === "standard" ? "生成完成。默认模式已按输入框文本直通出图。" : "生成完成。空间分析已整理到右侧栏，最终提示词可在这里展开查看。",
             en: submitMode === "standard" ? "Generation completed. Default mode sent the composer text directly to image generation." : "Generation completed. Spatial analysis is shown in the right panel, and the final prompt can be expanded here."
           },
-          bullets: {
-            zh: compactLines([result.status || "", finalPrompt ? "最终提示词已生成" : "", result.evaluation ? "评估报告已返回" : ""]),
-            en: compactLines([result.status || "", finalPrompt ? "Final prompt generated" : "", result.evaluation ? "Evaluation returned" : ""])
-          },
+          bullets: renderPatch.bullets,
           promptText: finalPrompt
         },
         {
           id: `m-api-render-${idBase}`,
           parentId: `m-api-analysis-${idBase}`,
           role: "assistant",
-          kind: "render",
-          content: result.ok ? (locale === "zh" ? "真实渲染结果已返回" : "Real render result returned") : result.error || t.requestFailed,
-          imageUrl: historyItem.imageUrl || firstImage?.data_url || firstImage?.url,
-          imageLabel: historyItem.imageLabel || firstImage?.label,
-          sourceResultId: historyItem.id,
+          ...variantPatchToAssistantMessage(renderPatch, {
+            kind: "render",
+            workflowMode: "image",
+            generationMode: submitMode,
+            content: result.ok ? (locale === "zh" ? "真实渲染结果已返回" : "Real render result returned") : result.error || t.requestFailed,
+          }),
         }
       ];
-      appendMessagesToRunSession(runGuard, resultMessages);
+      if (retryTargetMessageId) {
+        updateRunSessionActiveMessageVariant(runGuard, retryTargetMessageId, renderPatch);
+      } else {
+        appendMessagesToRunSession(runGuard, resultMessages);
+      }
     } catch (error) {
       if (!isActiveConversationRun(runGuard)) return;
       if (isGenerationStreamAbortedError(error) || error instanceof DOMException && error.name === "AbortError") {
@@ -5244,13 +6121,27 @@ function App() {
         if (isVisibleConversationRun(runGuard)) {
           setActiveStep("completed");
         }
-        appendMessagesToRunSession(runGuard, [{
-          id: `m-api-stopped-${idBase}`,
-          parentId: userMessageId,
-          role: "assistant",
+        const stoppedPatch: Partial<ChatMessageVariant> = {
           kind: "text",
+          workflowMode: "image",
+          generationMode: submitMode,
           content: locale === "zh" ? "已停止生成。" : "Generation stopped."
-        }]);
+        };
+        if (retryTargetMessageId) {
+          updateRunSessionActiveMessageVariant(runGuard, retryTargetMessageId, stoppedPatch);
+        } else {
+          appendMessagesToRunSession(runGuard, [{
+            id: `m-api-stopped-${idBase}`,
+            parentId: userMessageId,
+            role: "assistant",
+            ...variantPatchToAssistantMessage(stoppedPatch, {
+              kind: "text",
+              workflowMode: "image",
+              generationMode: submitMode,
+              content: locale === "zh" ? "已停止生成。" : "Generation stopped.",
+            }),
+          }]);
+        }
         return;
       }
       setRenderingStep("failed");
@@ -5258,13 +6149,27 @@ function App() {
         setActiveStep("failed");
       }
       removeLiveAnalysisMessage(runGuard, idBase);
-      appendMessagesToRunSession(runGuard, [{
-        id: `m-api-error-${idBase}`,
-        parentId: userMessageId,
-        role: "assistant",
+      const errorPatch: Partial<ChatMessageVariant> = {
         kind: "error",
+        workflowMode: "image",
+        generationMode: submitMode,
         content: formatGenerationErrorMessage(error, locale, t.requestFailed)
-      }]);
+      };
+      if (retryTargetMessageId) {
+        updateRunSessionActiveMessageVariant(runGuard, retryTargetMessageId, errorPatch);
+      } else {
+        appendMessagesToRunSession(runGuard, [{
+          id: `m-api-error-${idBase}`,
+          parentId: userMessageId,
+          role: "assistant",
+          ...variantPatchToAssistantMessage(errorPatch, {
+            kind: "error",
+            workflowMode: "image",
+            generationMode: submitMode,
+            content: formatGenerationErrorMessage(error, locale, t.requestFailed),
+          }),
+        }]);
+      }
     } finally {
       if (isActiveConversationRun(runGuard)) {
         generationAbortControllersRef.current.delete(runGuard.sessionId);
@@ -5576,7 +6481,6 @@ function App() {
           appName={t.appName}
           isSidebarCollapsed={isSidebarCollapsed}
           canStartNewConversation={canStartNewConversation}
-          isRendering={isRendering}
           isChatHistoryOpen={isChatHistoryOpen}
           historyTotal={sidebarHistoryTotal}
           historyGroups={sidebarHistoryViewGroups}
@@ -5662,56 +6566,22 @@ function App() {
               />
             ) : (
               <>
-                {isVisibleRendering && (
-                  <div className="generation-progress-card" role="status" aria-live="polite">
-                    <div className="progress-orb"><span /></div>
-                    <div className="generation-progress-content">
-                      <div className="generation-progress-head">
-                        <strong>{locale === "zh" ? "后端正在执行生成流程" : "Backend generation is running"}</strong>
-                        <span>{generationElapsedLabel}</span>
-                      </div>
-                      <div className="generation-progress-status">
-                        <Sparkles size={14} aria-hidden="true" />
-                        <span>{locale === "zh" ? "正在画图中，未卡住" : "Drawing in progress, not stuck"}</span>
-                      </div>
-                      <p>
-                        {locale === "zh"
-                          ? `当前阶段：${generationStageLabel}。分析/提示词会先显示，图片继续在后台等待真实返回。`
-                          : `Current stage: ${generationStageLabel}. Analysis and prompt details may appear before the image is returned.`}
-                      </p>
-                      <div className="generation-progress-meta">
-                        <span>{locale === "zh" ? `已用 ${generationElapsedLabel}` : `Elapsed ${generationElapsedLabel}`}</span>
-                        <span>{locale === "zh" ? "等待真实返回" : "Waiting for real result"}</span>
-                      </div>
-                      <div className="generation-progress-bar generation-progress-bar--indeterminate" aria-label={locale === "zh" ? "生成状态" : "Generation status"}>
-                        <span />
-                      </div>
-                      <div className="generation-progress-steps">
-                        <span className={["submitted", "analysis", "rendering", "evaluating", "completed"].includes(visibleActiveStep) ? "is-active" : ""}>{locale === "zh" ? "已提交" : "Submitted"}</span>
-                        <span className={["analysis", "rendering", "evaluating", "completed"].includes(visibleActiveStep) || hasCurrentAnalysisResult ? "is-active" : ""}>{progressAnalysisStepLabel}</span>
-                        <span className={["rendering", "evaluating", "completed"].includes(visibleActiveStep) ? "is-active" : ""}>{currentIteration ? (locale === "zh" ? `第 ${currentIteration} 轮出图` : `Rendering iteration ${currentIteration}`) : (locale === "zh" ? "等待图片" : "Waiting for image")}</span>
-                        <span className={enableQualityEvaluation && ["evaluating", "completed"].includes(visibleActiveStep) ? "is-active" : !enableQualityEvaluation ? "is-muted" : ""}>{enableQualityEvaluation ? (locale === "zh" ? "严格复核" : "Strict review") : (locale === "zh" ? "默认关闭" : "Off by default")}</span>
-                      </div>
-                      {isGenerationSlow && (
-                        <p className="generation-slow-note">
-                          {locale === "zh"
-                            ? "已经超过 5 分钟，可能是模型排队或图片生成较慢；只要没有报错，后端仍在等待结果。"
-                            : "This has taken over 5 minutes. The model may be queued or rendering slowly; without an error, the backend is still waiting."}
-                        </p>
-                      )}
-                    </div>
-                  </div>
-                )}
-
                 {activePathMessages.map((message) => {
                   const activeMessage = withActiveMessageVariant(message);
                   const branchInfo = getBranchInfo(messages, message.id);
+                  const messageVariants = getMessageVariants(message);
+                  const activeVariantIndex = getActiveMessageVariantIndex(message);
+                  const hasMessageVariants = activeMessage.role === "assistant" && messageVariants.length > 1;
                   const hasAssistantOutput = activeMessage.role === "assistant" && Boolean(buildMessageClipboardText(activeMessage, locale) || activeMessage.imageUrl);
                   const isStreamingAssistantMessage = isVisibleChatResponding && activeMessage.role === "assistant" && message.id === activeMessageId;
                   const isEditingUserMessage = activeMessage.role === "user" && editingMessage?.messageId === message.id;
                   const editedDraft = isEditingUserMessage ? editingMessage?.draft ?? "" : "";
                   const editedDraftLineCount = Math.min(8, Math.max(3, editedDraft.split("\n").length));
-                  const renderMessageDownloadItem = {
+                  const editableRenderMessageResult = getEditableRenderMessageResult(message);
+                  const renderMessageDownloadItem = activeMessage.sourceResultId
+                    ? renderHistory.find((item) => item.id === activeMessage.sourceResultId) ?? null
+                    : null;
+                  const fallbackRenderMessageDownloadItem = {
                     id: activeMessage.id,
                     title: activeMessage.imageLabel || t.renderPreview,
                     imageUrl: activeMessage.imageUrl,
@@ -5734,7 +6604,27 @@ function App() {
                           </span>
                         )}
                         {activeMessage.kind === "render" && <span>{t.renderPreview}</span>}
-                        {branchInfo.count > 1 && (
+                        {hasMessageVariants ? (
+                          <div className="message-version-switch" aria-label={locale === "zh" ? "回复版本切换" : "Response version switcher"}>
+                            <button
+                              type="button"
+                              onClick={() => handleSwitchMessageVariant(message.id, -1)}
+                              disabled={activeVariantIndex <= 0}
+                              title={locale === "zh" ? "查看上一个回复版本" : "View previous response version"}
+                            >
+                              <ChevronLeft size={15} />
+                            </button>
+                            <span>{activeVariantIndex + 1} / {messageVariants.length}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleSwitchMessageVariant(message.id, 1)}
+                              disabled={activeVariantIndex >= messageVariants.length - 1}
+                              title={locale === "zh" ? "查看下一个回复版本" : "View next response version"}
+                            >
+                              <ChevronRight size={15} />
+                            </button>
+                          </div>
+                        ) : branchInfo.count > 1 && (
                           <div className="message-version-switch" aria-label={locale === "zh" ? "分支切换" : "Branch switcher"}>
                             <button
                               type="button"
@@ -5925,15 +6815,17 @@ function App() {
                           </button>
                           {activeMessage.kind === "render" && activeMessage.imageUrl && (
                             <>
-                              <button type="button" onClick={() => handleCopyImage(activeMessage.imageUrl, activeMessage.imageLabel)} title={locale === "zh" ? "复制图片到剪贴板" : "Copy image to clipboard"}>
-                                <Clipboard size={14} />
-                                {locale === "zh" ? "复制图片" : "Copy image"}
-                              </button>
-                              <button type="button" onClick={() => message.imageUrl && handleOpenComparison({ url: message.imageUrl, label: activeMessage.imageLabel || t.renderPreview, sourceResultId: message.sourceResultId })} disabled={isRenderMessageComparisonDisabled(activeMessage)} title={locale === "zh" ? "打开对比分析" : "Open comparison"}>
+                              {editableRenderMessageResult && (
+                                <button type="button" onClick={() => handleEditResult(editableRenderMessageResult)} title={locale === "zh" ? "基于这张结果继续改图" : "Continue editing this image"}>
+                                  <Edit3 size={14} />
+                                  {locale === "zh" ? "二次编辑" : "Edit image"}
+                                </button>
+                              )}
+                              <button type="button" onClick={() => activeMessage.imageUrl && handleOpenComparison({ url: activeMessage.imageUrl, label: activeMessage.imageLabel || t.renderPreview, sourceResultId: activeMessage.sourceResultId })} disabled={isRenderMessageComparisonDisabled(activeMessage)} title={locale === "zh" ? "打开对比分析" : "Open comparison"}>
                                 <FileText size={14} />
                                 {locale === "zh" ? "对比分析" : "Compare"}
                               </button>
-                              <button type="button" onClick={() => handleDownloadResult(renderMessageDownloadItem)} title={locale === "zh" ? "下载图片" : "Download image"}>
+                              <button type="button" onClick={() => handleDownloadResult(renderMessageDownloadItem ?? fallbackRenderMessageDownloadItem)} title={locale === "zh" ? "下载图片" : "Download image"}>
                                 <Download size={14} />
                                 {locale === "zh" ? "下载" : "Download"}
                               </button>
@@ -5953,6 +6845,14 @@ function App() {
                   </article>
                   );
                 })}
+                {generationProgressCard && (
+                  <article className="chat-message chat-message--assistant chat-message--generation-progress" aria-label={locale === "zh" ? "当前画图进度" : "Current image generation progress"}>
+                    <div className="message-avatar">AI</div>
+                    <div className="message-body">
+                      {generationProgressCard}
+                    </div>
+                  </article>
+                )}
               </>
             )}
           </div>
@@ -7106,7 +8006,7 @@ function App() {
             <header className="prompt-market-head">
               <div>
                 <h2 id="prompt-market-title">{locale === "zh" ? "Prompts 提示词广场" : "Prompts plaza"}</h2>
-                <p>{locale === "zh" ? "沉淀 Attuno 常用工作流。支持按来源、语言、分类和模式筛选，一键复制或套用到当前输入框。" : "Browse Attuno workflows. Filter by source, language, category, and mode, then copy or use a prompt."}</p>
+                <p>{locale === "zh" ? "沉淀 Attuno 常用工作流。支持添加或导入自己的提示词，并按来源、语言、分类和模式筛选。" : "Browse Attuno workflows, add or import your own prompts, and filter by source, language, category, and mode."}</p>
               </div>
               <div className="prompt-count">{promptPlazaCountLabel}</div>
               <button type="button" className="prompt-modal-close icon-btn" onClick={() => setIsPromptPlazaOpen(false)} aria-label={locale === "zh" ? "关闭提示词广场" : "Close prompt plaza"} title={locale === "zh" ? "关闭提示词广场" : "Close prompt plaza"}>
@@ -7136,12 +8036,31 @@ function App() {
                   </button>
                 </div>
               </div>
+              <div className="prompt-import-row">
+                <button type="button" className="chip-btn selected" onClick={() => setIsPromptPlazaEditorOpen((current) => !current)}>
+                  <Plus size={15} />
+                  <span>{locale === "zh" ? "添加提示词" : "Add prompt"}</span>
+                </button>
+                <button type="button" className="chip-btn" onClick={() => promptPlazaImportInputRef.current?.click()}>
+                  <FileText size={15} />
+                  <span>{locale === "zh" ? "导入文件" : "Import file"}</span>
+                </button>
+                <input
+                  ref={promptPlazaImportInputRef}
+                  type="file"
+                  accept=".txt,.md,.json,text/plain,application/json"
+                  multiple
+                  className="visually-hidden-input"
+                  onChange={(event) => void handleImportPromptPlazaFile(event)}
+                />
+              </div>
               <div className="market-filter-row">
                 <select className="market-select" value={promptPlazaFilters.source} onChange={(event) => updatePromptPlazaFilter("source", event.target.value as PromptPlazaFilters["source"])} aria-label={locale === "zh" ? "来源" : "Source"}>
                   <option value="all">{locale === "zh" ? "全部来源" : "All sources"}</option>
                   <option value="official">Official</option>
                   <option value="community">{locale === "zh" ? "社区精选" : "Community"}</option>
                   <option value="team">{locale === "zh" ? "团队沉淀" : "Team"}</option>
+                  <option value="user">{locale === "zh" ? "我的提示词" : "My prompts"}</option>
                 </select>
                 <select className="market-select" value={promptPlazaFilters.language} onChange={(event) => updatePromptPlazaFilter("language", event.target.value as PromptPlazaFilters["language"])} aria-label={locale === "zh" ? "语言" : "Language"}>
                   <option value="all">{locale === "zh" ? "全部语言" : "All languages"}</option>
@@ -7166,20 +8085,86 @@ function App() {
             </div>
 
             <div className="prompt-market-body">
+              {isPromptPlazaEditorOpen && (
+                <div className="prompt-plaza-editor">
+                  <label>
+                    <span>{locale === "zh" ? "标题" : "Title"}</span>
+                    <input
+                      value={promptPlazaDraft.title}
+                      onChange={(event) => setPromptPlazaDraft((current) => ({ ...current, title: event.target.value }))}
+                      placeholder={locale === "zh" ? "例如：小红书产品介绍文案" : "Example: Product intro post"}
+                    />
+                  </label>
+                  <label>
+                    <span>{locale === "zh" ? "说明" : "Description"}</span>
+                    <input
+                      value={promptPlazaDraft.description}
+                      onChange={(event) => setPromptPlazaDraft((current) => ({ ...current, description: event.target.value }))}
+                      placeholder={locale === "zh" ? "这个提示词适合什么场景" : "When this prompt is useful"}
+                    />
+                  </label>
+                  <label className="prompt-plaza-editor__prompt">
+                    <span>{locale === "zh" ? "提示词内容" : "Prompt text"}</span>
+                    <textarea
+                      value={promptPlazaDraft.prompt}
+                      onChange={(event) => setPromptPlazaDraft((current) => ({ ...current, prompt: event.target.value }))}
+                      placeholder={locale === "zh" ? "输入要保存的完整提示词" : "Enter the full prompt to save"}
+                    />
+                  </label>
+                  <div className="prompt-plaza-editor__row">
+                    <label>
+                      <span>{locale === "zh" ? "分类" : "Category"}</span>
+                      <select value={promptPlazaDraft.category} onChange={(event) => setPromptPlazaDraft((current) => ({ ...current, category: event.target.value as PromptPlazaCategory }))}>
+                        <option value="product">{locale === "zh" ? "产品设计" : "Product"}</option>
+                        <option value="image">{locale === "zh" ? "图像生成" : "Image"}</option>
+                        <option value="research">{locale === "zh" ? "资料分析" : "Research"}</option>
+                        <option value="copy">{locale === "zh" ? "写作润色" : "Copy"}</option>
+                        <option value="code">{locale === "zh" ? "代码开发" : "Code"}</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>{locale === "zh" ? "模式" : "Mode"}</span>
+                      <select value={promptPlazaDraft.mode} onChange={(event) => setPromptPlazaDraft((current) => ({ ...current, mode: event.target.value as PromptPlazaMode }))}>
+                        <option value="chat">{locale === "zh" ? "聊天模式" : "Chat mode"}</option>
+                        <option value="image">{locale === "zh" ? "图像模式" : "Image mode"}</option>
+                        <option value="deep">{locale === "zh" ? "深度思考" : "Deep thinking"}</option>
+                      </select>
+                    </label>
+                    <label>
+                      <span>{locale === "zh" ? "标签" : "Tags"}</span>
+                      <input
+                        value={promptPlazaDraft.tags}
+                        onChange={(event) => setPromptPlazaDraft((current) => ({ ...current, tags: event.target.value }))}
+                        placeholder={locale === "zh" ? "用逗号分隔" : "Comma separated"}
+                      />
+                    </label>
+                  </div>
+                  <div className="prompt-plaza-editor__actions">
+                    <button type="button" className="chip-btn" onClick={() => { setIsPromptPlazaEditorOpen(false); setPromptPlazaDraft(DEFAULT_PROMPT_PLAZA_DRAFT); }}>
+                      {locale === "zh" ? "取消" : "Cancel"}
+                    </button>
+                    <button type="button" className="chip-btn selected" onClick={savePromptPlazaDraft}>
+                      {locale === "zh" ? "保存提示词" : "Save prompt"}
+                    </button>
+                  </div>
+                </div>
+              )}
               {promptPlazaVisibleItems.length === 0 ? (
                 <div className="prompt-market-empty">
                   <strong>{locale === "zh" ? "没有找到匹配的提示词" : "No matching prompts"}</strong>
-                  <p>{locale === "zh" ? "可以换个关键词，或切回全部分类继续浏览。" : "Try a different search or return to all filters."}</p>
+                  <p>{locale === "zh" ? "可以换个关键词，或添加/导入自己的提示词。" : "Try a different search, or add/import your own prompts."}</p>
                 </div>
               ) : (
                 <div className="plaza-grid">
                   {promptPlazaVisibleItems.map((item) => {
                     const isFavorite = promptPlazaFavoriteIds.has(item.id);
+                    const isLiked = promptPlazaUserLikeIds.has(item.id);
+                    const likeCount = promptPlazaLikes[item.id] ?? item.likes ?? 0;
                     const localizedTitle = item.title[locale];
                     return (
                       <article className={`plaza-card plaza-card--${item.tone}`} key={item.id}>
                         <div className="plaza-preview">
-                          <span className="plaza-source">{item.source === "official" ? "Official" : item.source === "team" ? "Team" : locale === "zh" ? "社区精选" : "Community"}</span>
+                          <span className="plaza-source">{item.source === "official" ? "Official" : item.source === "team" ? "Team" : item.source === "user" ? (locale === "zh" ? "我的" : "Mine") : locale === "zh" ? "社区精选" : "Community"}</span>
                           <div className="plaza-tags">
                             {item.tags.slice(0, 3).map((tag) => <span className="plaza-tag" key={`${item.id}-${tag}`}>{tag}</span>)}
                           </div>
@@ -7188,11 +8173,16 @@ function App() {
                           <div className="plaza-card-head">
                             <div>
                               <h3>{localizedTitle}</h3>
-                              <div className="plaza-meta-line">{item.author} · {item.category} · {item.mode}</div>
+                              <div className="plaza-meta-line">{item.author} · {item.category} · {item.mode} · {locale === "zh" ? `${likeCount} 赞` : `${likeCount} likes`}</div>
                             </div>
-                            <button type="button" className={`favorite-btn ${isFavorite ? "favorited" : ""}`} onClick={() => togglePromptPlazaFavorite(item.id)} aria-label={isFavorite ? (locale === "zh" ? "取消收藏" : "Remove favorite") : (locale === "zh" ? "收藏" : "Favorite")} title={isFavorite ? (locale === "zh" ? "取消收藏" : "Remove favorite") : (locale === "zh" ? "收藏" : "Favorite")}>
-                              <Star size={17} />
-                            </button>
+                            <div className="plaza-card-actions">
+                              <button type="button" className={`favorite-btn like-btn ${isLiked ? "favorited" : ""}`} onClick={() => togglePromptPlazaLike(item.id)} aria-label={isLiked ? (locale === "zh" ? "取消点赞" : "Unlike") : (locale === "zh" ? "点赞" : "Like")} title={isLiked ? (locale === "zh" ? "取消点赞" : "Unlike") : (locale === "zh" ? "点赞，点赞多会进入社区精选" : "Like. Popular prompts enter Community")}>
+                                <ThumbsUp size={16} />
+                              </button>
+                              <button type="button" className={`favorite-btn ${isFavorite ? "favorited" : ""}`} onClick={() => togglePromptPlazaFavorite(item.id)} aria-label={isFavorite ? (locale === "zh" ? "取消收藏" : "Remove favorite") : (locale === "zh" ? "收藏" : "Favorite")} title={isFavorite ? (locale === "zh" ? "取消收藏" : "Remove favorite") : (locale === "zh" ? "收藏" : "Favorite")}>
+                                <Star size={17} />
+                              </button>
+                            </div>
                           </div>
                           <p>{item.description[locale]}</p>
                           <div className="plaza-actions">
@@ -7263,7 +8253,7 @@ function App() {
             {comparisonImage.mode === "history-vs-history" && (
               <div className="comparison-selectors">
                 <p className="comparison-selectors__note">
-                  {locale === "zh" ? "默认优先选当前聊天最近两张生成图；也可以从当前聊天或图片库手动指定 A/B。" : "Defaults to the two latest generated images in this chat; you can also choose A/B from the current chat or image library."}
+                  {locale === "zh" ? "默认优先选当前聊天的上传源图和最新结果；也可以从当前聊天或图片库手动指定 A/B。" : "Defaults to the uploaded source and latest result in this chat; you can also choose A/B from the current chat or image library."}
                 </p>
                 <label>
                   <span>{locale === "zh" ? "A 基准图" : "A reference image"}</span>

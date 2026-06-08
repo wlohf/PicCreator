@@ -1,0 +1,4 @@
+﻿{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend guideline index for chat UI changes"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Conversation retry variants and branching state rules"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Frontend component conventions"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality expectations"}

@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend review should verify generation contracts."}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Review image-input routing, empty-output handling, and provider capability semantics."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend review should verify composer and session state contracts."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Review attachment snapshot/edit routing and image workflow state behavior."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Review cross-layer request/response data flow."}

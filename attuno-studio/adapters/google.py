@@ -1,5 +1,8 @@
 import base64
 from io import BytesIO
+
+import httpx
+
 from config import AdapterConfig
 from models.schemas import PromptSet, NormalizedImage
 from adapters.base import BaseImageAdapter
@@ -11,6 +14,7 @@ class OpenAIImageAdapter(BaseImageAdapter):
     def __init__(self, cfg: AdapterConfig):
         from openai import AsyncOpenAI
         self.model = cfg.model
+        self.timeout = cfg.timeout
         self.api_key = (cfg.api_key or "").strip()
         if not self.api_key:
             raise ValueError(f"OpenAI Images API 格式适配器缺少 API Key（model={self.model}）")
@@ -56,7 +60,7 @@ class OpenAIImageAdapter(BaseImageAdapter):
             )
             endpoint = "images.generate"
 
-        image_bytes = base64.b64decode(resp.data[0].b64_json)
+        image_bytes = await self._extract_image_from_response(resp)
         generation_params = {
             "prompt": prompt.positive_prompt,
             "negative_prompt": prompt.negative_prompt,
@@ -73,6 +77,31 @@ class OpenAIImageAdapter(BaseImageAdapter):
             source_model=model,
             generation_params=generation_params,
         )
+
+    async def _extract_image_from_response(self, resp) -> bytes:
+        data = getattr(resp, "data", None) or []
+        if not data:
+            raise ValueError("画图模型未返回图片数据")
+
+        first = data[0]
+        b64_json = getattr(first, "b64_json", None)
+        if b64_json:
+            return base64.b64decode(b64_json)
+
+        image_url = getattr(first, "url", None)
+        if isinstance(image_url, str):
+            if image_url.startswith("data:image") and "," in image_url:
+                return base64.b64decode(image_url.split(",", 1)[1])
+            if image_url.startswith(("http://", "https://")):
+                return await self._download_remote_image(image_url)
+
+        raise ValueError("画图模型未返回可解析的图片数据")
+
+    async def _download_remote_image(self, url: str) -> bytes:
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+            return resp.content
 
 
 GoogleImagenAdapter = OpenAIImageAdapter

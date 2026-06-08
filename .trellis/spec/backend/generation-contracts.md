@@ -32,6 +32,7 @@
 - Result notes are user-authored text metadata on the result record. Notes must not depend on authentication state.
 - Annotation/image-edit flows may carry forward result and source floor-plan metadata, but must not require a user id in the main unauthenticated workflow.
 - Empty image output is failure, not success. If the pipeline reports a non-failed status but returns no current preview and no output image path, the backend must return `ok: false`, `stage: "generation"`, an explicit “没有返回图片” error, and empty `images` / `results` arrays. The frontend should also guard against `ok: true` responses without any displayable image and render an error message instead of an empty render card.
+- Image management deletion is a soft delete for result records: `DELETE /api/results/{result_id}` and `DELETE /api/results` must hide records from `GET /api/results` but preserve stored image/annotation/floor-plan assets so historical chat messages with `/api/results/{result_id}/image` URLs continue to render.
 
 ### 4. Validation & Error Matrix
 - Unknown `mode` -> reject with a client error before pipeline execution.
@@ -44,11 +45,14 @@
 - Invalid custom prompt skill entries, such as empty `name` or empty `prompt`, -> drop during preference normalization rather than storing unusable modes.
 - More than 20 custom prompt skills -> keep only the first 20 normalized entries.
 - Notes update for a missing `result_id` -> return not found.
+- Delete for a missing `result_id` -> return not found.
+- Fetching an image asset for a soft-deleted result id in the same namespace -> still return the stored asset if the file exists.
 - Floor-plan fetch for a result without stored floor-plan artifact -> return not found.
 - Pipeline finishes without a generated image path or preview -> return HTTP 400 for `/api/generate`, emit an `error` SSE event for `/api/generate/stream`, and preserve the short technical cause in `error` / `logs` when available.
 
 ### 5. Good / Base / Bad Cases
 - Good: upload a floor plan, choose `render3d`, generate, then fetch results and see `floor_plan_url` plus editable notes.
+- Good: delete a generated image from image management, see it disappear from `GET /api/results`, then open a historical chat message that still loads `/api/results/{id}/image`.
 - Good: upload a floor plan, click the colored-floor-plan tool action, and submit `mode=colored_floor_plan` while preserving the source floor-plan URL for comparison.
 - Good: create a custom "风景图" prompt skill, select it in image mode, type "雪山湖泊", and submit `mode=standard` with the template-expanded final prompt.
 - Base: enter only text in `standard`, generate without any floor-plan analysis or prompt compilation.
@@ -62,6 +66,7 @@
 - Backend API test asserting valid modes are accepted and invalid modes are rejected.
 - Backend service or API test asserting structured-mode results expose source floor-plan URLs.
 - Backend API test asserting notes persist through update and list/fetch responses.
+- Backend API test asserting deleted result records disappear from `GET /api/results` while `/api/results/{id}/image` still serves the historical chat asset.
 - Backend API test asserting a successful-looking pipeline snapshot without image outputs returns a generation error with empty `images` / `results`.
 - Pipeline policy test asserting `standard` bypasses floor-plan analysis, prompt compilation, and evaluation prompts.
 - Backend API test asserting `prompt_skills` preference save/load normalizes invalid entries and persists valid templates per account.

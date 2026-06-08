@@ -57,9 +57,16 @@ Retrying a daily-chat assistant reply must update the original assistant message
 ```typescript
 type ChatMessageVariant = {
   id: string;
+  kind?: "text" | "analysis" | "render" | "error";
+  workflowMode?: "chat" | "image";
+  generationMode?: GenerationMode;
   content: LocalizedText | string;
   bullets?: Record<Locale, string[]>;
   promptText?: string;
+  imageUrl?: string;
+  imageLabel?: string;
+  attachments?: ChatImageAttachment[];
+  sourceResultId?: string;
   draftInstruction?: string;
   memoryCandidate?: ChatMemoryCandidate;
   model?: string;
@@ -68,6 +75,8 @@ type ChatMessageVariant = {
 ```
 
 **Why**: Re-appending the same user prompt bloats visible history and saved conversation state. Message-level variants keep the original user turn single while still preserving previous assistant answers.
+
+Image-workflow retries use the same variant contract. A retry may change the active output from `error` or `analysis` into `render`, so variant records must carry `kind`, `workflowMode`, `generationMode`, image fields, and source result ids. `withActiveMessageVariant(message)` must project those fields onto the visible message before rendering, copying, comparison, context building, generation-record counting, and workflow routing.
 
 Use the shared helpers in `utils/chatSessions.ts` for variant-aware behavior:
 
@@ -81,7 +90,7 @@ Good:
 
 ```typescript
 updateMessageById(targetAssistantId, (message) =>
-  appendMessageVariant(message, { content: retryReply, model: retryModel })
+  appendMessageVariant(message, { kind: "text", workflowMode: "chat", content: retryReply, model: retryModel })
 );
 ```
 
@@ -97,6 +106,8 @@ setMessages((messages) => [
 
 When rendering, copying, searching, checking durable content, or counting render records, resolve the active variant first. Old history without `variants` must still render by treating the base message as a single implicit variant.
 
+Retry UI should show message-level version navigation (`1 / 2`, `2 / 2` with previous/next arrows) when `getMessageVariants(message).length > 1`. That control switches `activeVariantIndex`; it must not create, delete, or switch message-tree siblings.
+
 ### Branched Conversation Tree
 
 Chat sessions now persist conversation state as a flat node list with parent links, while the visible thread stays linear.
@@ -105,13 +116,13 @@ Chat sessions now persist conversation state as a flat node list with parent lin
 - The chat window renders only `getActiveMessagePath(messages, activeMessageId)`. Do not iterate over the entire stored message array for the visible thread.
 - New user submits append a child under the current `activeMessageId`; the matching assistant reply appends under that new user node and then becomes the next `activeMessageId`.
 - Editing a historical user message must not mutate that original node or move `activeMessageId` to the old user node, because that hides downstream assistant output from the active path. Keep the current visible branch intact, store the draft in message-level edit UI state, and only on submit create a new user sibling under the original parent with a fresh assistant child.
-- Regenerating an assistant reply must not overwrite the previous assistant node. Create a new assistant sibling under the same user parent and move `activeMessageId` onto the new sibling branch.
+- Regenerating an assistant reply must not append duplicate user/assistant nodes. Add a message-level variant to the original assistant message, set `activeVariantIndex` to the newest variant, and move `activeMessageId` to that assistant message so old downstream output is not shown under the retry result.
 - When a parent has multiple children of the same role, branch navigation controls should switch siblings by updating `activeMessageId` to the selected sibling or that sibling branch's deepest visible leaf.
 - `Branch in new chat` copies the selected root-to-node path into a fresh session with new message ids. The new session must not share ids or parent references with the source session.
 - Model API requests still receive a linear message path. Build that request context from `getActiveMessagePath(...)`, not from the entire stored tree.
 - Legacy sessions that only stored a linear `messages` array must be normalized on load by filling `parentId` from the previous message chain and defaulting `activeMessageId` to the last message.
 
-`variants` remain a backward-compatibility read path for older saved assistant retries, but new retry/edit/branch behavior should use sibling message nodes instead of adding new variants.
+Branch navigation is for user edits and explicit branch exploration. Retry navigation is separate and uses `variants`; do not model retry as sibling assistant nodes.
 
 ### Chat View Scroll Boundary
 
@@ -130,7 +141,7 @@ Chat-like workspace pages should keep the app shell fixed to the viewport and pu
 - Keep composer-side provider/model controls compact. Advanced or quality controls should not be added beside the send button once they have a drawer home.
 - Strict review belongs under the settings menu's Advanced drawer together with run-stage diagnostics and floor-plan analysis. Do not duplicate it as a composer quick action.
 - Treat `render3d` as a 3D prompt-enhancement mode rather than a separate image workflow. It accepts prompt-only generation; attached floor plans are optional structure references. `colored_floor_plan` remains a floor-plan tool and should keep requiring at least one image attachment.
-- Compare analysis for generated images should use A/B slots. Build current-chat options from render messages in `getActiveMessagePath(...)`, label them uniquely for the current conversation, default A/B to the two latest current-chat images, then merge non-duplicate image-library options from `renderHistory` so either slot can be manually replaced. Only fall back to floor-plan-vs-render comparison when there are fewer than two distinct generated images across the current chat and image library.
+- Compare analysis should use A/B slots. Build current-chat options from both image-workflow user message attachments and render messages in `getActiveMessagePath(...)`; submitted upload attachments are source-image candidates, render messages are result-image candidates. Label them uniquely for the current conversation, default A/B to the latest uploaded source image and latest generated/edited result when both exist, otherwise fall back to the latest two current-chat images. Then merge non-duplicate image-library options from `renderHistory` so either slot can be manually replaced. Only fall back to floor-plan-vs-render comparison when there are fewer than two distinct comparable images across the current chat and image library.
 - Workspace-level drag-and-drop of image files should be accepted from any primary view, switch back into the image workspace, and append files to the current floor-plan attachments.
 - Mobile layout may scroll the sidebar section, but the main conversation area should still preserve a fixed-height thread + composer structure.
 - Regression checks should assert that the page shell uses viewport height and that `.chatgpt-thread` owns `overflow-y: auto`.
@@ -168,6 +179,32 @@ The app has two top-level workspace modes:
 - `image`: image workflow only. Generation mode selection (`standard`, `render3d`, `colored_floor_plan`) lives under this workspace.
 
 Persist `workspaceMode` alongside session state so reopening a saved session restores the right composer behavior and empty-state copy.
+
+Persist message-level workflow hints for submitted turns that may later be edited or retried:
+
+```typescript
+type ChatMessage = {
+  workflowMode?: "chat" | "image";
+  generationMode?: GenerationMode;
+};
+```
+
+Editing or retrying a historical image-generation user message, analysis, render, or generation error must route back through `runConversationFlow` and the stored `generationMode`; it must not switch to `chat` or call the daily chat model. For legacy messages without these hints, infer image workflow from image descendants such as `analysis`, `render`, `promptText`, `imageUrl`, or `sourceResultId`, while explicit `workflowMode: "chat"` remains a hard chat boundary.
+
+When an image turn is created after a normal chat turn in the same branch, the image turn's own `workflowMode: "image"` wins over chat ancestors. Do not reject image routing merely because `getMessagePathTo(...)` includes earlier chat messages. The chat boundary only blocks legacy descendant-based inference for messages that do not carry their own image workflow signal.
+
+```typescript
+// Correct: target image message remains image-routed even under a chat ancestor.
+if (activeMessage.workflowMode === "chat") return false;
+if (isImageWorkflowOwnMessage(activeMessage)) return true;
+```
+
+Wrong:
+
+```typescript
+const hasChatBoundary = path.some((item) => item.workflowMode === "chat");
+if (hasChatBoundary) return false;
+```
 
 If chat returns a reusable image draft, store it as a reversible suggestion and let the user switch into image mode explicitly. Do not auto-enter image generation from ordinary chat.
 
@@ -242,6 +279,7 @@ Image management is the single full-page surface for generated-image browsing an
 - Source of truth: `renderHistory`, loaded through `listResults(currentUserId)` from `/api/results`.
 - Single-result actions should reuse shared result handlers where possible: preview, download, copy summary, load prompt, edit, annotate, notes, and delete.
 - Batch deletion may call the existing per-result delete API until a backend batch endpoint exists, but the UI must update `renderHistory` and `activeResultId` consistently after each deleted item.
+- Deleting from image management must not mutate or remove chat messages. Historical render messages keep their saved `imageUrl`; the backend preserves soft-deleted result assets so those URLs can still render outside the management list.
 - Date filtering is view-local UI state. Do not mutate or re-fetch server state merely to apply a local date filter.
 - If the management view offers destructive batch actions, keep selection state local to that view and clear selected ids after successful deletion or refresh removes the underlying records.
 

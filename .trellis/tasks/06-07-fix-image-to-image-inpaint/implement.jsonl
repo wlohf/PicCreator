@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for generation API and adapter contract work."}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Defines image generation modes, image-input routing, and OpenAI Images API edit/generate contract."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for composer state and request construction work."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Defines conversation/image workflow state, attachment persistence, and edit/retry routing contracts."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Task spans frontend request, backend service, pipeline, and adapter layers."}

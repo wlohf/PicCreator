@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend layer entry point for reviewing prompt plaza changes."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Review local storage and derived prompt list behavior."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Review form and accessibility behavior."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Review prompt import parsing and item typing."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend verification expectations."}

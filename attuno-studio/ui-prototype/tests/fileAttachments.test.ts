@@ -1,4 +1,4 @@
-import { imageFilesFromClipboardItems, imageFilesFromFiles, mergeFloorPlanFiles } from "../src/utils/fileAttachments.js";
+import { imageFilesFromClipboardItems, imageFilesFromFiles, imageSourcesFromClipboardData, mergeFloorPlanFiles } from "../src/utils/fileAttachments.js";
 
 function assert(condition: unknown, message: string) {
   if (!condition) {
@@ -28,6 +28,22 @@ const clipboardItems = [
 const clipboardImages = imageFilesFromClipboardItems(clipboardItems);
 assert(clipboardImages.length === 1, "imageFilesFromClipboardItems should only return image file items");
 assert(clipboardImages[0] === floorA, "imageFilesFromClipboardItems should preserve the pasted image file");
+
+const htmlClipboardSources = imageSourcesFromClipboardData({
+  getData: (type: string) => type === "text/html" ? '<div><img src="/api/results/result-1/image"></div>' : "",
+});
+assert(htmlClipboardSources.length === 1, "imageSourcesFromClipboardData should read image src from pasted HTML");
+assert(htmlClipboardSources[0] === "/api/results/result-1/image", "imageSourcesFromClipboardData should preserve result image URLs");
+
+const plainClipboardSources = imageSourcesFromClipboardData({
+  getData: (type: string) => type === "text/plain" ? "https://example.com/render.png?token=1" : "",
+});
+assert(plainClipboardSources.length === 1, "imageSourcesFromClipboardData should read image URLs from plain text");
+
+const ignoredClipboardSources = imageSourcesFromClipboardData({
+  getData: (type: string) => type === "text/plain" ? "https://example.com/page" : "",
+});
+assert(ignoredClipboardSources.length === 0, "imageSourcesFromClipboardData should ignore non-image URLs");
 
 const merged = mergeFloorPlanFiles([floorA], [duplicateFloorA, floorB, pdf], true);
 assert(merged.length === 2, "mergeFloorPlanFiles should dedupe floor plans by name and size");

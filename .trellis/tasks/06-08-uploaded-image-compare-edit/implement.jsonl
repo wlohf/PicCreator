@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend layer entry point for image workspace and compare UI changes."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Defines durable image attachments, workspace mode routing, and compare analysis candidate behavior."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Keeps image/result metadata and shared frontend types aligned."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality and verification expectations."}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Cross-layer generation result and source image comparison contracts."}

@@ -109,6 +109,10 @@ def _copy_file_to_images(source_path: str, filename_stem: str, user_id: str = "d
     return filename, str(target)
 
 
+def _is_deleted(item: dict[str, Any]) -> bool:
+    return bool(str(item.get("deleted_at") or "").strip())
+
+
 def result_to_response(item: dict[str, Any], user_id: str = "default") -> dict[str, Any]:
     result_id = str(item.get("id") or "")
     response_user_id = str(item.get("user_id") or user_id or "default")
@@ -156,7 +160,7 @@ def result_to_response(item: dict[str, Any], user_id: str = "default") -> dict[s
 
 
 def list_results(limit: int | None = None, user_id: str = "default") -> list[dict[str, Any]]:
-    results = _read_results_locked(user_id)
+    results = [item for item in _read_results_locked(user_id) if not _is_deleted(item)]
     if limit is not None:
         results = results[:limit]
     return [result_to_response(item, user_id=user_id) for item in results]
@@ -286,52 +290,27 @@ def update_result_notes(result_id: str, notes: str, user_id: str = "default") ->
 def delete_result(result_id: str, user_id: str = "default") -> bool:
     with _lock:
         results = _read_results(user_id)
-        kept = []
         removed = None
         for item in results:
             if item.get("id") == result_id:
                 removed = item
-            else:
-                kept.append(item)
+                if not _is_deleted(item):
+                    item["deleted_at"] = datetime.now(timezone.utc).isoformat()
+                break
         if removed is None:
             return False
-        _write_results(kept, user_id)
-    if removed.get("filename"):
-        try:
-            (get_images_dir(user_id) / str(removed["filename"])).unlink(missing_ok=True)
-        except OSError:
-            pass
-    if removed.get("annotation_filename"):
-        try:
-            (get_images_dir(user_id) / str(removed["annotation_filename"])).unlink(missing_ok=True)
-        except OSError:
-            pass
-    if removed.get("floor_plan_filename"):
-        try:
-            (get_images_dir(user_id) / str(removed["floor_plan_filename"])).unlink(missing_ok=True)
-        except OSError:
-            pass
+        _write_results(results, user_id)
     return True
 
 
 def clear_results(user_id: str = "default") -> int:
     with _lock:
         results = _read_results(user_id)
-        _write_results([], user_id)
-    for item in results:
-        if item.get("filename"):
-            try:
-                (get_images_dir(user_id) / str(item["filename"])).unlink(missing_ok=True)
-            except OSError:
-                pass
-        if item.get("annotation_filename"):
-            try:
-                (get_images_dir(user_id) / str(item["annotation_filename"])).unlink(missing_ok=True)
-            except OSError:
-                pass
-        if item.get("floor_plan_filename"):
-            try:
-                (get_images_dir(user_id) / str(item["floor_plan_filename"])).unlink(missing_ok=True)
-            except OSError:
-                pass
-    return len(results)
+        deleted = 0
+        timestamp = datetime.now(timezone.utc).isoformat()
+        for item in results:
+            if not _is_deleted(item):
+                item["deleted_at"] = timestamp
+                deleted += 1
+        _write_results(results, user_id)
+    return deleted

@@ -283,6 +283,92 @@ async def test_openai_image_adapter_text_only_uses_images_generate():
 
 
 @pytest.mark.asyncio
+async def test_openai_image_adapter_accepts_data_url_response():
+    adapter = object.__new__(OpenAIImageAdapter)
+    adapter.model = "gpt-image-2"
+
+    class DataUrlImages:
+        def __init__(self):
+            self.generate_calls = []
+
+        async def generate(self, **kwargs):
+            self.generate_calls.append(kwargs)
+            data_url = "data:image/png;base64," + base64.b64encode(b"data-url-image-bytes").decode("ascii")
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=None, url=data_url)])
+
+    images = DataUrlImages()
+    adapter.client = SimpleNamespace(images=images)
+
+    image = await adapter.generate(
+        PromptSet(
+            positive_prompt="modern room",
+            negative_prompt="",
+            model_target="gpt-image-2",
+        )
+    )
+
+    assert len(images.generate_calls) == 1
+    assert image.image_bytes == b"data-url-image-bytes"
+    assert image.generation_params["endpoint"] == "images.generate"
+
+
+@pytest.mark.asyncio
+async def test_openai_image_adapter_accepts_remote_url_response():
+    adapter = object.__new__(OpenAIImageAdapter)
+    adapter.model = "gpt-image-2"
+
+    class RemoteUrlImages:
+        def __init__(self):
+            self.generate_calls = []
+
+        async def generate(self, **kwargs):
+            self.generate_calls.append(kwargs)
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=None, url="https://cdn.example/image.png")])
+
+    images = RemoteUrlImages()
+    adapter.client = SimpleNamespace(images=images)
+
+    async def fake_download(url: str):
+        assert url == "https://cdn.example/image.png"
+        return b"remote-url-image-bytes"
+
+    adapter._download_remote_image = fake_download
+
+    image = await adapter.generate(
+        PromptSet(
+            positive_prompt="modern room",
+            negative_prompt="",
+            model_target="gpt-image-2",
+        )
+    )
+
+    assert len(images.generate_calls) == 1
+    assert image.image_bytes == b"remote-url-image-bytes"
+    assert image.generation_params["endpoint"] == "images.generate"
+
+
+@pytest.mark.asyncio
+async def test_openai_image_adapter_rejects_empty_image_response():
+    adapter = object.__new__(OpenAIImageAdapter)
+    adapter.model = "gpt-image-2"
+
+    class EmptyImages:
+        async def generate(self, **_kwargs):
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=None, url=None)])
+
+    adapter.client = SimpleNamespace(images=EmptyImages())
+
+    with pytest.raises(ValueError, match="画图模型未返回可解析的图片数据"):
+        await adapter.generate(
+            PromptSet(
+                positive_prompt="modern room",
+                negative_prompt="",
+                model_target="gpt-image-2",
+            )
+        )
+
+
+@pytest.mark.asyncio
 async def test_openai_image_adapter_reference_image_uses_images_edit():
     adapter = object.__new__(OpenAIImageAdapter)
     adapter.model = "gpt-image-2"
@@ -309,6 +395,38 @@ async def test_openai_image_adapter_reference_image_uses_images_edit():
     assert image.generation_params["has_reference_image"] is True
     assert image.generation_params["has_floor_plan"] is False
     assert image.generation_params["edit_image_source"] == "reference_image"
+
+
+@pytest.mark.asyncio
+async def test_openai_image_adapter_edit_accepts_data_url_response():
+    adapter = object.__new__(OpenAIImageAdapter)
+    adapter.model = "gpt-image-2"
+
+    class DataUrlEditImages:
+        def __init__(self):
+            self.edit_calls = []
+
+        async def edit(self, **kwargs):
+            self.edit_calls.append(kwargs)
+            data_url = "data:image/png;base64," + base64.b64encode(b"edited-data-url-image-bytes").decode("ascii")
+            return SimpleNamespace(data=[SimpleNamespace(b64_json=None, url=data_url)])
+
+    images = DataUrlEditImages()
+    adapter.client = SimpleNamespace(images=images)
+
+    image = await adapter.generate(
+        PromptSet(
+            positive_prompt="continue this drawing",
+            negative_prompt="",
+            model_target="gpt-image-2",
+            reference_image=b"reference-image-bytes",
+        )
+    )
+
+    assert len(images.edit_calls) == 1
+    assert images.edit_calls[0]["image"].read() == b"reference-image-bytes"
+    assert image.image_bytes == b"edited-data-url-image-bytes"
+    assert image.generation_params["endpoint"] == "images.edit"
 
 
 @pytest.mark.asyncio

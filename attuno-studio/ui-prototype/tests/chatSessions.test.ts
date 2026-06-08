@@ -1,4 +1,4 @@
-import { appendMessageVariant, buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariant, getActiveMessageVariantIndex, hasConversationContent, hasDurableConversationContent, inferStoredWorkspaceMode, isCurrentConversationRun, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, upsertSessionSnapshot } from "../src/utils/chatSessions.js";
+import { appendMessageVariant, buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariant, getActiveMessageVariantIndex, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, upsertSessionSnapshot } from "../src/utils/chatSessions.js";
 import { modelOptions } from "../src/data/studioData.js";
 import type { ChatMessage } from "../src/types/domain.js";
 
@@ -57,6 +57,33 @@ assert(hasConversationContent({ messages: [variantMessage] }), "messages with va
 const previousVariantMessage = setActiveMessageVariantIndex(variantMessage, 0);
 assert(getActiveMessageVariant(previousVariantMessage).content === "First answer", "variant switch should show the previous response without dropping variants");
 assert(previousVariantMessage.variants?.length === 2, "variant switch should preserve all responses");
+
+const imageErrorMessage: ChatMessage = {
+  id: "image-error",
+  parentId: "image-user",
+  role: "assistant",
+  kind: "error",
+  workflowMode: "image",
+  generationMode: "standard",
+  content: "First image attempt failed",
+};
+const imageRetryMessage = appendMessageVariant(imageErrorMessage, {
+  id: "image-error-retry",
+  kind: "render",
+  workflowMode: "image",
+  generationMode: "render3d",
+  content: "Retry image returned",
+  imageUrl: "/api/results/retry/image",
+  sourceResultId: "retry-result",
+});
+const activeImageRetry = getActiveMessageVariant(imageRetryMessage);
+assert(activeImageRetry.kind === "render", "image retry variants should carry their own message kind");
+assert(activeImageRetry.workflowMode === "image", "image retry variants should preserve image workflow routing");
+assert(activeImageRetry.generationMode === "render3d", "image retry variants should preserve the generation mode used for the retry");
+assert(
+  setActiveMessageVariantIndex(imageRetryMessage, 0).kind === "error",
+  "switching back to the original variant should restore the original message kind",
+);
 
 const runGuard = { userId: "alpha", epoch: 1, sessionId: "session-1" };
 
@@ -220,3 +247,120 @@ assert(
 
 assert(!modelOptions.includes("dall-e-3"), "built-in image model options should not include unavailable DALL-E placeholders");
 assert(!modelOptions.includes("imagen-preview"), "built-in image model options should not include unavailable Imagen placeholders");
+
+const imageWorkflowMessages: ChatMessage[] = [
+  {
+    id: "m-user-image",
+    parentId: null,
+    role: "user",
+    kind: "text",
+    content: "画一张室内图",
+    workflowMode: "image",
+    generationMode: "standard",
+  },
+  {
+    id: "m-api-error-image",
+    parentId: "m-user-image",
+    role: "assistant",
+    kind: "error",
+    content: "画图失败",
+    workflowMode: "image",
+    generationMode: "standard",
+  },
+];
+assert(isImageWorkflowMessage(imageWorkflowMessages, "m-user-image"), "image user prompts should be routed back through image generation when edited or resent");
+assert(isImageWorkflowMessage(imageWorkflowMessages, "m-api-error-image"), "image generation errors should retry with image generation instead of chat");
+assert(inferMessageGenerationMode(imageWorkflowMessages, "m-api-error-image", "render3d") === "standard", "image retries should preserve the original generation mode when it is stored");
+
+const imageBranchAfterChatMessages: ChatMessage[] = [
+  {
+    id: "m-chat-user-root",
+    parentId: null,
+    role: "user",
+    kind: "text",
+    content: "先聊一下方案",
+    workflowMode: "chat",
+  },
+  {
+    id: "m-chat-ai-root",
+    parentId: "m-chat-user-root",
+    role: "assistant",
+    kind: "text",
+    content: "可以，后续也能继续生图。",
+    workflowMode: "chat",
+  },
+  {
+    id: "m-user-image-after-chat",
+    parentId: "m-chat-ai-root",
+    role: "user",
+    kind: "text",
+    content: "把这张图改成两层别墅",
+    workflowMode: "image",
+    generationMode: "standard",
+  },
+  {
+    id: "m-api-render-after-chat",
+    parentId: "m-user-image-after-chat",
+    role: "assistant",
+    kind: "render",
+    content: "图片结果",
+    workflowMode: "image",
+    generationMode: "standard",
+    imageUrl: "/api/results/result-after-chat/image",
+  },
+];
+assert(
+  isImageWorkflowMessage(imageBranchAfterChatMessages, "m-user-image-after-chat"),
+  "image prompts created after a chat turn should still edit/regenerate through the image workflow",
+);
+assert(
+  isImageWorkflowMessage(imageBranchAfterChatMessages, "m-api-render-after-chat"),
+  "image render replies after a chat turn should still retry through the image workflow",
+);
+
+const legacyImageWorkflowMessages: ChatMessage[] = [
+  {
+    id: "legacy-user",
+    parentId: null,
+    role: "user",
+    kind: "text",
+    content: "重新画一下这个空间",
+  },
+  {
+    id: "legacy-analysis",
+    parentId: "legacy-user",
+    role: "assistant",
+    kind: "analysis",
+    content: "正在准备图片",
+  },
+  {
+    id: "legacy-render",
+    parentId: "legacy-analysis",
+    role: "assistant",
+    kind: "render",
+    content: "图片结果",
+    imageUrl: "/api/results/result-1/image",
+  },
+];
+assert(isImageWorkflowMessage(legacyImageWorkflowMessages, "legacy-user"), "legacy user prompts with image descendants should still route through image generation");
+
+const chatWorkflowMessages: ChatMessage[] = [
+  {
+    id: "m-chat-user",
+    parentId: null,
+    role: "user",
+    kind: "text",
+    content: "聊一下设计思路",
+    workflowMode: "chat",
+  },
+  {
+    id: "m-chat-ai",
+    parentId: "m-chat-user",
+    role: "assistant",
+    kind: "text",
+    content: "可以从材质和采光开始。",
+    workflowMode: "chat",
+  },
+];
+assert(!isImageWorkflowMessage(chatWorkflowMessages, "m-chat-user"), "ordinary chat user prompts should keep using the chat model");
+assert(!isImageWorkflowMessage(chatWorkflowMessages, "m-chat-ai"), "ordinary chat assistant retries should keep using the chat model");

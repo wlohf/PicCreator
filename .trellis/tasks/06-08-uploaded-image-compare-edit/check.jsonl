@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend layer entry point for reviewing image workspace changes."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Review durable attachment and compare analysis behavior against project conventions."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Review type alignment for image compare candidates."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality and verification expectations."}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Ensure source/edited image comparison behavior does not violate generation contracts."}
