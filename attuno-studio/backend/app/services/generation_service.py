@@ -43,7 +43,7 @@ def _split_uploaded_image_inputs(mode: str, uploaded_paths: list[str]) -> tuple[
     return uploaded_paths, None
 
 
-def _generation_output_dir(user_id: str, project_id: str) -> Path:
+def generation_output_dir(user_id: str, project_id: str) -> Path:
     path = get_user_data_dir(user_id) / "outputs" / normalize_user_id(project_id or "default")
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -205,7 +205,7 @@ async def generate_render(form: GenerateForm, style_profile: dict | None = None)
     try:
         uploaded_paths = await save_uploads(form.floor_plans, Path(temp_dir.name))
         floor_plan_paths, reference_image_path = _split_uploaded_image_inputs(form.mode, uploaded_paths)
-        output_dir = _generation_output_dir(form.user_id, form.project_id)
+        output_dir = generation_output_dir(form.user_id, form.project_id)
         learned_preferences_text = format_style_profile_context(style_profile)
 
         def _run_sync():
@@ -276,7 +276,7 @@ async def stream_generate_render(form: GenerateForm, style_profile: dict | None 
         latest = None
         try:
             floor_plan_paths, reference_image_path = _split_uploaded_image_inputs(form.mode, uploaded_paths)
-            output_dir = _generation_output_dir(form.user_id, form.project_id)
+            output_dir = generation_output_dir(form.user_id, form.project_id)
             learned_preferences_text = format_style_profile_context(style_profile)
 
             initial_progress = {

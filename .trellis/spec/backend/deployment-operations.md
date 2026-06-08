@@ -25,8 +25,8 @@
 - Runtime data must be outside the Git working tree:
   - Preferred: `ATTUNO_STUDIO_DATA_DIR=/var/lib/attuno`
   - Legacy fallback: `RENDER_AGENT_DATA_DIR`
-- Generation runtime artifacts, including intermediate output images and validation records, must be written under the runtime data namespace, not `attuno-studio/outputs` in the Git checkout.
-- Per-user generation output directories should use `get_user_data_dir(user_id) / "outputs" / <normalized project_id>` so API generation, result storage, and asset serving share the same writable namespace.
+- Generation runtime artifacts, including intermediate output images, image-edit outputs, annotation-edit outputs, and validation records, must be written under the runtime data namespace, not `attuno-studio/outputs` in the Git checkout.
+- Per-user generation output directories should use `get_user_data_dir(user_id) / "outputs" / <normalized project_id>` so API generation, image editing, result storage, and asset serving share the same writable namespace. Reuse the shared output-dir helper for every `run_pipeline(...)` call that can write artifacts, and pass it through `record_output_dir`.
 - Nginx serves `attuno-studio/ui-prototype/dist` and reverse-proxies `/api/` to `http://127.0.0.1:8787`.
 - Deployment scripts must not overwrite existing `.env` or `config.json`; they may create them from examples when missing.
 
@@ -51,7 +51,7 @@
 - Run `bash -n deploy/install.sh` and `bash -n deploy/update.sh` with a real Bash implementation.
 - Run frontend production build: `npm run build`.
 - Run a backend API check, at minimum `python -m pytest tests/test_backend_api.py -q` or a live `/api/health` check on the server.
-- Backend generation tests should assert `record_output_dir` resolves under `ATTUNO_STUDIO_DATA_DIR`/user namespace rather than the repository `outputs` directory.
+- Backend generation and image-edit tests should assert `record_output_dir` resolves under `ATTUNO_STUDIO_DATA_DIR`/user namespace rather than the repository `outputs` directory.
 
 ### 7. Wrong vs Correct
 

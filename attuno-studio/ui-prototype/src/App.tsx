@@ -2177,6 +2177,16 @@ function App() {
     window.setTimeout(() => syncComposerHeight(composerRef.current), 0);
   }
 
+  function clearComposerAfterSubmit(submitComposerMode: ComposerMode, submittedFileCount: number) {
+    clearComposerDraft();
+    if (submittedFileCount > 0) {
+      clearAttachments(true);
+    }
+    if (submitComposerMode === "edit-selected-result") {
+      setComposerMode("new-generation");
+    }
+  }
+
   async function buildChatImageAttachments(files: File[]): Promise<ChatImageAttachment[]> {
     const imageFiles = imageFilesFromFiles(files);
     const attachments = await Promise.all(
@@ -5801,10 +5811,7 @@ function App() {
       appendMessagesToRunSession(runGuard, nextMessages);
     }
     if (userPrompt === undefined) {
-      clearComposerDraft();
-      if (submittedFiles.length > 0) {
-        clearAttachments(true);
-      }
+      clearComposerAfterSubmit(submitComposerMode, submittedFiles.length);
     }
     const abortController = new AbortController();
     generationAbortControllersRef.current.set(runGuard.sessionId, abortController);

@@ -1,0 +1,11 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for composer state changes"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Composer attachments and conversation transient/durable state contracts"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Keep generation and session type changes aligned"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality checklist"}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for generation service changes"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Image generation/edit API result and failure contracts"}
+{"file": ".trellis/spec/backend/deployment-operations.md", "reason": "Runtime data directory must stay outside the deployed Git checkout"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "API error response shape for generation/edit failures"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality checklist"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing generation output directory pattern"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Bug spans frontend composer state and backend generation runtime output"}

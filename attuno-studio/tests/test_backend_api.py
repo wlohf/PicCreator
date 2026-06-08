@@ -1935,6 +1935,7 @@ def test_edit_result_uses_source_image_as_standard_reference(tmp_path, monkeypat
         captured["reference_path"] = reference_path
         captured["requirement"] = requirement
         captured["user_id"] = kwargs.get("user_id")
+        captured["record_output_dir"] = kwargs.get("record_output_dir")
         yield (
             str(edited_image),
             [(str(edited_image), "edited render")],
@@ -1968,6 +1969,7 @@ def test_edit_result_uses_source_image_as_standard_reference(tmp_path, monkeypat
     assert Path(captured["reference_path"]).name.startswith("result-")
     assert "只把灯光改暖" in captured["requirement"]
     assert captured["user_id"] == "edit-standard-user"
+    assert Path(captured["record_output_dir"]) == tmp_path / "data" / "users" / "edit-standard-user" / "outputs" / "default"
     assert payload["result"]["parent_id"] == source["id"]
     assert payload["result"]["generation_type"] == "edit"
     assert payload["result"]["edit_mode"] == "text"
@@ -2049,6 +2051,7 @@ def test_annotated_edit_uses_clean_source_as_standard_reference(tmp_path, monkey
         captured["reference_path"] = reference_path
         captured["requirement"] = requirement
         captured["user_id"] = kwargs.get("user_id")
+        captured["record_output_dir"] = kwargs.get("record_output_dir")
         yield (
             str(edited_image),
             [(str(edited_image), "edited render")],
@@ -2085,6 +2088,7 @@ def test_annotated_edit_uses_clean_source_as_standard_reference(tmp_path, monkey
     assert "只把沙发换成浅灰色" in captured["requirement"]
     assert "不要红圈、箭头、涂鸦" in captured["requirement"]
     assert captured["user_id"] == "annotated-standard-user"
+    assert Path(captured["record_output_dir"]) == tmp_path / "data" / "users" / "annotated-standard-user" / "outputs" / "default"
     assert payload["result"]["edit_mode"] == "annotation"
 
 

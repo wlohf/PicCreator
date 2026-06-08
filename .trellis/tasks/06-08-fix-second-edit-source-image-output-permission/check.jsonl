@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Verify composer transient state is cleared without losing durable submitted attachments"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Verify TypeScript contracts remain aligned"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Verify generation/edit result and error contracts"}
+{"file": ".trellis/spec/backend/deployment-operations.md", "reason": "Verify edit runtime artifacts do not write into repo outputs"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify backend failures remain explicit"}

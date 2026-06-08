@@ -11,7 +11,7 @@ from PIL import Image, ImageDraw
 from adapters import build_adapter
 from app_runtime import _build_analysis_adapter_config, _build_runtime_config, run_pipeline
 from backend.app.schemas.generation import AnnotatedEditImageForm, EditImageForm
-from backend.app.services.generation_service import NoopProgress
+from backend.app.services.generation_service import NoopProgress, generation_output_dir
 from backend.app.services.result_store import create_result, get_result, get_result_floor_plan_path, get_result_image_path
 from backend.app.services.preferences_store import format_style_profile_context, record_behavior_signal
 from config import adapter_supports_image_inputs
@@ -214,6 +214,7 @@ def _resolve_reference_path(form: EditImageForm, source_path: Path) -> tuple[str
 
 
 def _run_edit_pipeline(form: EditImageForm, reference_path: str | None, requirement: str):
+    output_dir = generation_output_dir(form.user_id, form.project_id)
     return _latest_snapshot(
         run_pipeline(
             GenerationMode.STANDARD.value,
@@ -239,6 +240,7 @@ def _run_edit_pipeline(form: EditImageForm, reference_path: str | None, requirem
             form.enable_quality_evaluation,
             project_id=form.project_id,
             user_id=form.config_user_id,
+            record_output_dir=str(output_dir),
             progress=NoopProgress(),
         )
     )
