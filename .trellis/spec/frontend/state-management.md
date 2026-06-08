@@ -180,6 +180,8 @@ The app has two top-level workspace modes:
 
 Persist `workspaceMode` alongside session state so reopening a saved session restores the right composer behavior and empty-state copy.
 
+Mode-switch UI guards and click handlers must use the same visible-conversation busy state. A background image generation in another session may block starting a second generation through the existing submit guard, but it must not prevent a newly opened blank conversation from switching between `chat` and `image`.
+
 Persist message-level workflow hints for submitted turns that may later be edited or retried:
 
 ```typescript

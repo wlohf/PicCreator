@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task entry point and documentation language convention"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Check workspaceMode, New Conversation, and visible conversation state contracts"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Check TypeScript mode typing remains strict"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality checklist for verification"}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check no unnecessary duplicate helper logic was introduced"}

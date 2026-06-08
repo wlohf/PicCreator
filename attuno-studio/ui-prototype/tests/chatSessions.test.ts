@@ -1,4 +1,4 @@
-import { appendMessageVariant, buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariant, getActiveMessageVariantIndex, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, upsertSessionSnapshot } from "../src/utils/chatSessions.js";
+import { appendMessageVariant, buildLinearChatContext, canSwitchWorkspaceMode, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariant, getActiveMessageVariantIndex, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, upsertSessionSnapshot } from "../src/utils/chatSessions.js";
 import { modelOptions } from "../src/data/studioData.js";
 import type { ChatMessage } from "../src/types/domain.js";
 
@@ -39,6 +39,26 @@ assert(countGenerationRecords(emptyMessages) === 0, "empty sessions should have 
 assert(!hasConversationContent({ messages: emptyMessages, generationRecordCount: 0 }), "selected historical results alone should not make an empty session non-empty");
 assert(hasConversationContent({ messages: emptyMessages, liveGenerationHasContent: true }), "in-flight generation content should block empty-session reset");
 assert(!hasDurableConversationContent(emptyMessages), "transient live state should not make an empty session durable");
+assert(
+  canSwitchWorkspaceMode({ currentMode: "chat", nextMode: "image" }),
+  "blank sessions should be able to switch from chat to image mode",
+);
+assert(
+  !canSwitchWorkspaceMode({ currentMode: "chat", nextMode: "image", isVisibleRendering: true }),
+  "the active rendering conversation should block mode switching",
+);
+assert(
+  !canSwitchWorkspaceMode({ currentMode: "chat", nextMode: "image", isVisibleChatResponding: true }),
+  "the active chat response should block mode switching",
+);
+assert(
+  canSwitchWorkspaceMode({ currentMode: "chat", nextMode: "image", isVisibleRendering: false }),
+  "background image generation should not block a new visible session from entering image mode",
+);
+assert(
+  !canSwitchWorkspaceMode({ currentMode: "image", nextMode: "image" }),
+  "selecting the already active workspace mode should be ignored",
+);
 
 const variantBaseMessage: ChatMessage = {
   id: "assistant-variant",

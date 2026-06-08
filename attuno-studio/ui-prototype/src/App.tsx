@@ -75,7 +75,7 @@ import {
   modelOptions
 } from "./data/studioData";
 import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatMessageVariant, ChatReasoningEffort, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
-import { appendMessageVariant, buildLinearChatContext, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariantIndex, getBranchInfo, getMessagePathTo, getMessageVariants, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, updateActiveMessageVariant, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
+import { appendMessageVariant, buildLinearChatContext, canSwitchWorkspaceMode, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariantIndex, getBranchInfo, getMessagePathTo, getMessageVariants, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, updateActiveMessageVariant, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
 import { apiConfigStorageKey, apiConfigStorageReadKeys } from "./utils/apiConfigStorage";
 import { filesFromList, imageFilesFromClipboardItems, imageFilesFromFiles, imageSourcesFromClipboardData, mergeFloorPlanFiles } from "./utils/fileAttachments";
 import { mergeRenderHistoryItems } from "./utils/renderHistory";
@@ -4314,7 +4314,12 @@ function App() {
   }
 
   function switchWorkspaceMode(nextMode: WorkspaceMode) {
-    if (isRendering || isVisibleChatResponding || workspaceMode === nextMode) return;
+    if (!canSwitchWorkspaceMode({
+      currentMode: workspaceMode,
+      nextMode,
+      isVisibleRendering,
+      isVisibleChatResponding,
+    })) return;
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
     setWorkspaceMode(nextMode);

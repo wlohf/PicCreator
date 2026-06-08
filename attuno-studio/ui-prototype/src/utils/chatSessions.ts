@@ -2,6 +2,20 @@ import type { ChatMessage, ChatMessageVariant, GenerationMode } from "../types/d
 
 export type WorkspaceModeLike = "chat" | "image";
 
+export function canSwitchWorkspaceMode({
+  currentMode,
+  nextMode,
+  isVisibleRendering = false,
+  isVisibleChatResponding = false,
+}: {
+  currentMode: WorkspaceModeLike;
+  nextMode: WorkspaceModeLike;
+  isVisibleRendering?: boolean;
+  isVisibleChatResponding?: boolean;
+}) {
+  return currentMode !== nextMode && !isVisibleRendering && !isVisibleChatResponding;
+}
+
 function clampIndex(index: number, length: number) {
   if (length <= 0) return 0;
   if (!Number.isFinite(index)) return length - 1;
