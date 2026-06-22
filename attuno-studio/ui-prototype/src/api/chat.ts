@@ -50,8 +50,17 @@ export type DesignChatStreamMeta = Omit<DesignChatResponse, "reply"> & {
   reply?: string;
 };
 
+export type DesignChatProgress = {
+  stage?: string;
+  summary?: string;
+  toolLabel?: string;
+  toolDetail?: string;
+  state?: "running" | "done" | "error";
+};
+
 export type DesignChatStreamHandlers = {
   onMeta?: (meta: DesignChatStreamMeta) => void;
+  onProgress?: (progress: DesignChatProgress) => void;
   onDelta?: (delta: string) => void;
   onComplete?: (response: DesignChatResponse) => void;
 };
@@ -74,12 +83,18 @@ export type ApplyChatMemoryResponse = {
   error?: string;
 };
 
+function buildChatPath(path: string, userId?: string) {
+  const normalized = String(userId || "").trim();
+  if (!normalized) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}user_id=${encodeURIComponent(normalized)}`;
+}
+
 export async function sendDesignChat(request: DesignChatRequest): Promise<DesignChatResponse> {
-  const response = await apiFetch("/api/chat", {
+  const response = await apiFetch(buildChatPath("/api/chat", request.user_id), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      user_id: "default",
       project_id: "default",
       active_result_id: "",
       context: {},
@@ -101,12 +116,11 @@ export async function streamDesignChat(
 ): Promise<DesignChatResponse> {
   const apiPath = typeof apiPathOrOptions === "string" ? apiPathOrOptions : apiPathOrOptions.apiPath || "/api/chat/stream";
   const abortSignal = typeof apiPathOrOptions === "string" ? signal : apiPathOrOptions.signal;
-  const response = await apiFetch(apiPath, {
+  const response = await apiFetch(buildChatPath(apiPath, request.user_id), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     signal: abortSignal,
     body: JSON.stringify({
-      user_id: "default",
       project_id: "default",
       active_result_id: "",
       context: {},
@@ -135,6 +149,10 @@ export async function streamDesignChat(
         handlers.onMeta?.(parsed.data as DesignChatStreamMeta);
         continue;
       }
+      if (parsed.eventName === "progress") {
+        handlers.onProgress?.(parsed.data as DesignChatProgress);
+        continue;
+      }
       if (parsed.eventName === "delta") {
         handlers.onDelta?.(String((parsed.data as { text?: string }).text || ""));
         continue;
@@ -161,7 +179,7 @@ export async function streamDesignChat(
 }
 
 export async function applyChatMemory(projectId: string, memoryCandidate: ChatMemoryCandidate, userId = "default"): Promise<ApplyChatMemoryResponse> {
-  const response = await apiFetch("/api/chat/memory", {
+  const response = await apiFetch(buildChatPath("/api/chat/memory", userId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ user_id: userId, project_id: projectId || "default", memory_candidate: memoryCandidate })

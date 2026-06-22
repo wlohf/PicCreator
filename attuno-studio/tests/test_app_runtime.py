@@ -569,6 +569,73 @@ def test_save_model_config_to_files_persists_multiple_provider_profiles(tmp_path
     assert saved["image_gen"]["providers"][1]["api_key"] == "image-b-key"
 
 
+def test_tavily_keys_are_normalized_and_saved_per_user(tmp_path, monkeypatch):
+    default_config = {
+        "llm": {"provider_name": "Analysis", "api_format": "openai_chat", "api_key": "", "base_url": "", "model": ""},
+        "vision": {"provider_name": "Analysis", "api_format": "openai_chat", "api_key": "", "base_url": "", "model": ""},
+        "image_gen": {"provider_name": "Image", "api_format": "openai_image", "api_key": "", "base_url": "", "model": ""},
+    }
+    config_path = tmp_path / "config.json"
+    config_example_path = tmp_path / "config.example.json"
+    env_path = tmp_path / ".env"
+    config_path.write_text(json.dumps(default_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    config_example_path.write_text(json.dumps(default_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(app_runtime, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(app_runtime, "CONFIG_EXAMPLE_PATH", config_example_path)
+    monkeypatch.setattr(app_runtime, "ENV_PATH", env_path)
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+
+    app_runtime.save_model_config_to_files(
+        "", "", "", "", "",
+        "", "", "", "", "",
+        tavily_api_keys=" tvly-test-a, tvly-test-b\ntvly-test-a；tvly-test-c ",
+        user_id="xyleisure",
+    )
+
+    loaded = app_runtime.load_model_config_for_ui("xyleisure")
+    assert loaded["tavilyApiKeys"] == "tvly-test-a\ntvly-test-b\ntvly-test-c"
+
+    app_runtime.save_model_config_to_files(
+        "", "", "", "", "",
+        "", "", "", "", "",
+        tavily_api_keys="",
+        user_id="xyleisure",
+    )
+
+    assert app_runtime.load_model_config_for_ui("xyleisure")["tavilyApiKeys"] == ""
+
+
+def test_claim_tavily_api_keys_rotates_inside_user_namespace(tmp_path, monkeypatch):
+    default_config = {
+        "llm": {"provider_name": "Analysis", "api_format": "openai_chat", "api_key": "", "base_url": "", "model": ""},
+        "vision": {"provider_name": "Analysis", "api_format": "openai_chat", "api_key": "", "base_url": "", "model": ""},
+        "image_gen": {"provider_name": "Image", "api_format": "openai_image", "api_key": "", "base_url": "", "model": ""},
+        "web_search": {"tavily_api_keys": ["default-key"], "tavily_next_key_index": 0},
+    }
+    config_path = tmp_path / "config.json"
+    config_example_path = tmp_path / "config.example.json"
+    env_path = tmp_path / ".env"
+    config_path.write_text(json.dumps(default_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    config_example_path.write_text(json.dumps(default_config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    env_path.write_text("", encoding="utf-8")
+    monkeypatch.setattr(app_runtime, "CONFIG_PATH", config_path)
+    monkeypatch.setattr(app_runtime, "CONFIG_EXAMPLE_PATH", config_example_path)
+    monkeypatch.setattr(app_runtime, "ENV_PATH", env_path)
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+
+    assert app_runtime.claim_tavily_api_keys("fresh-user") == ([], 0)
+
+    app_runtime.save_model_config_to_files("", "", "", "", "", "", "", "", "", "", tavily_api_keys="a1\na2", user_id="user-a")
+    app_runtime.save_model_config_to_files("", "", "", "", "", "", "", "", "", "", tavily_api_keys="b1", user_id="user-b")
+
+    assert app_runtime.claim_tavily_api_keys("user-a") == (["a1", "a2"], 0)
+    assert app_runtime.claim_tavily_api_keys("user-a") == (["a1", "a2"], 1)
+    assert app_runtime.claim_tavily_api_keys("user-b") == (["b1"], 0)
+    assert app_runtime.load_model_config_for_ui("user-a")["tavilyNextKeyIndex"] == 0
+    assert app_runtime.load_model_config_for_ui("user-b")["tavilyNextKeyIndex"] == 0
+
+
 def test_build_config_from_dict_uses_active_provider_profile():
     cfg = app_runtime.build_config_from_dict({
         "llm": {

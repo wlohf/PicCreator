@@ -28,8 +28,14 @@ type ChatHistoryResponse = {
   detail?: string;
 };
 
-export async function loadChatHistory(): Promise<ChatHistoryPayload> {
-  const response = await apiFetch("/api/chat-history");
+function buildChatHistoryPath(userId: string) {
+  const normalized = String(userId || "").trim();
+  if (!normalized) return "/api/chat-history";
+  return `/api/chat-history?user_id=${encodeURIComponent(normalized)}`;
+}
+
+export async function loadChatHistory(userId: string): Promise<ChatHistoryPayload> {
+  const response = await apiFetch(buildChatHistoryPath(userId));
   const data = await parseApiJson<ChatHistoryResponse>(response);
   if (!response.ok || !data.ok) {
     throw new Error(data.error || data.detail || response.statusText);
@@ -37,8 +43,8 @@ export async function loadChatHistory(): Promise<ChatHistoryPayload> {
   return data.history ?? { currentSessionId: "", sessions: [] };
 }
 
-export async function saveChatHistory(history: ChatHistoryPayload): Promise<ChatHistoryPayload> {
-  const response = await apiFetch("/api/chat-history", {
+export async function saveChatHistory(history: ChatHistoryPayload, userId: string): Promise<ChatHistoryPayload> {
+  const response = await apiFetch(buildChatHistoryPath(userId), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(history),

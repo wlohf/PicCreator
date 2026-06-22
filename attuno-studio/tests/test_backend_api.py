@@ -211,9 +211,9 @@ def test_daily_chat_endpoint_uses_configured_analysis_model(tmp_path, monkeypatc
     assert payload["intent"] == "daily_chat"
     assert payload["reply"] == "后端模型返回的真实回复"
     assert calls
-    assert calls[0]["cfg"].provider_name == "Configured Chat"
-    assert calls[0]["cfg"].model == "chat-model"
-    assert calls[0]["kwargs"]["max_tokens"] == 900
+    assert calls[-1]["cfg"].provider_name == "Configured Chat"
+    assert calls[-1]["cfg"].model == "chat-model"
+    assert calls[-1]["kwargs"]["max_tokens"] == 131072
 
 
 def test_daily_chat_endpoint_injects_web_search_context(tmp_path, monkeypatch):
@@ -224,13 +224,20 @@ def test_daily_chat_endpoint_injects_web_search_context(tmp_path, monkeypatch):
     client = _auth_client("daily-chat-search-user")
     calls = []
 
-    async def fake_search_context(message):
+    async def fake_search_context(message, user_id="default", context=None, suggested_query=""):
         assert "联网搜索" in message
-        return (
-            "Attuno latest references",
-            [{"title": "Attuno reference", "url": "https://example.com/ref", "snippet": "fresh context"}],
-            "联网搜索结果：Attuno reference https://example.com/ref fresh context",
-        )
+        assert user_id == "daily-chat-search-user"
+        return {
+            "query": "Attuno latest references",
+            "results": [{"title": "Attuno reference", "url": "https://example.com/ref", "snippet": "fresh context"}],
+            "context": "联网搜索结果：Attuno reference https://example.com/ref fresh context",
+            "ok": True,
+            "provider": "tavily",
+            "search_profile": "enhanced_recent",
+            "search_parameters": {"search_depth": "advanced", "topic": "news"},
+            "answer": "Fresh answer",
+            "diagnostics": [],
+        }
 
     class FakeChatAdapter:
         async def chat(self, messages, **kwargs):
@@ -243,7 +250,7 @@ def test_daily_chat_endpoint_injects_web_search_context(tmp_path, monkeypatch):
         adapter.cfg = cfg
         return adapter
 
-    monkeypatch.setattr(chat_route, "build_web_search_context", fake_search_context)
+    monkeypatch.setattr(chat_route, "build_web_search_context_detailed", fake_search_context)
     monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
 
     response = client.post(
@@ -266,9 +273,69 @@ def test_daily_chat_endpoint_injects_web_search_context(tmp_path, monkeypatch):
     payload = response.json()
     assert payload["web_search"]["ok"] is True
     assert payload["web_search"]["query"] == "Attuno latest references"
+    assert payload["web_search"]["provider"] == "tavily"
+    assert payload["web_search"]["search_profile"] == "enhanced_recent"
+    assert payload["web_search"]["search_parameters"]["search_depth"] == "advanced"
+    assert payload["web_search"]["answer"] == "Fresh answer"
     assert payload["reply"] == "根据联网搜索结果，参考资料是 example.com。"
     system_messages = [message["content"] for message in calls[0]["messages"] if message["role"] == "system"]
     assert any("联网搜索结果" in content and "example.com/ref" in content for content in system_messages)
+
+
+def test_daily_chat_endpoint_ai_classifier_can_trigger_web_search_without_keyword(tmp_path, monkeypatch):
+    import app_runtime
+    from backend.app.routes import chat as chat_route
+
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("daily-chat-ai-search-user")
+    calls = []
+
+    async def fake_search_context(message, user_id="default", context=None, suggested_query=""):
+        assert user_id == "daily-chat-ai-search-user"
+        assert suggested_query == "Hermes Agent OpenClaw 区别"
+        return {
+            "query": suggested_query,
+            "results": [{"title": "Hermes Agent", "url": "https://example.com/hermes", "snippet": "agent framework"}],
+            "context": "联网搜索结果：Hermes Agent https://example.com/hermes agent framework",
+            "ok": True,
+            "provider": "tavily",
+            "diagnostics": [],
+        }
+
+    class FakeChatAdapter:
+        async def chat(self, messages, **kwargs):
+            calls.append({"messages": messages, "kwargs": kwargs})
+            if kwargs.get("max_tokens") == 180:
+                return json.dumps({"use_search": True, "query": "Hermes Agent OpenClaw 区别", "reason": "需要核验外部项目信息"}, ensure_ascii=False)
+            return "已根据联网资料回答。"
+
+    monkeypatch.setattr(chat_route, "build_web_search_context_detailed", fake_search_context)
+    monkeypatch.setattr(app_runtime, "build_adapter", lambda *_args, **_kwargs: FakeChatAdapter())
+
+    response = client.post(
+        "/api/chat",
+        json={
+            "message": "Hermes Agent 适合替代 OpenClaw 吗",
+            "project_id": "p-chat",
+            "context": {"workspace_mode": "chat"},
+            "api_config": {
+                "analysisProviderName": "Configured Chat",
+                "analysisApiFormat": "openai",
+                "analysisBaseUrl": "https://chat.example/v1",
+                "analysisApiKey": "chat-key",
+                "analysisModel": "chat-model",
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["web_search"]["ok"] is True
+    assert payload["web_search"]["decision"]["source"] == "ai_classifier"
+    assert payload["web_search"]["query"] == "Hermes Agent OpenClaw 区别"
+    assert payload["reply"] == "已根据联网资料回答。"
+    assert calls[0]["kwargs"]["max_tokens"] == 180
+    assert calls[-1]["kwargs"]["max_tokens"] == 131072
 
 
 def test_daily_chat_endpoint_passes_current_prompt_and_image_attachment(tmp_path, monkeypatch):
@@ -374,7 +441,7 @@ def test_daily_chat_endpoint_appends_current_prompt_when_context_is_parent_path(
     )
 
     assert response.status_code == 200
-    assert [message["content"] for message in calls[0] if message["role"] == "user"][-1] == "这是当前新问题"
+    assert [message["content"] for message in calls[-1] if message["role"] == "user"][-1] == "这是当前新问题"
 
 
 def test_daily_chat_stream_endpoint_emits_meta_delta_and_complete(tmp_path, monkeypatch):
@@ -419,15 +486,18 @@ def test_daily_chat_stream_endpoint_emits_meta_delta_and_complete(tmp_path, monk
 
     assert response.status_code == 200
     events = _parse_sse_events(raw)
-    assert [event["event"] for event in events] == ["meta", "delta", "delta", "complete"]
-    assert events[0]["data"]["suggested_action"] == "chat"
-    assert events[1]["data"]["text"] == "后端模型"
-    assert events[2]["data"]["text"] == "正在流式返回"
-    assert events[3]["data"]["reply"] == "后端模型正在流式返回"
+    assert [event["event"] for event in events] == ["progress", "meta", "progress", "delta", "delta", "progress", "complete"]
+    assert events[0]["data"]["stage"] == "routing"
+    assert events[1]["data"]["suggested_action"] == "chat"
+    assert events[2]["data"]["stage"] == "model"
+    assert events[3]["data"]["text"] == "后端模型"
+    assert events[4]["data"]["text"] == "正在流式返回"
+    assert events[5]["data"]["state"] == "done"
+    assert events[6]["data"]["reply"] == "后端模型正在流式返回"
     assert calls
     assert calls[0]["cfg"].provider_name == "Configured Chat"
     assert calls[0]["cfg"].model == "chat-model"
-    assert calls[0]["kwargs"]["max_tokens"] == 900
+    assert calls[0]["kwargs"]["max_tokens"] == 131072
 
 
 def test_daily_chat_stream_endpoint_emits_web_search_meta(tmp_path, monkeypatch):
@@ -437,13 +507,20 @@ def test_daily_chat_stream_endpoint_emits_web_search_meta(tmp_path, monkeypatch)
     monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
     client = _auth_client("daily-chat-stream-search-user")
 
-    async def fake_search_context(message):
+    async def fake_search_context(message, user_id="default", context=None, suggested_query=""):
         assert "搜索" in message
-        return (
-            "current design news",
-            [{"title": "Design news", "url": "https://example.com/news", "snippet": "new material"}],
-            "联网搜索结果：Design news https://example.com/news new material",
-        )
+        assert user_id == "daily-chat-stream-search-user"
+        return {
+            "query": "current design news",
+            "results": [{"title": "Design news", "url": "https://example.com/news", "snippet": "new material"}],
+            "context": "联网搜索结果：Design news https://example.com/news new material",
+            "ok": True,
+            "provider": "tavily",
+            "search_profile": "enhanced_recent",
+            "search_parameters": {"search_depth": "advanced", "topic": "news"},
+            "answer": "Current design answer",
+            "diagnostics": [],
+        }
 
     class FakeChatAdapter:
         async def stream_chat(self, messages, **kwargs):
@@ -455,7 +532,7 @@ def test_daily_chat_stream_endpoint_emits_web_search_meta(tmp_path, monkeypatch)
         assert role == "llm"
         return FakeChatAdapter()
 
-    monkeypatch.setattr(chat_route, "build_web_search_context", fake_search_context)
+    monkeypatch.setattr(chat_route, "build_web_search_context_detailed", fake_search_context)
     monkeypatch.setattr(app_runtime, "build_adapter", fake_build_adapter)
 
     with client.stream(
@@ -478,9 +555,14 @@ def test_daily_chat_stream_endpoint_emits_web_search_meta(tmp_path, monkeypatch)
 
     assert response.status_code == 200
     events = _parse_sse_events(raw)
-    assert events[0]["event"] == "meta"
-    assert events[0]["data"]["web_search"]["query"] == "current design news"
-    assert events[0]["data"]["web_search"]["results"][0]["url"] == "https://example.com/news"
+    assert [event["event"] for event in events[:3]] == ["progress", "progress", "meta"]
+    assert events[1]["data"]["stage"] == "web_search"
+    assert events[1]["data"]["toolDetail"] == "Tavily / DuckDuckGo"
+    assert events[2]["data"]["web_search"]["query"] == "current design news"
+    assert events[2]["data"]["web_search"]["search_profile"] == "enhanced_recent"
+    assert events[2]["data"]["web_search"]["search_parameters"]["topic"] == "news"
+    assert events[2]["data"]["web_search"]["answer"] == "Current design answer"
+    assert events[2]["data"]["web_search"]["results"][0]["url"] == "https://example.com/news"
     assert events[-1]["data"]["reply"] == "搜索完成"
 
 
@@ -1458,8 +1540,8 @@ def test_result_notes_can_be_saved_without_blocking_generation_workspace(tmp_pat
     )
     client = TestClient(create_app())
 
-    response = client.patch(f"/api/results/{created['id']}/notes", json={"notes": "圈出区域下次改浅色"})
-    listed = client.get("/api/results")
+    response = client.patch(f"/api/results/{created['id']}/notes?user_id=default", json={"notes": "圈出区域下次改浅色"})
+    listed = client.get("/api/results?user_id=default")
 
     assert response.status_code == 200
     assert response.json()["result"]["notes"] == "圈出区域下次改浅色"
@@ -1548,7 +1630,7 @@ def test_generate_endpoint_rejects_success_without_images(tmp_path, monkeypatch)
     assert payload["results"] == []
 
 
-def test_unauthenticated_core_endpoints_use_default_workspace(tmp_path, monkeypatch):
+def test_unauthenticated_core_endpoints_require_explicit_namespace(tmp_path, monkeypatch):
     from backend.app.services import generation_service
 
     monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
@@ -1571,22 +1653,28 @@ def test_unauthenticated_core_endpoints_use_default_workspace(tmp_path, monkeypa
 
     me_response = client.get("/api/auth/me")
     generate_response = client.post("/api/generate", data={"requirement": "make a room"})
+    namespaced_generate_response = client.post("/api/generate?user_id=default", data={"requirement": "make a room"})
     results_response = client.get("/api/results")
+    namespaced_results_response = client.get("/api/results?user_id=default")
     shortcuts_response = client.get("/api/preferences/shortcuts")
     chat_response = client.post("/api/chat", json={"message": "把空间改得更温馨"})
+    namespaced_chat_response = client.post("/api/chat?user_id=default", json={"message": "把空间改得更温馨"})
     logout_response = client.post("/api/auth/logout")
 
     assert me_response.status_code == 200
     assert me_response.json()["authenticated"] is False
-    assert generate_response.status_code == 200
-    generated = generate_response.json()["results"][0]
+    assert generate_response.status_code == 401
+    assert results_response.status_code == 401
+    assert chat_response.status_code == 401
+    assert namespaced_generate_response.status_code == 200
+    generated = namespaced_generate_response.json()["results"][0]
     assert generated["user_id"] == "default"
-    assert results_response.status_code == 200
-    assert results_response.json()["results"][0]["id"] == generated["id"]
+    assert namespaced_results_response.status_code == 200
+    assert namespaced_results_response.json()["results"][0]["id"] == generated["id"]
     assert shortcuts_response.status_code == 200
     assert shortcuts_response.json()["ok"] is True
-    assert chat_response.status_code == 200
-    assert chat_response.json()["ok"] is True
+    assert namespaced_chat_response.status_code == 200
+    assert namespaced_chat_response.json()["ok"] is True
     assert logout_response.status_code == 200
     assert logout_response.json()["ok"] is True
 

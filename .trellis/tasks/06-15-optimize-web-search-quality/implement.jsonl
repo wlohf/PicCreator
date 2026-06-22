@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend task entry and relevant guideline index."}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Web search diagnostics, failure statuses, and no-key leakage contract."}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality expectations for tests and maintainability."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared thinking guide index for constants/config and layer boundaries."}

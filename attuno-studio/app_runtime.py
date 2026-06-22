@@ -5,7 +5,7 @@ import os
 import sys
 from pathlib import Path
 from queue import Queue
-from threading import Thread
+from threading import Lock, Thread
 import time
 import traceback
 from typing import Optional, Any, List
@@ -44,6 +44,8 @@ CONFIG_PATH = PROJECT_ROOT / "config.json"
 CONFIG_EXAMPLE_PATH = PROJECT_ROOT / "config.example.json"
 ENV_PATH = PROJECT_ROOT / ".env"
 DEFAULT_CONFIG_USER_ID = "default"
+_WEB_SEARCH_CONFIG_LOCK = Lock()
+_KEY_SPLIT_TRANSLATION = str.maketrans({",": "\n", ";": "\n", "，": "\n", "；": "\n"})
 
 
 def _ensure_min_timeout(cfg: AdapterConfig, minimum_seconds: int) -> AdapterConfig:
@@ -157,6 +159,58 @@ def _merge_prompt_overrides(base_overrides: Any, override_overrides: Any) -> dic
     return merged
 
 
+def _normalize_tavily_api_keys(value: Any) -> list[str]:
+    if isinstance(value, str):
+        raw_items = value.translate(_KEY_SPLIT_TRANSLATION).split()
+    elif isinstance(value, list):
+        raw_items = [str(item or "") for item in value]
+    else:
+        raw_items = []
+
+    keys: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        key = str(item or "").strip()
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        keys.append(key)
+    return keys
+
+
+def _merge_web_search_config(base_section: Any, override_section: Any, user_id: str | None) -> dict[str, Any]:
+    merged = dict(base_section or {}) if isinstance(base_section, dict) else {}
+    if not _is_default_config_user(user_id):
+        merged["tavily_api_keys"] = []
+        merged["tavily_next_key_index"] = 0
+    if isinstance(override_section, dict):
+        if "tavily_api_keys" in override_section:
+            merged["tavily_api_keys"] = _normalize_tavily_api_keys(override_section.get("tavily_api_keys"))
+        if "tavily_next_key_index" in override_section:
+            try:
+                merged["tavily_next_key_index"] = max(0, int(override_section.get("tavily_next_key_index") or 0))
+            except (TypeError, ValueError):
+                merged["tavily_next_key_index"] = 0
+    merged["tavily_api_keys"] = _normalize_tavily_api_keys(merged.get("tavily_api_keys"))
+    key_count = len(merged["tavily_api_keys"])
+    if key_count:
+        merged["tavily_next_key_index"] = int(merged.get("tavily_next_key_index") or 0) % key_count
+    else:
+        merged["tavily_next_key_index"] = 0
+    return merged
+
+
+def _normalize_web_search_config(section: Any) -> dict[str, Any]:
+    normalized = dict(section or {}) if isinstance(section, dict) else {}
+    normalized["tavily_api_keys"] = _normalize_tavily_api_keys(normalized.get("tavily_api_keys"))
+    key_count = len(normalized["tavily_api_keys"])
+    if key_count:
+        normalized["tavily_next_key_index"] = int(normalized.get("tavily_next_key_index") or 0) % key_count
+    else:
+        normalized["tavily_next_key_index"] = 0
+    return normalized
+
+
 def _load_effective_config_json(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> dict[str, Any]:
     base = _load_default_config_json()
     if _is_default_config_user(user_id):
@@ -165,14 +219,16 @@ def _load_effective_config_json(user_id: str | None = DEFAULT_CONFIG_USER_ID) ->
 
     override = _load_namespace_override_json(user_id)
     if not override:
+        base["web_search"] = _merge_web_search_config(base.get("web_search"), {}, user_id)
         return base
 
     merged = json.loads(json.dumps(base))
     for section_name in ("llm", "vision", "image_gen"):
         merged[section_name] = _merge_adapter_section(base.get(section_name), override.get(section_name))
     merged["prompt_overrides"] = _merge_prompt_overrides(base.get("prompt_overrides"), override.get("prompt_overrides"))
+    merged["web_search"] = _merge_web_search_config(base.get("web_search"), override.get("web_search"), user_id)
     for key, value in override.items():
-        if key in {"llm", "vision", "image_gen", "prompt_overrides"}:
+        if key in {"llm", "vision", "image_gen", "prompt_overrides", "web_search"}:
             continue
         merged[key] = value
     return merged
@@ -574,6 +630,33 @@ def _update_adapter_json(
     data[section_name] = section
 
 
+def _persist_effective_config_json(user_id: str | None, data: dict[str, Any]) -> None:
+    _save_config_json(data, _config_path_for_user(user_id))
+
+
+def load_web_search_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> dict[str, Any]:
+    config_data = _load_effective_config_json(user_id)
+    section = _normalize_web_search_config(config_data.get("web_search"))
+    return {
+        "tavilyApiKeys": "\n".join(section.get("tavily_api_keys", [])),
+        "tavilyNextKeyIndex": int(section.get("tavily_next_key_index") or 0),
+    }
+
+
+def claim_tavily_api_keys(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> tuple[list[str], int]:
+    with _WEB_SEARCH_CONFIG_LOCK:
+        config_data = _load_effective_config_json(user_id)
+        section = _normalize_web_search_config(config_data.get("web_search"))
+        keys = list(section.get("tavily_api_keys") or [])
+        if not keys:
+            return [], 0
+        start_index = int(section.get("tavily_next_key_index") or 0) % len(keys)
+        section["tavily_next_key_index"] = (start_index + 1) % len(keys)
+        config_data["web_search"] = section
+        _persist_effective_config_json(user_id, config_data)
+        return keys, start_index
+
+
 def _adapter_section_to_provider_profile(section: dict[str, Any], provider_id: str = "") -> dict[str, str]:
     return {
         "id": str(section.get("id") or section.get("active_provider_id") or provider_id or "").strip(),
@@ -685,6 +768,7 @@ def save_model_config_to_files(
     active_analysis_provider_id: str = "",
     image_providers_json: str = "",
     active_image_provider_id: str = "",
+    tavily_api_keys: str | None = None,
     user_id: str | None = DEFAULT_CONFIG_USER_ID,
 ):
     is_default_user = _is_default_config_user(user_id)
@@ -733,6 +817,16 @@ def save_model_config_to_files(
         image_providers_json,
         active_image_provider_id,
     )
+    if tavily_api_keys is not None:
+        current_web_search = data.get("web_search") if isinstance(data.get("web_search"), dict) else {}
+        current_web_search = dict(current_web_search)
+        current_web_search["tavily_api_keys"] = _normalize_tavily_api_keys(tavily_api_keys)
+        key_count = len(current_web_search["tavily_api_keys"])
+        if key_count:
+            current_web_search["tavily_next_key_index"] = int(current_web_search.get("tavily_next_key_index") or 0) % key_count
+        else:
+            current_web_search["tavily_next_key_index"] = 0
+        data["web_search"] = current_web_search
 
     fallback_models = []
     for item in str(fallback_models_text or "").replace("\r", "\n").replace(",", "\n").split("\n"):
@@ -771,6 +865,7 @@ def load_model_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> di
     config_data = _load_effective_config_json(user_id)
     prompt_overrides = _apply_prompt_overrides_from_json(config_data)
     cfg = get_config(user_id)
+    web_search = _normalize_web_search_config(config_data.get("web_search"))
     analysis_providers, active_analysis_provider_id = _providers_for_ui(config_data.get("llm") or {}, "analysis-default")
     image_providers, active_image_provider_id = _providers_for_ui(config_data.get("image_gen") or {}, "image-default")
     analysis_api_key = cfg.llm.api_key if _namespace_has_explicit_api_key(user_id, "llm") else ""
@@ -808,6 +903,8 @@ def load_model_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> di
         "imageModel": cfg.image_gen.model or "",
         "activeImageProviderId": active_image_provider_id,
         "imageProviders": image_providers,
+        "tavilyApiKeys": "\n".join(web_search.get("tavily_api_keys", [])),
+        "tavilyNextKeyIndex": int(web_search.get("tavily_next_key_index") or 0),
         "fallbackModels": "\n".join(cfg.image_model_fallbacks or []),
         "modelSwitchAfterFailures": cfg.model_switch_after_failures,
         "stopAfterLastModelFailures": cfg.stop_after_last_model_failures,

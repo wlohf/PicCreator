@@ -149,6 +149,7 @@ export const defaultApiConfig: ApiConfig = {
   imageModel: "gpt-image-2",
   activeImageProviderId: "",
   imageProviders: [],
+  tavilyApiKeys: "",
   floorAnalysisSystemPrompt: "",
   promptGenSystem3dCn: "",
   fallbackModels: "",

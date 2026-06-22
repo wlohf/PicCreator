@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for review"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Verify search errors are diagnosed rather than hidden"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality and test expectations"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify backend/frontend metadata contract remains coherent"}

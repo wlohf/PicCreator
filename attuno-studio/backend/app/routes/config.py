@@ -116,6 +116,7 @@ def save_config(
     img_model: str = Form(""),
     image_providers_json: str = Form(""),
     active_image_provider_id: str = Form(""),
+    tavily_api_keys: str = Form(""),
     floor_analysis_system_prompt: str = Form(""),
     prompt_gen_system_3d_cn: str = Form(""),
     fallback_models_text: str = Form(""),
@@ -143,6 +144,7 @@ def save_config(
             active_analysis_provider_id=active_analysis_provider_id,
             image_providers_json=image_providers_json,
             active_image_provider_id=active_image_provider_id,
+            tavily_api_keys=tavily_api_keys,
             user_id=resolve_config_user_id(user),
         )
         return {"ok": True, "message": message}

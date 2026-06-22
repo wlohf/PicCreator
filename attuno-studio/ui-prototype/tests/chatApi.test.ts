@@ -8,6 +8,10 @@ function assert(condition: unknown, message: string) {
 }
 
 const chatApiSource = readFileSync(new URL("../src/api/chat.ts", import.meta.url), "utf8");
+const chatHistorySource = readFileSync(new URL("../src/api/chatHistory.ts", import.meta.url), "utf8");
+const resultsApiSource = readFileSync(new URL("../src/api/results.ts", import.meta.url), "utf8");
+const generationApiSource = readFileSync(new URL("../src/api/generation.ts", import.meta.url), "utf8");
+const imageEditsApiSource = readFileSync(new URL("../src/api/imageEdits.ts", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
 const chatWorkspaceSource = readFileSync(new URL("../src/components/chat-workspace.tsx", import.meta.url), "utf8");
 const workspaceSource = `${appSource}\n${chatWorkspaceSource}`;
@@ -21,9 +25,10 @@ assert(
 
 const sendDesignChatBlock = chatApiSource.match(/export async function sendDesignChat[\s\S]*?export async function applyChatMemory/m)?.[0] ?? "";
 assert(
-  sendDesignChatBlock.includes('apiFetch("/api/chat"') &&
-  sendDesignChatBlock.includes("...request"),
-  "sendDesignChat should post the caller-provided request to /api/chat",
+  sendDesignChatBlock.includes('buildChatPath("/api/chat", request.user_id)') &&
+  sendDesignChatBlock.includes("...request") &&
+  !sendDesignChatBlock.includes('user_id: "default"'),
+  "sendDesignChat should post the caller-provided request to /api/chat without forcing the shared default namespace",
 );
 
 assert(
@@ -37,12 +42,47 @@ const streamDesignChatBlock = chatApiSource.match(/export async function streamD
 assert(
   streamDesignChatBlock.includes('apiPathOrOptions: string | { apiPath?: string; signal?: AbortSignal } = "/api/chat/stream"') &&
   streamDesignChatBlock.includes('apiPathOrOptions.apiPath || "/api/chat/stream"') &&
+  streamDesignChatBlock.includes("buildChatPath(apiPath, request.user_id)") &&
   streamDesignChatBlock.includes("ChatStreamAbortedError") &&
   streamDesignChatBlock.includes("signal: abortSignal") &&
   streamDesignChatBlock.includes("iterateSseEvents(") &&
+  streamDesignChatBlock.includes('parsed.eventName === "progress"') &&
+  streamDesignChatBlock.includes("handlers.onProgress?.(parsed.data as DesignChatProgress)") &&
   streamDesignChatBlock.includes('parsed.eventName === "delta"') &&
-  streamDesignChatBlock.includes('parsed.eventName === "complete"'),
-  "streamDesignChat should consume /api/chat/stream SSE events, support abort signals, and surface delta/complete handlers",
+  streamDesignChatBlock.includes('parsed.eventName === "complete"') &&
+  !streamDesignChatBlock.includes('user_id: "default"'),
+  "streamDesignChat should consume /api/chat/stream SSE events, preserve the caller namespace, and support abort signals",
+);
+
+assert(
+  chatHistorySource.includes("export async function loadChatHistory(userId: string)") &&
+  chatHistorySource.includes("export async function saveChatHistory(history: ChatHistoryPayload, userId: string)") &&
+  appSource.includes("withStartupRetry(() => loadChatHistory(currentUserId))") &&
+  appSource.includes("saveChatHistory(historyPayload, currentUserId)") &&
+  appSource.includes("saveChatHistory(recoveredStored, currentUserId)") &&
+  appSource.includes("lastSavedChatHistoryRef.current = \"\";"),
+  "chat history load/save and namespace switching should stay scoped to the active signed-in account",
+);
+
+const chatHistoryKeysBlock = appSource.match(/function chatHistoryCandidateKeys[\s\S]*?function loadStoredSessions/m)?.[0] ?? "";
+assert(
+  !chatHistoryKeysBlock.includes('chatHistoryStorageKey("default")') &&
+  !chatHistoryKeysBlock.includes('legacyChatHistoryStorageKey("default")') &&
+  !chatHistoryKeysBlock.includes("window.localStorage.length") &&
+  !chatHistoryKeysBlock.includes("window.localStorage.key(index)") &&
+  chatHistoryKeysBlock.includes('if (normalizedUserId === "default")'),
+  "local chat-history recovery should not scan other account namespaces and should only fall back to generic keys for the explicit default namespace",
+);
+
+assert(
+  resultsApiSource.includes('apiFetch(withUserNamespace("/api/results", userId))') &&
+  resultsApiSource.includes('apiFetch(withUserNamespace(`/api/results/${id}`, userId), { method: "DELETE" })') &&
+  resultsApiSource.includes('apiFetch(withUserNamespace(`/api/results/${id}/notes`, userId), {') &&
+  generationApiSource.includes('apiFetch(buildGenerationPath("/api/generate", request.userId), {') &&
+  generationApiSource.includes("apiFetch(buildGenerationPath(apiPath, request.userId), {") &&
+  imageEditsApiSource.includes("buildImageEditPath(`/api/results/${request.sourceResultId}/edit`, request.userId)") &&
+  imageEditsApiSource.includes("buildImageEditPath(`/api/results/${request.sourceResultId}/annotated-edit`, request.userId)"),
+  "result, generation, and image-edit APIs should carry the active account namespace through request URLs",
 );
 
 const dailyChatFlowBlock = appSource.match(/async function runDailyChatFlow[\s\S]*?async function runConversationFlow/m)?.[0] ?? "";
@@ -84,11 +124,25 @@ assert(
   dailyChatFlowBlock.includes("buildChatImageAttachments(submittedFiles)") &&
   dailyChatFlowBlock.includes("attachments: chatAttachments") &&
   dailyChatFlowBlock.includes("retryAttachments?: ChatImageAttachment[]") &&
-  dailyChatFlowBlock.includes("buildLinearChatContext([...messages, nextPatch[0]], userMessageId)") &&
+  dailyChatFlowBlock.includes("buildLinearChatContext([...baseMessages, nextPatch[0]], userMessageId)") &&
+  dailyChatFlowBlock.includes('user_id: currentUserId') &&
   dailyChatFlowBlock.includes("messages: requestMessages") &&
   dailyChatFlowBlock.includes("content: response.reply || streamedReply") &&
   dailyChatFlowBlock.includes('kind: "error"') &&
   !dailyChatFlowBlock.includes('content: response.reply || "收到。"') &&
   !dailyChatFlowBlock.includes('content: response.reply || "Got it."'),
   "daily chat should stream assistant text in place and still surface explicit errors without a fixed fallback reply",
+);
+
+assert(
+  appSource.includes('type MarkdownBlock =') &&
+  appSource.includes('function parseMarkdownBlocks') &&
+  appSource.includes('type: "unordered-list"') &&
+  appSource.includes('type: "ordered-list"') &&
+  appSource.includes('type: "heading"') &&
+  appSource.includes('type: "code"') &&
+  appSource.includes('trimmed.match(/^(#{2,3})\\s+(.+)$/)') &&
+  appSource.includes('trimmed.match(/^[-*]\\s+(.+)$/)') &&
+  appSource.includes('trimmed.match(/^(\\d+)\\.\\s+(.+)$/)'),
+  "chat message rendering should support common Markdown blocks instead of treating lists/headings as plain text",
 );

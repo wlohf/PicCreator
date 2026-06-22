@@ -289,6 +289,7 @@ _validate_model_list_config("分析模型", cfg)
 ### 2. Signatures
 - The primary browser session cookie is `attuno_session`.
 - `render_agent_session` is accepted only as a legacy cookie alias during the Attuno rename transition.
+- Account-scoped backend routes that must not silently fall back to shared workspace data use `get_current_or_namespace_user(request)`.
 - Non-session compatibility API requests should send `X-Attuno-User-Token: <custom-token>`.
 - `X-Render-Agent-User-Token: <custom-token>` is accepted only as a legacy header alias.
 - Persistent data should use `ATTUNO_STUDIO_DATA_DIR` when an override is needed.
@@ -303,10 +304,12 @@ _validate_model_list_config("分析模型", cfg)
 ### 3. Contracts
 - Real account session cookies are the primary identity for the frontend app.
 - `get_current_or_default_user(request)` must resolve an authenticated `attuno_session` before considering `X-Attuno-User-Token` or the legacy `X-Render-Agent-User-Token`.
+- `get_current_or_namespace_user(request)` must resolve an authenticated `attuno_session` first, then fall back to explicit header/query namespace aliases, and otherwise return `401` instead of silently switching to the shared `default` namespace.
 - The frontend app must not send `X-Attuno-User-Token` or `X-Render-Agent-User-Token` for normal logged-in flows.
 - Logged-in result asset URLs should rely on the session cookie and should not append `user_id=<current-user>`.
 - Query `user_id` is allowed for browser-loaded assets and compatibility with existing default/legacy namespace URLs.
-- If neither header nor query user id is present, the namespace resolves to `default`.
+- JSON and multipart `user_id` fields are not sufficient for FastAPI dependency-based namespace resolution. Compatibility callers that do not use a real session must provide the namespace in headers or the request URL.
+- Only explicit compatibility callers should resolve to `default`; account-scoped UI routes must not silently do so when the session is missing.
 - A new token must behave like an empty workspace: no previous chat history, shortcuts, preferences, or results should appear.
 - A reused token must reopen the same namespace: existing chat history, shortcuts, preferences, and results for that token should be visible.
 - Token values are normalized through the backend user-id normalizer before filesystem/storage access.
@@ -316,8 +319,10 @@ _validate_model_list_config("分析模型", cfg)
 ### 4. Validation & Error Matrix
 - Logged-in request with both session cookie and `X-Attuno-User-Token` -> session user wins.
 - Logged-in request with both session cookie and legacy `X-Render-Agent-User-Token` -> session user wins.
-- Missing header/query on API request -> use `default` namespace for backward compatibility.
+- Missing header/query on a `get_current_or_namespace_user` route -> return `401` instead of serving shared `default` data.
+- Missing header/query on explicit legacy-default routes -> use `default` only when the caller intentionally chose that compatibility path.
 - Header and query both present -> resolve consistently with the backend namespace resolver; do not manually fork behavior per route.
+- Multipart or JSON body includes `user_id`, but header/query/session is absent -> do not treat the body field as the namespace source for dependency resolution.
 - Asset request for a result id outside the active namespace -> return not found.
 - Malformed or unusual token characters -> normalize to a safe user id before storage lookup.
 - Registration username normalizes to `default` -> reject with a client error.
@@ -326,7 +331,9 @@ _validate_model_list_config("分析模型", cfg)
 - Good: logged-in user `alice` saves API keys and generates results; asset URLs open through cookie-authenticated `/api/results/<id>/image` without a `user_id` query.
 - Good: legacy token `alpha` saves a shortcut, generates an image, reloads through a compatibility caller, and sees only `alpha` shortcuts and results.
 - Base: no token is supplied by legacy callers, and APIs continue to use `default`.
+- Good: the main frontend app appends `?user_id=<current-user>` to account-scoped history/result/generation compatibility URLs, so missing-cookie fallback still stays in the current namespace instead of leaking `default`.
 - Bad: a logged-in request can be switched to another namespace by adding `X-Attuno-User-Token`.
+- Bad: a missing or expired session on `/api/chat-history` or `/api/results` silently returns shared `default` data.
 - Bad: new code or tests use legacy `X-Render-Agent-User-Token`, `render_agent_session`, or `RENDER_AGENT_DATA_DIR` as the default path instead of covering them explicitly as compatibility aliases.
 - Bad: token `beta` can list or fetch token `alpha` results by id.
 - Bad: the frontend reintroduces the temporary access-token modal as the default identity flow.
@@ -336,6 +343,8 @@ _validate_model_list_config("分析模型", cfg)
 - Backend API test proving two token namespaces do not share shortcut preferences.
 - Backend API test proving generation writes use the active token namespace.
 - Backend API test proving session identity wins over namespace headers.
+- Backend API test proving `get_current_or_namespace_user` routes return `401` instead of shared `default` data when the session and explicit namespace are both missing.
+- Backend API test proving query-based namespace fallback works for chat-history/results/generation compatibility URLs when no real session is present.
 - Backend API test proving `default` cannot be registered as a real account.
 - Frontend test/build coverage proving paste/drag image handling remains available when the attachment button is removed.
 - Frontend test proving logged-in/default result asset URL behavior does not append user ids for session users.
@@ -369,12 +378,14 @@ if namespace_user:
 #### Correct
 
 ```python
-# Resolve the real account first; use namespace only for unauthenticated callers.
+# Account-scoped routes must not silently fall back to shared default data.
 try:
     user = get_current_user(request)
 except HTTPException:
     namespace_user = get_request_namespace_user(request)
-    return namespace_user or get_default_local_user()
+    if namespace_user is None:
+        raise HTTPException(status_code=401, detail="未登录")
+    return namespace_user
 return {**user, "authenticated": True}
 ```
 

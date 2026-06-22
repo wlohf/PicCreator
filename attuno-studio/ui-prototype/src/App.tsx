@@ -47,7 +47,7 @@ import {
 
 import { loadAuthMe, login, logout, register, type AuthUser } from "./api/auth";
 import { detectConfigModels, loadConfig, saveConfig, verifyConfig, type ConfigRole } from "./api/config";
-import { applyChatMemory, isChatStreamAbortedError, streamDesignChat } from "./api/chat";
+import { applyChatMemory, isChatStreamAbortedError, streamDesignChat, type DesignChatProgress } from "./api/chat";
 import { loadChatHistory, saveChatHistory } from "./api/chatHistory";
 import { isGenerationStreamAbortedError, requestGenerationStream } from "./api/generation";
 import { requestAnnotatedImageEdit, requestImageEdit } from "./api/imageEdits";
@@ -74,7 +74,7 @@ import {
   directionItems,
   modelOptions
 } from "./data/studioData";
-import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatMessageVariant, ChatReasoningEffort, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
+import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatMessageVariant, ChatReasoningEffort, ChatThinkingStatus, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
 import { appendMessageVariant, buildLinearChatContext, canSwitchWorkspaceMode, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariantIndex, getBranchInfo, getMessagePathTo, getMessageVariants, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, updateActiveMessageVariant, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
 import { apiConfigStorageKey, apiConfigStorageReadKeys } from "./utils/apiConfigStorage";
 import { filesFromList, imageFilesFromClipboardItems, imageFilesFromFiles, imageSourcesFromClipboardData, mergeFloorPlanFiles } from "./utils/fileAttachments";
@@ -220,6 +220,11 @@ type StoredChatSessions = {
 type HistoryMenuPosition = {
   top: number;
   left: number;
+};
+
+type DeleteSessionConfirmation = {
+  sessionId: string;
+  title: string;
 };
 
 function chatHistoryStorageKey(userId: string) {
@@ -652,6 +657,7 @@ function normalizeApiConfig(value: unknown): ApiConfig {
     imageBaseUrl: String(saved.imageBaseUrl ?? defaultApiConfig.imageBaseUrl),
     imageApiKey: String(saved.imageApiKey ?? defaultApiConfig.imageApiKey),
     imageModel: String(saved.imageModel ?? defaultApiConfig.imageModel),
+    tavilyApiKeys: String(saved.tavilyApiKeys ?? defaultApiConfig.tavilyApiKeys),
     floorAnalysisSystemPrompt: String(saved.floorAnalysisSystemPrompt ?? defaultApiConfig.floorAnalysisSystemPrompt),
     promptGenSystem3dCn: String(saved.promptGenSystem3dCn ?? defaultApiConfig.promptGenSystem3dCn),
     fallbackModels: String(saved.fallbackModels ?? defaultApiConfig.fallbackModels),
@@ -832,7 +838,7 @@ function emptyGenerationResultError(result: GenerateResponse, locale: Locale) {
 
 function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const boldPattern = /\*\*([^*]+)\*\*/g;
+  const boldPattern = /\*\*([^*\n]+)\*\*/g;
   let lastIndex = 0;
   let matchIndex = 0;
   for (const match of text.matchAll(boldPattern)) {
@@ -850,55 +856,169 @@ function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
   return nodes.length ? nodes : [text];
 }
 
-function parseOrderedListParagraph(text: string) {
-  const matches = Array.from(text.matchAll(/(?:^|\s)(\d+)\.\s+/g));
-  if (!matches.length) return null;
-  const firstNumber = Number(matches[0][1]);
-  if (!Number.isFinite(firstNumber)) return null;
+type MarkdownBlock =
+  | { type: "paragraph"; text: string }
+  | { type: "heading"; level: 2 | 3; text: string }
+  | { type: "unordered-list"; items: string[] }
+  | { type: "ordered-list"; start: number; items: string[] }
+  | { type: "code"; text: string };
 
-  const intro = text.slice(0, matches[0].index ?? 0).trim();
-  const looksIntentional = matches.length > 1 || text.trim().startsWith(`${matches[0][1]}.`) || /[:：]$/.test(intro);
-  if (!looksIntentional) return null;
+function flushMarkdownParagraph(lines: string[], blocks: MarkdownBlock[]) {
+  const text = lines.join("\n").trim();
+  if (text) {
+    blocks.push({ type: "paragraph", text });
+  }
+  lines.length = 0;
+}
 
-  const items = matches.map((match, index) => {
-    const start = (match.index ?? 0) + match[0].length;
-    const end = index + 1 < matches.length ? matches[index + 1].index ?? text.length : text.length;
-    return text.slice(start, end).trim();
-  }).filter(Boolean);
-  return items.length ? { intro, start: firstNumber, items } : null;
+function parseMarkdownBlocks(rawText: string): MarkdownBlock[] {
+  const blocks: MarkdownBlock[] = [];
+  const paragraphLines: string[] = [];
+  const lines = String(rawText || "").replace(/\r\n/g, "\n").split("\n");
+  let codeLines: string[] | null = null;
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\s+$/g, "");
+    const trimmed = line.trim();
+
+    if (trimmed.startsWith("```")) {
+      if (codeLines) {
+        blocks.push({ type: "code", text: codeLines.join("\n") });
+        codeLines = null;
+      } else {
+        flushMarkdownParagraph(paragraphLines, blocks);
+        codeLines = [];
+      }
+      continue;
+    }
+
+    if (codeLines) {
+      codeLines.push(rawLine);
+      continue;
+    }
+
+    if (!trimmed) {
+      flushMarkdownParagraph(paragraphLines, blocks);
+      continue;
+    }
+
+    const headingMatch = trimmed.match(/^(#{2,3})\s+(.+)$/);
+    if (headingMatch) {
+      flushMarkdownParagraph(paragraphLines, blocks);
+      blocks.push({ type: "heading", level: headingMatch[1].length as 2 | 3, text: headingMatch[2].trim() });
+      continue;
+    }
+
+    const unorderedMatch = trimmed.match(/^[-*]\s+(.+)$/);
+    if (unorderedMatch) {
+      flushMarkdownParagraph(paragraphLines, blocks);
+      const previous = blocks[blocks.length - 1];
+      if (previous?.type === "unordered-list") {
+        previous.items.push(unorderedMatch[1].trim());
+      } else {
+        blocks.push({ type: "unordered-list", items: [unorderedMatch[1].trim()] });
+      }
+      continue;
+    }
+
+    const orderedMatch = trimmed.match(/^(\d+)\.\s+(.+)$/);
+    if (orderedMatch) {
+      flushMarkdownParagraph(paragraphLines, blocks);
+      const previous = blocks[blocks.length - 1];
+      if (previous?.type === "ordered-list") {
+        previous.items.push(orderedMatch[2].trim());
+      } else {
+        blocks.push({ type: "ordered-list", start: Number(orderedMatch[1]) || 1, items: [orderedMatch[2].trim()] });
+      }
+      continue;
+    }
+
+    paragraphLines.push(trimmed);
+  }
+
+  if (codeLines) {
+    blocks.push({ type: "code", text: codeLines.join("\n") });
+  }
+  flushMarkdownParagraph(paragraphLines, blocks);
+  return blocks;
 }
 
 function MessageContent({ content, locale }: { content: ChatMessage["content"]; locale: Locale }) {
-  const text = localized(content, locale);
-  const paragraphs = text.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
-  if (!paragraphs.length) return null;
+  const blocks = parseMarkdownBlocks(localized(content, locale));
+  if (!blocks.length) return null;
 
   return (
     <div className="message-markdown">
-      {paragraphs.map((paragraph, paragraphIndex) => {
-        const orderedList = parseOrderedListParagraph(paragraph);
-        if (orderedList) {
+      {blocks.map((block, blockIndex) => {
+        if (block.type === "heading") {
+          const HeadingTag = block.level === 2 ? "h2" : "h3";
+          return <HeadingTag key={`heading-${blockIndex}`}>{renderInlineMarkdown(block.text, `heading-${blockIndex}`)}</HeadingTag>;
+        }
+        if (block.type === "unordered-list") {
           return (
-            <div className="message-markdown__block" key={`paragraph-${paragraphIndex}`}>
-              {orderedList.intro && (
-                <p>{renderInlineMarkdown(orderedList.intro, `paragraph-${paragraphIndex}-intro`)}</p>
-              )}
-              <ol start={orderedList.start}>
-                {orderedList.items.map((item, itemIndex) => (
-                  <li key={`${itemIndex}-${item.slice(0, 24)}`}>
-                    {renderInlineMarkdown(item, `paragraph-${paragraphIndex}-item-${itemIndex}`)}
-                  </li>
-                ))}
-              </ol>
-            </div>
+            <ul key={`ul-${blockIndex}`}>
+              {block.items.map((item, itemIndex) => (
+                <li key={`${itemIndex}-${item.slice(0, 24)}`}>{renderInlineMarkdown(item, `ul-${blockIndex}-${itemIndex}`)}</li>
+              ))}
+            </ul>
           );
         }
-        return (
-          <p key={`paragraph-${paragraphIndex}`}>
-            {renderInlineMarkdown(paragraph, `paragraph-${paragraphIndex}`)}
-          </p>
-        );
+        if (block.type === "ordered-list") {
+          return (
+            <ol key={`ol-${blockIndex}`} start={block.start}>
+              {block.items.map((item, itemIndex) => (
+                <li key={`${itemIndex}-${item.slice(0, 24)}`}>{renderInlineMarkdown(item, `ol-${blockIndex}-${itemIndex}`)}</li>
+              ))}
+            </ol>
+          );
+        }
+        if (block.type === "code") {
+          return <pre key={`code-${blockIndex}`}><code>{block.text}</code></pre>;
+        }
+        return <p key={`paragraph-${blockIndex}`}>{renderInlineMarkdown(block.text, `paragraph-${blockIndex}`)}</p>;
       })}
+    </div>
+  );
+}
+
+function normalizeChatThinkingStatus(progress: DesignChatProgress, startedAt: string): ChatThinkingStatus {
+  const state = progress.state === "done" || progress.state === "error" ? progress.state : "running";
+  return {
+    startedAt,
+    stage: String(progress.stage || "running").trim(),
+    summary: String(progress.summary || "正在处理请求").trim(),
+    toolLabel: String(progress.toolLabel || "").trim() || undefined,
+    toolDetail: String(progress.toolDetail || "").trim() || undefined,
+    state,
+  };
+}
+
+function chatThinkingElapsedSeconds(status: ChatThinkingStatus, nowMs: number) {
+  const startMs = Date.parse(status.startedAt || "");
+  if (!Number.isFinite(startMs)) return 0;
+  return Math.max(0, Math.floor((nowMs - startMs) / 1000));
+}
+
+function AssistantThinkingStatusCard({ status, locale, nowMs }: { status: ChatThinkingStatus; locale: Locale; nowMs: number }) {
+  const elapsedSeconds = chatThinkingElapsedSeconds(status, nowMs);
+  const summary = String(status.summary || (locale === "zh" ? "正在处理请求" : "Processing request")).trim();
+  const toolText = [status.toolLabel, status.toolDetail].filter(Boolean).join(" · ");
+  const toolVerb = status.state === "done"
+    ? locale === "zh" ? "已完成" : "Completed"
+    : status.state === "error"
+      ? locale === "zh" ? "运行失败" : "Failed"
+      : locale === "zh" ? "正在运行" : "Running";
+  return (
+    <div className="assistant-thinking-card" role="status" aria-live="polite">
+      <div className="assistant-thinking-head">{locale === "zh" ? `已处理 ${elapsedSeconds}s` : `Processed ${elapsedSeconds}s`}</div>
+      <div className="assistant-thinking-divider" />
+      <p className="assistant-thinking-summary">{summary}</p>
+      {toolText && (
+        <div className="assistant-thinking-tool">
+          <Search size={14} aria-hidden="true" />
+          <span>{toolVerb} {toolText}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -960,11 +1080,13 @@ function sanitizeMessageForPersistence(message: ChatMessage): ChatMessage {
     return {
       ...variant,
       attachments: variantAttachments.length ? variantAttachments : undefined,
+      thinkingStatus: undefined,
     };
   });
   return {
     ...message,
     attachments: attachments.length ? attachments : undefined,
+    thinkingStatus: undefined,
     variants,
   };
 }
@@ -1066,34 +1188,15 @@ function hasRecoverableStoredSessions(sessions: ChatSessionRecord[]) {
 }
 
 function chatHistoryCandidateKeys(userId: string) {
-  const preferredKeys = [
-    chatHistoryStorageKey(userId),
-    legacyChatHistoryStorageKey(userId),
-    chatHistoryStorageKey("default"),
-    legacyChatHistoryStorageKey("default"),
-    CHAT_HISTORY_STORAGE_KEY,
-    LEGACY_CHAT_HISTORY_STORAGE_KEY,
+  const normalizedUserId = userId || "default";
+  const keys = [
+    chatHistoryStorageKey(normalizedUserId),
+    legacyChatHistoryStorageKey(normalizedUserId),
   ];
-  if (typeof window === "undefined") {
-    return preferredKeys;
+  if (normalizedUserId === "default") {
+    keys.push(CHAT_HISTORY_STORAGE_KEY, LEGACY_CHAT_HISTORY_STORAGE_KEY);
   }
-  const seen = new Set<string>();
-  const keys: string[] = [];
-  const addKey = (key: string) => {
-    if (!seen.has(key)) {
-      seen.add(key);
-      keys.push(key);
-    }
-  };
-  preferredKeys.forEach(addKey);
-  for (let index = 0; index < window.localStorage.length; index += 1) {
-    const key = window.localStorage.key(index);
-    if (!key) continue;
-    if (key.startsWith(`${CHAT_HISTORY_STORAGE_KEY}:`) || key.startsWith(`${LEGACY_CHAT_HISTORY_STORAGE_KEY}:`)) {
-      addKey(key);
-    }
-  }
-  return keys;
+  return Array.from(new Set(keys));
 }
 
 function loadStoredSessions(userId: string): StoredChatSessions {
@@ -1790,6 +1893,7 @@ function App() {
   const [isChatSearchOpen, setIsChatSearchOpen] = useState(false);
   const [activeHistoryMenuId, setActiveHistoryMenuId] = useState<string | null>(null);
   const [historyMenuPosition, setHistoryMenuPosition] = useState<HistoryMenuPosition | null>(null);
+  const [deleteSessionConfirmation, setDeleteSessionConfirmation] = useState<DeleteSessionConfirmation | null>(null);
   const [isPromptPlazaOpen, setIsPromptPlazaOpen] = useState(false);
   const [promptPlazaQuery, setPromptPlazaQuery] = useState("");
   const [promptPlazaView, setPromptPlazaView] = useState<PromptPlazaView>("all");
@@ -1827,6 +1931,7 @@ function App() {
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(null);
   const [generationElapsedMs, setGenerationElapsedMs] = useState(0);
+  const [chatStatusNowMs, setChatStatusNowMs] = useState(Date.now());
   const [floorPlanPreviews, setFloorPlanPreviews] = useState<FilePreview[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [chatRespondingSessionIds, setChatRespondingSessionIds] = useState<string[]>([]);
@@ -2285,6 +2390,7 @@ function App() {
     setIsAccountMenuOpen(false);
     setActiveHistoryMenuId(null);
     setHistoryMenuPosition(null);
+    setDeleteSessionConfirmation(null);
     setRenamingSessionId(null);
     setEditingMessage(null);
     setActivePrimaryView("workspace");
@@ -2316,6 +2422,7 @@ function App() {
     setIsAccountMenuOpen(false);
     setActiveHistoryMenuId(null);
     setHistoryMenuPosition(null);
+    setDeleteSessionConfirmation(null);
     setRenamingSessionId(null);
     setActivePrimaryView("workspace");
     setActiveStep("idle");
@@ -2358,6 +2465,7 @@ function App() {
     clearChatRespondingSessions();
     conversationEpochRef.current += 1;
     currentUserIdRef.current = nextUserId;
+    lastSavedChatHistoryRef.current = "";
     selectCurrentSession("");
     setChatSessions([]);
     setRenderHistory([]);
@@ -3194,7 +3302,7 @@ function App() {
         isBootstrappingSessionRef.current = false;
       };
     }
-    withStartupRetry(loadChatHistory)
+    withStartupRetry(() => loadChatHistory(currentUserId))
       .then(async (serverHistory) => {
         if (!isMounted) return;
         const serverStored = parseStoredSessions(JSON.stringify(serverHistory), "server-session");
@@ -3211,7 +3319,7 @@ function App() {
           await saveChatHistory({
             currentSessionId: localStored.currentSessionId,
             sessions: localStored.sessions,
-          }).catch(() => null);
+          }, currentUserId).catch(() => null);
           return;
         }
 
@@ -3231,7 +3339,7 @@ function App() {
               sessions: recoveredSessions,
             };
             if (applyStoredSessionCollection(recoveredStored)) {
-              await saveChatHistory(recoveredStored).catch(() => null);
+              await saveChatHistory(recoveredStored, currentUserId).catch(() => null);
               showToast(locale === "zh" ? "已从图片管理恢复历史生成记录" : "Recovered generation history from images");
               return;
             }
@@ -3290,7 +3398,7 @@ function App() {
     }
     if (isBootstrappingSessionRef.current || serialized === lastSavedChatHistoryRef.current) return;
     lastSavedChatHistoryRef.current = serialized;
-    void saveChatHistory(historyPayload).catch(() => {
+    void saveChatHistory(historyPayload, currentUserId).catch(() => {
       lastSavedChatHistoryRef.current = "";
     });
   }, [chatSessions, currentSessionId, currentUserId]);
@@ -3390,8 +3498,15 @@ function App() {
   }, [generationStartedAt, isVisibleRendering]);
 
   useEffect(() => {
+    if (!isVisibleChatResponding) return;
+    setChatStatusNowMs(Date.now());
+    const timer = window.setInterval(() => setChatStatusNowMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isVisibleChatResponding]);
+
+  useEffect(() => {
     chatThreadRef.current?.scrollTo({ top: chatThreadRef.current.scrollHeight, behavior: "smooth" });
-  }, [messages.length, isVisibleRendering]);
+  }, [messages.length, isVisibleRendering, chatStatusNowMs]);
 
   useEffect(() => {
     if (!retryPopover) return;
@@ -3410,6 +3525,10 @@ function App() {
       const target = event.target as HTMLElement | null;
       const isEditableTarget = target?.tagName === "INPUT" || target?.tagName === "TEXTAREA" || target?.isContentEditable;
       if (event.key === "Escape") {
+        if (deleteSessionConfirmation) {
+          setDeleteSessionConfirmation(null);
+          return;
+        }
         if (isChatSearchOpen) {
           setIsChatSearchOpen(false);
           return;
@@ -3467,7 +3586,7 @@ function App() {
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeHistoryMenuId, activeUtilityPanel, annotationTarget, isAccountMenuOpen, isChatSearchOpen, isComparisonOpen, isPromptPlazaOpen, isSubmittingAnnotation, locale, previewImage, retryPopover]);
+  }, [activeHistoryMenuId, activeUtilityPanel, annotationTarget, deleteSessionConfirmation, isAccountMenuOpen, isChatSearchOpen, isComparisonOpen, isPromptPlazaOpen, isSubmittingAnnotation, locale, previewImage, retryPopover]);
 
   useEffect(() => {
     function handlePointerDown(event: PointerEvent) {
@@ -4301,17 +4420,31 @@ function App() {
     const sessionToDelete = seededSessions.find((session) => session.id === sessionId);
     if (!sessionToDelete) return;
     const title = sessionDisplayTitle(sessionToDelete);
-    const confirmation = locale === "zh"
-      ? `确定删除「${title}」吗？此操作不可撤销。`
-      : `Delete "${title}"? This cannot be undone.`;
-    if (typeof window !== "undefined" && !window.confirm(confirmation)) {
-      setActiveHistoryMenuId(null);
-      setHistoryMenuPosition(null);
+    setDeleteSessionConfirmation({ sessionId, title });
+    setActiveHistoryMenuId(null);
+    setHistoryMenuPosition(null);
+  }
+
+  function cancelDeleteSession() {
+    setDeleteSessionConfirmation(null);
+    setActiveHistoryMenuId(null);
+    setHistoryMenuPosition(null);
+  }
+
+  function confirmDeleteSession() {
+    if (!deleteSessionConfirmation) return;
+    const sessionId = deleteSessionConfirmation.sessionId;
+    const currentSnapshot = snapshotCurrentSession();
+    const seededSessions = currentSnapshot ? upsertSession(chatSessions, currentSnapshot) : chatSessions;
+    const sessionToDelete = seededSessions.find((session) => session.id === sessionId);
+    if (!sessionToDelete) {
+      cancelDeleteSession();
       return;
     }
     const nextSessions = seededSessions.filter((session) => session.id !== sessionId);
     const fallbackSession = nextSessions.find((session) => hasDurableConversationContent(session.messages)) ?? nextSessions[0] ?? createEmptySession();
     setChatSessions(nextSessions.length > 0 ? nextSessions : [fallbackSession]);
+    setDeleteSessionConfirmation(null);
     setActiveHistoryMenuId(null);
     setHistoryMenuPosition(null);
     setRenamingSessionId(null);
@@ -4701,6 +4834,10 @@ function App() {
 
   async function handleCopyMessage(message: ChatMessage) {
     const activeMessage = withActiveMessageVariant(message);
+    if (activeMessage.kind === "render" && activeMessage.imageUrl) {
+      await handleCopyImage(activeMessage.imageUrl, activeMessage.imageLabel);
+      return;
+    }
     const text = buildMessageClipboardText(activeMessage, locale) || activeMessage.imageUrl || "";
     if (!text) {
       showToast(locale === "zh" ? "暂无可复制内容" : "No content to copy yet");
@@ -5469,6 +5606,10 @@ function App() {
   }) {
     const flowOptions = typeof options === "string" ? { userPrompt: options } : options ?? {};
     const { userPrompt, retryTargetMessageId, retryParentUserMessageId, editParentId, retryModel, retryAttachments, submittedAttachments } = flowOptions;
+    if (!currentUserId) {
+      showToast(locale === "zh" ? "请先登录账号后再使用聊天" : "Sign in before using chat");
+      return;
+    }
     if (chatRespondingSessionIds.includes(currentSessionIdRef.current)) return;
     const userBrief = (userPrompt ?? chatInput).trim();
     if (!userBrief) {
@@ -5477,6 +5618,7 @@ function App() {
     }
 
     const idBase = Date.now();
+    const thinkingStartedAt = new Date(idBase).toISOString();
     const submittedFiles = [...floorPlanFiles];
     const runGuard = createConversationRunGuard();
     const isRetry = Boolean(retryTargetMessageId);
@@ -5536,7 +5678,13 @@ function App() {
         role: "assistant",
         kind: "text",
         workflowMode: "chat",
-        content: ""
+        content: "",
+        thinkingStatus: {
+          startedAt: thinkingStartedAt,
+          stage: "routing",
+          summary: locale === "zh" ? "正在理解问题" : "Understanding request",
+          state: "running",
+        },
       }
     ];
     if (retryTargetMessageId) {
@@ -5554,6 +5702,12 @@ function App() {
         draftInstruction: undefined,
         memoryCandidate: undefined,
         model: retryModel || apiConfig.analysisModel || undefined,
+        thinkingStatus: {
+          startedAt: thinkingStartedAt,
+          stage: "routing",
+          summary: locale === "zh" ? "正在理解问题" : "Understanding request",
+          state: "running",
+        },
       });
     } else {
       appendMessagesToRunSession(runGuard, nextPatch);
@@ -5592,7 +5746,7 @@ function App() {
       const response = await streamDesignChat(
         {
           message: userBrief,
-          user_id: currentUserId || DEFAULT_PROJECT_ID,
+          user_id: currentUserId,
           project_id: DEFAULT_PROJECT_ID,
           active_result_id: activeResult?.id || "",
           api_config: requestApiConfig,
@@ -5612,12 +5766,19 @@ function App() {
           }
         },
         {
+          onProgress: (progress) => {
+            if (!isActiveConversationRun(runGuard)) return;
+            updateAssistantMessage({
+              thinkingStatus: normalizeChatThinkingStatus(progress, thinkingStartedAt),
+            });
+          },
           onDelta: (delta) => {
             if (!isActiveConversationRun(runGuard)) return;
             streamedReply += delta;
             updateAssistantMessage({
               kind: "text",
               content: streamedReply,
+              thinkingStatus: undefined,
             });
           },
           onComplete: (streamResponse) => {
@@ -5633,6 +5794,7 @@ function App() {
               bullets: extras.bullets,
               draftInstruction: extras.draftInstruction || undefined,
               memoryCandidate: extras.memoryCandidate,
+              thinkingStatus: undefined,
             });
           }
         },
@@ -5646,6 +5808,7 @@ function App() {
         bullets: extras.bullets,
         draftInstruction: extras.draftInstruction || undefined,
         memoryCandidate: extras.memoryCandidate,
+        thinkingStatus: undefined,
       });
     } catch (error) {
       if (!isActiveConversationRun(runGuard)) return;
@@ -5656,6 +5819,7 @@ function App() {
           bullets: undefined,
           draftInstruction: undefined,
           memoryCandidate: undefined,
+          thinkingStatus: undefined,
         });
         return;
       }
@@ -5666,6 +5830,7 @@ function App() {
         bullets: undefined,
         draftInstruction: undefined,
         memoryCandidate: undefined,
+        thinkingStatus: undefined,
       });
     } finally {
       if (isActiveConversationRun(runGuard)) {
@@ -5683,6 +5848,10 @@ function App() {
     requestedFiles?: File[],
     retryTargetMessageId?: string,
   ) {
+    if (!currentUserId) {
+      showToast(locale === "zh" ? "请先登录账号后再生成图片" : "Sign in before generating images");
+      return;
+    }
     if (isConversationBusy) return;
     const submitMode = requestedMode;
     const submitComposerMode = requestedComposerMode;
@@ -5833,7 +6002,7 @@ function App() {
           const result = await requestGenerationStream(
             {
               projectId: DEFAULT_PROJECT_ID,
-              userId: currentUserId || DEFAULT_PROJECT_ID,
+              userId: currentUserId,
               mode: "standard",
               prompt,
               directionStackText: "",
@@ -5937,7 +6106,7 @@ function App() {
         }
         const editResult = await requestImageEdit({
           sourceResultId: activeResult.id,
-          userId: activeResult.userId || currentUserId || DEFAULT_PROJECT_ID,
+          userId: activeResult.userId || currentUserId,
           editInstruction: userBrief,
           projectId: activeResult.projectId || "default",
           maxIterations: effectiveMaxIterations,
@@ -6020,7 +6189,7 @@ function App() {
       const result = await requestGenerationStream(
         {
           projectId: DEFAULT_PROJECT_ID,
-          userId: currentUserId || DEFAULT_PROJECT_ID,
+          userId: currentUserId,
           mode: submitMode,
           prompt,
           directionStackText: "",
@@ -6586,6 +6755,7 @@ function App() {
                   const hasMessageVariants = activeMessage.role === "assistant" && messageVariants.length > 1;
                   const hasAssistantOutput = activeMessage.role === "assistant" && Boolean(buildMessageClipboardText(activeMessage, locale) || activeMessage.imageUrl);
                   const isStreamingAssistantMessage = isVisibleChatResponding && activeMessage.role === "assistant" && message.id === activeMessageId;
+                  const visibleThinkingStatus = isStreamingAssistantMessage ? activeMessage.thinkingStatus : undefined;
                   const isEditingUserMessage = activeMessage.role === "user" && editingMessage?.messageId === message.id;
                   const editedDraft = isEditingUserMessage ? editingMessage?.draft ?? "" : "";
                   const editedDraftLineCount = Math.min(8, Math.max(3, editedDraft.split("\n").length));
@@ -6685,7 +6855,16 @@ function App() {
                           </div>
                         </div>
                       ) : (
-                        <MessageContent content={activeMessage.content} locale={locale} />
+                        <>
+                          {visibleThinkingStatus && (
+                            <AssistantThinkingStatusCard
+                              status={visibleThinkingStatus}
+                              locale={locale}
+                              nowMs={chatStatusNowMs}
+                            />
+                          )}
+                          <MessageContent content={activeMessage.content} locale={locale} />
+                        </>
                       )}
 
                       {activeMessage.attachments && activeMessage.attachments.length > 0 && (
@@ -7451,6 +7630,15 @@ function App() {
                             placeholder="gpt-4o"
                           />
                         </label>
+                        <label className="api-config-wide">
+                          <span>{locale === "zh" ? "Tavily API Keys" : "Tavily API keys"}</span>
+                          <textarea
+                            rows={3}
+                            value={apiConfig.tavilyApiKeys}
+                            onChange={(event) => setApiConfig((current) => ({ ...current, tavilyApiKeys: event.target.value }))}
+                            placeholder={locale === "zh" ? "每行一个 key，可用逗号或分号分隔" : "One key per line; commas or semicolons also work"}
+                          />
+                        </label>
                         {selectedAnalysisModelOptions.length > 0 && (
                           <div className="api-model-picker api-model-picker--selected api-config-wide">
                             <div className="api-model-picker__head">
@@ -7868,6 +8056,44 @@ function App() {
           }}
           onSubmit={handleSubmitAnnotationEdit}
         />
+      )}
+      {deleteSessionConfirmation && (
+        <div className="delete-chat-dialog-overlay" role="presentation" onClick={cancelDeleteSession}>
+          <section
+            className="delete-chat-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="delete-chat-dialog-title"
+            aria-describedby="delete-chat-dialog-description delete-chat-dialog-hint"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <h2 id="delete-chat-dialog-title">{locale === "zh" ? "删除聊天?" : "Delete chat?"}</h2>
+            <p className="delete-chat-dialog__message" id="delete-chat-dialog-description">
+              {locale === "zh" ? (
+                <>
+                  这会删除“<strong>{deleteSessionConfirmation.title}</strong>”。
+                </>
+              ) : (
+                <>
+                  This will delete "<strong>{deleteSessionConfirmation.title}</strong>".
+                </>
+              )}
+            </p>
+            <p className="delete-chat-dialog__hint" id="delete-chat-dialog-hint">
+              {locale === "zh"
+                ? "访问设置以删除此聊天期间保存的所有记忆。"
+                : "Visit settings to delete any memories saved during this chat."}
+            </p>
+            <div className="delete-chat-dialog__actions">
+              <button type="button" className="delete-chat-dialog__button" onClick={cancelDeleteSession}>
+                {locale === "zh" ? "取消" : "Cancel"}
+              </button>
+              <button type="button" className="delete-chat-dialog__button delete-chat-dialog__button--danger" onClick={confirmDeleteSession}>
+                {locale === "zh" ? "删除" : "Delete"}
+              </button>
+            </div>
+          </section>
+        </div>
       )}
       {showUserDialog && (
         <div className="identity-modal" role="dialog" aria-modal="true" aria-label={locale === "zh" ? "账号登录" : "Account sign in"} onClick={() => authUser && setShowUserDialog(false)}>

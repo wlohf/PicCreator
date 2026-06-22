@@ -288,7 +288,7 @@ assert(
 
 assert(
   appSource.includes("MessageContent") &&
-  appSource.includes("parseOrderedListParagraph") &&
+  appSource.includes("parseMarkdownBlocks") &&
   styles.includes(".message-markdown ol") &&
   styles.includes(".api-model-picker__list") &&
   styles.includes(".api-model-search-row"),
@@ -338,9 +338,9 @@ assert(
 const generationFlowBlock = appSource.match(/async function runConversationFlow[\s\S]*?function handleGenerate/m)?.[0] ?? "";
 assert(
   appSource.includes("function clearComposerDraft()") &&
+  appSource.includes("function clearComposerAfterSubmit") &&
   dailyChatFlowBlock.includes("clearComposerDraft();") &&
-  generationFlowBlock.includes("clearComposerDraft();") &&
-  generationFlowBlock.includes("clearAttachments(true);") &&
+  generationFlowBlock.includes("clearComposerAfterSubmit(submitComposerMode, submittedFiles.length)") &&
   generationFlowBlock.includes("getGenerationBlocker(submitMode, userBrief, submittedFiles.length)"),
   "composer draft text and submitted image attachments should clear after a real chat or image submit while validation uses the submitted prompt text",
 );
@@ -679,10 +679,16 @@ assert(
   appSource.includes('if (activeMessage.kind === "render" && activeMessage.imageUrl)') &&
   appSource.includes("await handleCopyImage(activeMessage.imageUrl, activeMessage.imageLabel)") &&
   appSource.includes('const isStreamingAssistantMessage = isVisibleChatResponding') &&
+  appSource.includes("function AssistantThinkingStatusCard") &&
+  appSource.includes("normalizeChatThinkingStatus(progress, thinkingStartedAt)") &&
+  appSource.includes("thinkingStatus: undefined") &&
   appSource.includes('className="assistant-streaming-indicator"') &&
+  appSource.includes('className="assistant-thinking-card"') &&
   styles.includes(".assistant-streaming-indicator") &&
+  styles.includes(".assistant-thinking-card") &&
+  styles.includes(".assistant-thinking-tool") &&
   styles.includes("@keyframes assistant-streaming-pulse"),
-  "render message copy should copy the image, and active assistant replies should show a streaming status indicator",
+  "render message copy should copy the image, and active assistant replies should show streaming plus safe thinking/tool status indicators",
 );
 
 assert(

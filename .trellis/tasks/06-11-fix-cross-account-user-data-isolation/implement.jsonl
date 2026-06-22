@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Frontend account identity, chat-history persistence, result asset URL, and image-management state contracts for account-scoped data."}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Backend namespace isolation and result/history contracts, including account vs legacy namespace behavior."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "This fix spans frontend cache/bootstrap logic, API clients, auth resolution, and result/chat storage boundaries."}

@@ -1,5 +1,12 @@
-import { apiFetch, buildApiUrl, parseApiJson } from "./client";
+import { apiFetch, parseApiJson } from "./client";
 import type { AnnotatedImageEditRequest, ImageEditRequest, ImageEditResponse } from "../types/domain";
+
+function buildImageEditPath(path: string, userId?: string) {
+  const normalized = String(userId || "").trim();
+  if (!normalized) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}user_id=${encodeURIComponent(normalized)}`;
+}
 
 function appendEditFormFields(formData: FormData, request: ImageEditRequest) {
   formData.append("user_id", request.userId || "default");
@@ -25,7 +32,7 @@ function appendEditFormFields(formData: FormData, request: ImageEditRequest) {
 
 export async function requestImageEdit(request: ImageEditRequest, options: { signal?: AbortSignal } = {}): Promise<ImageEditResponse> {
   const formData = appendEditFormFields(new FormData(), request);
-  const response = await apiFetch(`/api/results/${request.sourceResultId}/edit`, {
+  const response = await apiFetch(buildImageEditPath(`/api/results/${request.sourceResultId}/edit`, request.userId), {
     method: "POST",
     signal: options.signal,
     body: formData
@@ -41,7 +48,7 @@ export async function requestAnnotatedImageEdit(request: AnnotatedImageEditReque
   const formData = appendEditFormFields(new FormData(), request);
   formData.append("annotation_image", request.annotationImage, "annotation.png");
 
-  const response = await apiFetch(`/api/results/${request.sourceResultId}/annotated-edit`, {
+  const response = await apiFetch(buildImageEditPath(`/api/results/${request.sourceResultId}/annotated-edit`, request.userId), {
     method: "POST",
     body: formData
   });

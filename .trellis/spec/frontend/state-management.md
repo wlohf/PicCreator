@@ -32,6 +32,7 @@ Conversation history should distinguish transient composer state from durable co
 - Transient content: unsent composer text, selected mode, active result selection, and attached floor-plan files that have not been submitted yet.
 - When image composer attachments are submitted, snapshot the files into the durable user message before clearing composer state. Do not store message attachments as composer blob preview URLs because clearing `floorPlanFiles` revokes those URLs; use independent data URLs or backend asset URLs for message display, then clear transient attachments with the silent clear path.
 - Source of truth: authenticated chat history must persist through `/api/chat-history`, scoped by the backend account session. Browser `localStorage` is only a cache and migration source for legacy sessions; it is not sufficient for deployable multi-user history.
+- When loading browser-local chat history for a signed-in account, only inspect that account's Attuno/legacy keys. Do not scan `default`, generic keys, or other account namespaces, and do not copy another account's recovered payload into the current account key.
 - If both backend and browser chat history are empty but server-side generated images exist, the frontend may reconstruct minimal historical generation sessions from image management so prior image work still has a conversation entry.
 - The left history list sorts by the last durable conversation update. Opening a historical session, editing an unsent draft, switching workspace/generation mode, or changing the selected result may save that session in place, but must not refresh `updatedAt` or move it to the top.
 
@@ -240,6 +241,7 @@ The main frontend identity model is the authenticated account session, not a tem
 - `apiFetch` should rely on `credentials: "include"` for the session cookie. Do not attach `X-Attuno-User-Token` or legacy `X-Render-Agent-User-Token` from the main frontend.
 - On logout, clear visible conversation state, results, learned profile, API config cache for the active view, and auth draft/error state before showing the login dialog.
 - Browser-local chat history can still be keyed by account `user_id`, but it must be treated as a cache/migration fallback and must not be visible when no account is authenticated.
+- Namespace switches (login, logout, account swap) must clear any in-memory "last saved history" snapshot before bootstrapping the next account. Otherwise a previous account's serialized history can suppress writes or leak into the next account flow.
 - Browser-local storage keys should use Attuno-branded primary keys such as `attuno-chat-history-v1`, `attuno-shortcut-phrases-v1`, `attuno-sidebar-width-v1`, `attuno-drawer-width-v1`, and `attuno-api-config-v1`.
 - During the rename transition, the frontend may read legacy `render-director-*` localStorage keys, migrate the value into the matching Attuno key, and then save future writes only to the Attuno key.
 
@@ -273,6 +275,7 @@ Logged-in result assets should use session-cookie-backed URLs.
 - For authenticated account users, normalize result image/download/annotation/floor-plan URLs without appending `user_id`.
 - The `user_id` query parameter is only for default or legacy compatibility paths where the browser cannot send a namespace header.
 - Keep result URL normalization in a small helper so list, note update, delete, clear, and render-message paths do not diverge.
+- Account-scoped API calls such as chat history load/save, result listing, generation, and image edit should carry the active `user_id` in the request URL when compatibility namespace routing is needed. Do not rely on JSON or multipart body `user_id` fields alone for namespace resolution.
 
 ### Image Management State
 

@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from backend.app.services.auth_service import get_current_or_default_user
+from backend.app.services.auth_service import get_current_or_namespace_user
 from backend.app.services.chat_history_store import load_chat_history, save_chat_history
 
 
@@ -14,11 +14,11 @@ class ChatHistoryPayload(BaseModel):
 
 
 @router.get("")
-def get_chat_history(user=Depends(get_current_or_default_user)):
+def get_chat_history(user=Depends(get_current_or_namespace_user)):
     return {"ok": True, "history": load_chat_history(user["user_id"])}
 
 
 @router.put("")
-def put_chat_history(payload: ChatHistoryPayload, user=Depends(get_current_or_default_user)):
+def put_chat_history(payload: ChatHistoryPayload, user=Depends(get_current_or_namespace_user)):
     history = save_chat_history(payload.model_dump(), user["user_id"])
     return {"ok": True, "history": history}

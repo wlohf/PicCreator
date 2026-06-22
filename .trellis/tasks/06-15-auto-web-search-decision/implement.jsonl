@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for chat/search service changes"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "Search failure diagnosis must return actionable error information"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "Backend quality and test expectations"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Web search metadata flows from service to route to chat model/front-end metadata"}

@@ -55,9 +55,16 @@ function httpError(response: Response, data?: { error?: string }): Error {
   return new Error(data?.error || `HTTP ${response.status}`);
 }
 
+function withUserNamespace(path: string, userId = "default") {
+  const normalized = String(userId || "").trim();
+  if (!normalized) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}user_id=${encodeURIComponent(normalized)}`;
+}
+
 export async function listResults(userId = "default"): Promise<RenderHistoryItem[]> {
   const includeNamespaceQuery = shouldIncludeResultNamespaceQuery(userId);
-  const response = await apiFetch(includeNamespaceQuery ? `/api/results?user_id=${encodeURIComponent(userId)}` : "/api/results");
+  const response = await apiFetch(withUserNamespace("/api/results", userId));
   const data = await parseApiJson<ResultsResponse>(response);
   if (!response.ok || !data.ok) {
     throw httpError(response, data as { error?: string });
@@ -66,7 +73,7 @@ export async function listResults(userId = "default"): Promise<RenderHistoryItem
 }
 
 export async function deleteResult(id: string, userId = "default"): Promise<void> {
-  const response = await apiFetch(userId === "default" ? `/api/results/${id}?user_id=${encodeURIComponent(userId)}` : `/api/results/${id}`, { method: "DELETE" });
+  const response = await apiFetch(withUserNamespace(`/api/results/${id}`, userId), { method: "DELETE" });
   if (!response.ok) {
     const data = await parseApiJson<{ error?: string }>(response).catch(() => ({}));
     throw httpError(response, data);
@@ -74,7 +81,7 @@ export async function deleteResult(id: string, userId = "default"): Promise<void
 }
 
 export async function clearResults(userId = "default"): Promise<void> {
-  const response = await apiFetch(userId === "default" ? `/api/results?user_id=${encodeURIComponent(userId)}` : "/api/results", { method: "DELETE" });
+  const response = await apiFetch(withUserNamespace("/api/results", userId), { method: "DELETE" });
   if (!response.ok) {
     const data = await parseApiJson<{ error?: string }>(response).catch(() => ({}));
     throw httpError(response, data);
@@ -82,7 +89,7 @@ export async function clearResults(userId = "default"): Promise<void> {
 }
 
 export async function saveResultNotes(id: string, notes: string, userId = "default"): Promise<RenderHistoryItem> {
-  const response = await apiFetch(userId === "default" ? `/api/results/${id}/notes?user_id=${encodeURIComponent(userId)}` : `/api/results/${id}/notes`, {
+  const response = await apiFetch(withUserNamespace(`/api/results/${id}/notes`, userId), {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ notes }),

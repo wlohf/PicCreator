@@ -10,6 +10,15 @@ export type ChatMemoryCandidate = {
   evaluation_standards?: string[];
 };
 
+export type ChatThinkingStatus = {
+  startedAt?: string;
+  stage?: string;
+  summary?: string;
+  toolLabel?: string;
+  toolDetail?: string;
+  state?: "running" | "done" | "error";
+};
+
 export type ApiProviderProfile = {
   id: string;
   providerName: string;
@@ -34,6 +43,7 @@ export type ApiConfig = {
   imageModel: string;
   activeImageProviderId: string;
   imageProviders: ApiProviderProfile[];
+  tavilyApiKeys: string;
   floorAnalysisSystemPrompt: string;
   promptGenSystem3dCn: string;
   fallbackModels: string;
@@ -69,6 +79,7 @@ export type ChatMessageVariant = {
   sourceResultId?: string;
   draftInstruction?: string;
   memoryCandidate?: ChatMemoryCandidate;
+  thinkingStatus?: ChatThinkingStatus;
   model?: string;
   createdAt?: string;
 };
@@ -89,6 +100,7 @@ export type ChatMessage = {
   sourceResultId?: string;
   draftInstruction?: string;
   memoryCandidate?: ChatMemoryCandidate;
+  thinkingStatus?: ChatThinkingStatus;
   feedback?: "like" | "dislike";
   variants?: ChatMessageVariant[];
   activeVariantIndex?: number;

@@ -227,6 +227,17 @@ def get_current_or_default_user(request: Request) -> dict[str, Any]:
     return {**user, "authenticated": True}
 
 
+def get_current_or_namespace_user(request: Request) -> dict[str, Any]:
+    try:
+        user = get_current_user(request)
+    except HTTPException as exc:
+        namespace_user = get_request_namespace_user(request)
+        if namespace_user is not None:
+            return namespace_user
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=str(exc.detail or "未登录")) from exc
+    return {**user, "authenticated": True}
+
+
 def resolve_config_user_id(user: dict[str, Any] | None) -> str:
     normalized = normalize_user_id((user or {}).get("user_id"))
     return normalized or DEFAULT_LOCAL_USER_ID

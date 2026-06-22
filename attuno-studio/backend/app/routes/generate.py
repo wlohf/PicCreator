@@ -3,7 +3,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from backend.app.schemas.generation import GenerateForm
-from backend.app.services.auth_service import get_current_or_default_user, resolve_config_user_id
+from backend.app.services.auth_service import get_current_or_namespace_user, resolve_config_user_id
 from backend.app.services.generation_service import generate_render, stream_generate_render
 from backend.app.services.preferences_store import load_style_profile
 from models.schemas import GenerationMode
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api", tags=["generation"])
 
 @router.post("/generate")
 async def generate(
-    user=Depends(get_current_or_default_user),
+    user=Depends(get_current_or_namespace_user),
     project_id: str = Form("default"),
     mode: str = Form(GenerationMode.STANDARD.value),
     requirement: str = Form(""),
@@ -66,7 +66,7 @@ async def generate(
 
 @router.post("/generate/stream")
 async def generate_stream(
-    user=Depends(get_current_or_default_user),
+    user=Depends(get_current_or_namespace_user),
     project_id: str = Form("default"),
     mode: str = Form(GenerationMode.STANDARD.value),
     requirement: str = Form(""),

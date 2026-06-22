@@ -13,6 +13,13 @@ export function isGenerationStreamAbortedError(error: unknown) {
   return error instanceof GenerationStreamAbortedError;
 }
 
+function buildGenerationPath(path: string, userId?: string) {
+  const normalized = String(userId || "").trim();
+  if (!normalized) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}user_id=${encodeURIComponent(normalized)}`;
+}
+
 function buildGenerationFormData({
   mode,
   projectId,
@@ -56,7 +63,7 @@ function buildGenerationFormData({
 
 
 export async function requestGeneration(request: GenerationRequest): Promise<GenerateResponse> {
-  const response = await apiFetch("/api/generate", {
+  const response = await apiFetch(buildGenerationPath("/api/generate", request.userId), {
     method: "POST",
     body: buildGenerationFormData(request)
   });
@@ -75,7 +82,7 @@ export async function requestGenerationStream(
 ): Promise<GenerateResponse> {
   const apiPath = typeof apiPathOrOptions === "string" ? apiPathOrOptions : apiPathOrOptions.apiPath || "/api/generate/stream";
   const abortSignal = typeof apiPathOrOptions === "string" ? signal : apiPathOrOptions.signal;
-  const response = await apiFetch(apiPath, {
+  const response = await apiFetch(buildGenerationPath(apiPath, request.userId), {
     method: "POST",
     signal: abortSignal,
     body: buildGenerationFormData(request)

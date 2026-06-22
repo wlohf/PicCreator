@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from backend.app.services.auth_service import get_current_or_default_user
+from backend.app.services.auth_service import get_current_or_namespace_user
 from backend.app.services.result_store import (
     clear_results,
     delete_result,
@@ -23,18 +23,18 @@ class ResultNotesPayload(BaseModel):
 
 
 @router.get("")
-def get_results(user=Depends(get_current_or_default_user)):
+def get_results(user=Depends(get_current_or_namespace_user)):
     return {"ok": True, "results": list_results(user_id=user["user_id"])}
 
 
 @router.delete("")
-def delete_all_results(user=Depends(get_current_or_default_user)):
+def delete_all_results(user=Depends(get_current_or_namespace_user)):
     deleted = clear_results(user["user_id"])
     return {"ok": True, "deleted": deleted}
 
 
 @router.delete("/{result_id}")
-def remove_result(result_id: str, user=Depends(get_current_or_default_user)):
+def remove_result(result_id: str, user=Depends(get_current_or_namespace_user)):
     item = get_result(result_id, user["user_id"])
     if item is None or not delete_result(result_id, user["user_id"]):
         raise HTTPException(status_code=404, detail="result not found")
@@ -49,7 +49,7 @@ def remove_result(result_id: str, user=Depends(get_current_or_default_user)):
 
 
 @router.patch("/{result_id}/notes")
-def save_result_notes(result_id: str, payload: ResultNotesPayload, user=Depends(get_current_or_default_user)):
+def save_result_notes(result_id: str, payload: ResultNotesPayload, user=Depends(get_current_or_namespace_user)):
     item = update_result_notes(result_id, payload.notes, user["user_id"])
     if item is None:
         raise HTTPException(status_code=404, detail="result not found")
@@ -64,7 +64,7 @@ def save_result_notes(result_id: str, payload: ResultNotesPayload, user=Depends(
 
 
 @router.get("/{result_id}/image")
-def get_result_image(result_id: str, user=Depends(get_current_or_default_user)):
+def get_result_image(result_id: str, user=Depends(get_current_or_namespace_user)):
     path = get_result_image_path(result_id, user["user_id"])
     if path is None:
         raise HTTPException(status_code=404, detail="image not found")
@@ -72,7 +72,7 @@ def get_result_image(result_id: str, user=Depends(get_current_or_default_user)):
 
 
 @router.get("/{result_id}/floor-plan")
-def get_result_floor_plan(result_id: str, user=Depends(get_current_or_default_user)):
+def get_result_floor_plan(result_id: str, user=Depends(get_current_or_namespace_user)):
     path = get_result_floor_plan_path(result_id, user["user_id"])
     if path is None:
         raise HTTPException(status_code=404, detail="floor plan not found")
@@ -80,7 +80,7 @@ def get_result_floor_plan(result_id: str, user=Depends(get_current_or_default_us
 
 
 @router.get("/{result_id}/annotation")
-def get_result_annotation(result_id: str, user=Depends(get_current_or_default_user)):
+def get_result_annotation(result_id: str, user=Depends(get_current_or_namespace_user)):
     path = get_result_annotation_path(result_id, user["user_id"])
     if path is None:
         raise HTTPException(status_code=404, detail="annotation not found")
@@ -88,7 +88,7 @@ def get_result_annotation(result_id: str, user=Depends(get_current_or_default_us
 
 
 @router.get("/{result_id}/download")
-def download_result_image(result_id: str, user=Depends(get_current_or_default_user)):
+def download_result_image(result_id: str, user=Depends(get_current_or_namespace_user)):
     item = get_result(result_id, user["user_id"])
     path = get_result_image_path(result_id, user["user_id"])
     if item is None or path is None:

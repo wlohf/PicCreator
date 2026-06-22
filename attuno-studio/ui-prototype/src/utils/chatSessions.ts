@@ -282,6 +282,7 @@ export function messageToVariant(message: ChatMessage): ChatMessageVariant {
     sourceResultId: message.sourceResultId,
     draftInstruction: message.draftInstruction,
     memoryCandidate: message.memoryCandidate,
+    thinkingStatus: message.thinkingStatus,
   };
 }
 
@@ -315,6 +316,7 @@ export function withActiveMessageVariant(message: ChatMessage): ChatMessage {
     sourceResultId: activeVariant.sourceResultId,
     draftInstruction: activeVariant.draftInstruction,
     memoryCandidate: activeVariant.memoryCandidate,
+    thinkingStatus: activeVariant.thinkingStatus,
   };
 }
 

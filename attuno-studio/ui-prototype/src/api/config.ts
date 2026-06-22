@@ -90,6 +90,7 @@ export async function saveConfig(apiConfig: ApiConfig): Promise<ConfigSaveRespon
   formData.append("img_model", apiConfig.imageModel);
   formData.append("image_providers_json", JSON.stringify(apiConfig.imageProviders));
   formData.append("active_image_provider_id", apiConfig.activeImageProviderId);
+  formData.append("tavily_api_keys", apiConfig.tavilyApiKeys);
   formData.append("floor_analysis_system_prompt", apiConfig.floorAnalysisSystemPrompt);
   formData.append("prompt_gen_system_3d_cn", apiConfig.promptGenSystem3dCn);
   formData.append("fallback_models_text", apiConfig.fallbackModels);
