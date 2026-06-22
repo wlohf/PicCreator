@@ -348,8 +348,12 @@ def test_verify_image_api_fails_when_supported_edit_probe_fails(monkeypatch):
 def test_ui_api_format_preserves_images_api_options():
     assert app_runtime._ui_api_format("openai_image") == "openai_image"
     assert app_runtime._ui_api_format("custom_openai_image") == "custom_openai_image"
-    assert app_runtime._ui_api_format("openai_chat") == "openai"
-    assert app_runtime._ui_api_format("custom_openai_chat") == "custom"
+    assert app_runtime._ui_api_format("openai_chat") == "openai_chat"
+    assert app_runtime._ui_api_format("custom_openai_chat") == "custom_openai_chat"
+    assert app_runtime._ui_api_format("openai") == "openai_chat"
+    assert app_runtime._ui_api_format("custom") == "custom_openai_chat"
+    assert app_runtime._ui_api_format("openai_responses") == "openai_responses"
+    assert app_runtime._ui_api_format("messages") == "anthropic"
 
 
 def test_ui_api_format_choices_expose_openai_image_options():
@@ -357,6 +361,7 @@ def test_ui_api_format_choices_expose_openai_image_options():
 
     assert choices["OpenAI Image"] == "openai_image"
     assert choices["Custom OpenAI Image"] == "custom_openai_image"
+    assert choices["Anthropic Messages"] == "anthropic"
 
 
 def test_get_config_inherits_default_runtime_config_without_keys_for_fresh_token_namespace(tmp_path, monkeypatch):
@@ -456,7 +461,7 @@ def test_load_model_config_for_ui_wraps_legacy_sections_as_provider_profiles(tmp
     assert config["analysisProviders"] == [{
         "id": "analysis-default",
         "providerName": "Default Analysis",
-        "apiFormat": "openai",
+        "apiFormat": "openai_chat",
         "baseUrl": "https://analysis.example/v1",
         "apiKey": "analysis-key",
         "model": "analysis-model",
@@ -506,7 +511,7 @@ def test_save_model_config_to_files_persists_multiple_provider_profiles(tmp_path
         {
             "id": "analysis-a",
             "providerName": "Analysis A",
-            "apiFormat": "openai",
+            "apiFormat": "openai_chat",
             "baseUrl": "https://analysis-a.example/v1",
             "apiKey": "analysis-a-key",
             "model": "analysis-a-model",

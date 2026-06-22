@@ -6,6 +6,7 @@ import pytest
 
 from adapters.google import OpenAIImageAdapter
 from adapters.openai_compat import OpenAICompatAdapter
+import adapters
 from config import AdapterConfig, adapter_supports_image_inputs
 from models.schemas import PromptSet
 
@@ -43,6 +44,27 @@ class RecordingImages:
                 )
             ]
         )
+
+
+def test_anthropic_messages_alias_builds_anthropic_adapter(monkeypatch):
+    captured = {}
+
+    class FakeAnthropicAdapter:
+        def __init__(self, cfg):
+            captured["cfg"] = cfg
+
+    monkeypatch.setattr(adapters, "AnthropicAdapter", FakeAnthropicAdapter)
+    cfg = AdapterConfig(
+        provider="openai_chat",
+        api_key="anthropic-key",
+        model="claude-test",
+        api_format="messages",
+    )
+
+    adapter = adapters.build_adapter(cfg, "llm")
+
+    assert isinstance(adapter, FakeAnthropicAdapter)
+    assert captured["cfg"].api_format == "messages"
 
 
 @pytest.mark.asyncio

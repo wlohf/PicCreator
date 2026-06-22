@@ -58,8 +58,10 @@ def _ensure_min_timeout(cfg: AdapterConfig, minimum_seconds: int) -> AdapterConf
 
 API_FORMAT_HELP = (
     "API格式是请求/响应协议，不是供应商名称。当前支持："
-    "OpenAI、OpenAI Image、OpenAI-Response、Gemini、Anthropic、Azure OpenAI、Ollama、Custom、Custom OpenAI Image。"
-    "OpenAI / Custom 走聊天兼容接口；OpenAI Image / Custom OpenAI Image 走 Images API，gpt-image-2 可验证参考图输入。"
+    "OpenAI Chat Completions、OpenAI Image、OpenAI Responses、Gemini、Anthropic Messages、Azure OpenAI、Ollama、"
+    "Custom OpenAI Chat Completions、Custom OpenAI Image。"
+    "OpenAI Chat Completions / Custom OpenAI Chat Completions 走 /chat/completions；"
+    "OpenAI Responses 走 /responses；OpenAI Image / Custom OpenAI Image 走 Images API，gpt-image-2 可验证参考图输入。"
 )
 UI_API_FORMAT_CHOICES = (("使用 config.json", ""), *COMMON_API_FORMAT_CHOICES)
 
@@ -504,7 +506,7 @@ def _validate_adapter_config(name: str, cfg: AdapterConfig, *, allow_env_fallbac
         label = API_FORMAT_LABELS.get(api_format, api_format)
         raise RuntimeError(
             f"{name} 暂未实现 {label} 原生适配。"
-            "当前可用：OpenAI、OpenAI-Response、Gemini、Anthropic、Azure OpenAI、Ollama、Custom。"
+            "当前可用：OpenAI Chat Completions、OpenAI Responses、Gemini、Anthropic Messages、Azure OpenAI、Ollama、Custom OpenAI Chat Completions。"
         )
     if not (cfg.model or "").strip():
         raise RuntimeError(f"{name} 配置缺少 model")
@@ -921,12 +923,7 @@ def load_model_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> di
 
 
 def _ui_api_format(api_format: str) -> str:
-    normalized = normalize_api_format(api_format)
-    if normalized == "openai_chat":
-        return "openai"
-    if normalized == "custom_openai_chat":
-        return "custom"
-    return normalized
+    return normalize_api_format(api_format)
 
 
 def _build_runtime_config(
@@ -1139,7 +1136,7 @@ def verify_analysis_api(
             )
             ok_text = (llm_resp or "").strip()[:80]
             if not ok_text:
-                raise RuntimeError("接口返回为空，请检查 API 格式是否应选择 OpenAI-Response，或检查模型是否支持 chat/completions。")
+                raise RuntimeError("接口返回为空，请检查 API 格式是否应选择 OpenAI Responses (/responses)，或检查模型是否支持 Chat Completions (/chat/completions)。")
         except Exception as exc:
             raise _verification_error("分析文本调用失败", analysis_cfg, exc) from exc
 

@@ -17,7 +17,7 @@ class AdapterConfig:
     base_url: Optional[str] = None
     timeout: int = 60
     provider_name: str = "Custom"
-    api_format: str = "openai_chat"  # openai_chat | openai_image | anthropic
+    api_format: str = "openai_chat"  # openai_chat | openai_responses | openai_image | anthropic
     supports_image_inputs: Optional[bool] = None
     supports_negative_prompt: Optional[bool] = None
 
@@ -37,28 +37,28 @@ SUPPORTED_API_FORMATS = (
 )
 
 API_FORMAT_LABELS = {
-    "openai_chat": "OpenAI",
+    "openai_chat": "OpenAI Chat Completions",
     "openai_image": "OpenAI Image",
-    "openai_responses": "OpenAI-Response",
+    "openai_responses": "OpenAI Responses",
     "gemini": "Gemini",
-    "anthropic": "Anthropic",
+    "anthropic": "Anthropic Messages",
     "azure_openai": "Azure OpenAI",
     "new_api": "New API",
     "cherryin": "CherryIN",
     "ollama": "Ollama",
-    "custom_openai_chat": "Custom OpenAI",
+    "custom_openai_chat": "Custom OpenAI Chat Completions",
     "custom_openai_image": "Custom OpenAI Image",
 }
 
 COMMON_API_FORMAT_CHOICES = (
-    ("OpenAI", "openai_chat"),
+    ("OpenAI Chat Completions", "openai_chat"),
     ("OpenAI Image", "openai_image"),
-    ("OpenAI-Response", "openai_responses"),
+    ("OpenAI Responses", "openai_responses"),
     ("Gemini", "gemini"),
-    ("Anthropic", "anthropic"),
+    ("Anthropic Messages", "anthropic"),
     ("Azure OpenAI", "azure_openai"),
     ("Ollama", "ollama"),
-    ("Custom", "custom_openai_chat"),
+    ("Custom OpenAI Chat Completions", "custom_openai_chat"),
     ("Custom OpenAI Image", "custom_openai_image"),
 )
 
@@ -196,6 +196,10 @@ def normalize_api_format(api_format: str) -> str:
         "google": "gemini",
         "imagen": "gemini",
         "google_gemini": "gemini",
+        "message": "anthropic",
+        "messages": "anthropic",
+        "anthropic message": "anthropic",
+        "anthropic messages": "anthropic",
         "anthropic_messages": "anthropic",
         "claude": "anthropic",
         "azure": "azure_openai",
@@ -205,7 +209,13 @@ def normalize_api_format(api_format: str) -> str:
         "cherry_in": "custom_openai_chat",
         "cherry-in": "custom_openai_chat",
         "custom": "custom_openai_chat",
+        "custom openai": "custom_openai_chat",
+        "custom openai-compatible chat": "custom_openai_chat",
+        "custom openai chat": "custom_openai_chat",
         "custom_chat": "custom_openai_chat",
+        "openai chat": "openai_chat",
+        "openai chat completions": "openai_chat",
+        "openai compatible chat": "openai_chat",
         "custom_image": "custom_openai_image",
     }
     return aliases.get(fmt, fmt)

@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for config and adapter verification"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Provider profile and chat routing contracts to verify"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for setup UI verification"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Frontend type/build expectations for API format values"}

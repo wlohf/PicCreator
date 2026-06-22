@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for config and adapter changes"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Contracts for provider profiles, daily chat routing, and API config values"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for API setup UI changes"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Frontend type alignment expectations for cross-layer values"}

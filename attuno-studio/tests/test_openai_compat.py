@@ -11,6 +11,54 @@ def _make_adapter():
     return adapter
 
 
+@pytest.mark.asyncio
+async def test_chat_routes_openai_chat_to_chat_completions_endpoint():
+    adapter = _make_adapter()
+    adapter.api_format = "openai_chat"
+    calls = []
+
+    async def fake_post(endpoint: str, payload: dict) -> dict:
+        calls.append((endpoint, payload))
+        return {"choices": [{"message": {"content": "chat-ok"}}]}
+
+    async def fail_responses_chat(*_args, **_kwargs):
+        raise AssertionError("openai_chat must not use /responses")
+
+    adapter._post = fake_post
+    adapter._responses_chat = fail_responses_chat
+
+    result = await adapter.chat([{"role": "user", "content": "hi"}], max_tokens=8)
+
+    assert result == "chat-ok"
+    assert calls == [(
+        "/chat/completions",
+        {"model": "gpt-test", "messages": [{"role": "user", "content": "hi"}], "max_tokens": 8},
+    )]
+
+
+@pytest.mark.asyncio
+async def test_chat_routes_openai_responses_to_responses_endpoint():
+    adapter = _make_adapter()
+    calls = []
+
+    async def fake_post_text(endpoint: str, payload: dict) -> str:
+        calls.append((endpoint, payload))
+        return '{"output":[{"content":[{"type":"output_text","text":"responses-ok"}]}]}'
+
+    async def fail_chat_completions(*_args, **_kwargs):
+        raise AssertionError("openai_responses must not use /chat/completions")
+
+    adapter._post_text = fake_post_text
+    adapter._post = fail_chat_completions
+
+    result = await adapter.chat([{"role": "user", "content": "hi"}], max_tokens=8)
+
+    assert result == "responses-ok"
+    assert calls[0][0] == "/responses"
+    assert calls[0][1]["max_output_tokens"] == 8
+    assert calls[0][1]["input"] == [{"role": "user", "content": "hi"}]
+
+
 def test_extract_responses_text_from_top_level_json():
     raw = '{"output":[{"content":[{"type":"output_text","text":"hello"}]}]}'
     assert OpenAICompatAdapter._extract_responses_text(raw) == "hello"

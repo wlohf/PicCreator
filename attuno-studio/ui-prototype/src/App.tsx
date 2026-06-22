@@ -529,9 +529,43 @@ function storeAnalysisModelOptions(userId: string, models: string[]) {
 }
 
 function apiFormatDisplayName(value: string) {
-  const normalized = String(value || "").trim();
+  const normalized = normalizeApiFormatValue(value);
   if (!normalized) return "";
   return apiFormatOptions.find((option) => option.value === normalized)?.label || normalized;
+}
+
+function normalizeApiFormatValue(value: string) {
+  const normalized = String(value || "").trim();
+  const aliases: Record<string, string> = {
+    openai: "openai_chat",
+    openai_compat: "openai_chat",
+    "openai-compatible": "openai_chat",
+    "openai-compatible-chat": "openai_chat",
+    "openai compatible chat": "openai_chat",
+    "openai chat": "openai_chat",
+    "openai chat completions": "openai_chat",
+    chat_completions: "openai_chat",
+    "chat/completions": "openai_chat",
+    custom: "custom_openai_chat",
+    custom_chat: "custom_openai_chat",
+    "custom openai": "custom_openai_chat",
+    "custom openai-compatible chat": "custom_openai_chat",
+    "custom openai chat": "custom_openai_chat",
+    "custom openai chat completions": "custom_openai_chat",
+    newapi: "custom_openai_chat",
+    "new-api": "custom_openai_chat",
+    cherry_in: "custom_openai_chat",
+    "cherry-in": "custom_openai_chat",
+    responses: "openai_responses",
+    "openai-response": "openai_responses",
+    "openai responses": "openai_responses",
+    message: "anthropic",
+    messages: "anthropic",
+    "anthropic message": "anthropic",
+    "anthropic messages": "anthropic",
+    anthropic_messages: "anthropic",
+  };
+  return aliases[normalized.toLowerCase()] || normalized;
 }
 
 function createProviderId(prefix: "analysis" | "image") {
@@ -546,7 +580,7 @@ function providerProfileFromFlatConfig(config: Partial<ApiConfig>, role: "analys
     return {
       id: id || createProviderId("analysis"),
       providerName: String(config.analysisProviderName ?? ""),
-      apiFormat: String(config.analysisApiFormat ?? ""),
+      apiFormat: normalizeApiFormatValue(String(config.analysisApiFormat ?? "")),
       baseUrl: String(config.analysisBaseUrl ?? ""),
       apiKey: String(config.analysisApiKey ?? ""),
       model: String(config.analysisModel ?? "")
@@ -555,7 +589,7 @@ function providerProfileFromFlatConfig(config: Partial<ApiConfig>, role: "analys
   return {
     id: id || createProviderId("image"),
     providerName: String(config.imageProviderName ?? ""),
-    apiFormat: String(config.imageApiFormat ?? ""),
+    apiFormat: normalizeApiFormatValue(String(config.imageApiFormat ?? "")),
     baseUrl: String(config.imageBaseUrl ?? ""),
     apiKey: String(config.imageApiKey ?? ""),
     model: String(config.imageModel ?? "")
@@ -567,7 +601,7 @@ function normalizeProviderProfile(value: unknown, role: "analysis" | "image", fa
   const candidate = {
     id: String(saved.id || fallback.id || createProviderId(role)),
     providerName: String(saved.providerName ?? fallback.providerName),
-    apiFormat: String(saved.apiFormat ?? fallback.apiFormat),
+    apiFormat: normalizeApiFormatValue(String(saved.apiFormat ?? fallback.apiFormat)),
     baseUrl: String(saved.baseUrl ?? fallback.baseUrl),
     apiKey: String(saved.apiKey ?? fallback.apiKey),
     model: String(saved.model ?? fallback.model)
@@ -651,12 +685,12 @@ function normalizeApiConfig(value: unknown): ApiConfig {
   const flatConfig: ApiConfig = {
     ...defaultApiConfig,
     analysisProviderName: String(saved.analysisProviderName ?? defaultApiConfig.analysisProviderName),
-    analysisApiFormat: String(saved.analysisApiFormat ?? defaultApiConfig.analysisApiFormat),
+    analysisApiFormat: normalizeApiFormatValue(String(saved.analysisApiFormat ?? defaultApiConfig.analysisApiFormat)),
     analysisBaseUrl: String(saved.analysisBaseUrl ?? defaultApiConfig.analysisBaseUrl),
     analysisApiKey: String(saved.analysisApiKey ?? defaultApiConfig.analysisApiKey),
     analysisModel: String(saved.analysisModel ?? defaultApiConfig.analysisModel),
     imageProviderName: String(saved.imageProviderName ?? defaultApiConfig.imageProviderName),
-    imageApiFormat: String(saved.imageApiFormat ?? defaultApiConfig.imageApiFormat),
+    imageApiFormat: normalizeApiFormatValue(String(saved.imageApiFormat ?? defaultApiConfig.imageApiFormat)),
     imageBaseUrl: String(saved.imageBaseUrl ?? defaultApiConfig.imageBaseUrl),
     imageApiKey: String(saved.imageApiKey ?? defaultApiConfig.imageApiKey),
     imageModel: String(saved.imageModel ?? defaultApiConfig.imageModel),
@@ -4290,7 +4324,7 @@ function App() {
       const newProvider: ApiProviderProfile = {
         id: createProviderId(role),
         providerName: locale === "zh" ? "新供应商" : "New provider",
-        apiFormat: role === "image" ? "openai_image" : "openai",
+        apiFormat: role === "image" ? "openai_image" : "openai_chat",
         baseUrl: defaultApiBaseUrl,
         apiKey: "",
         model: role === "image" ? modelOptions[0] : ""

@@ -701,6 +701,7 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
   - `image_providers_json`
   - `active_image_provider_id`
 - Runtime config JSON stores profiles under adapter sections as `providers` plus `active_provider_id`.
+- `apiFormat` values exposed by `GET /api/config`, frontend provider profiles, and saved canonical config should use normalized backend values such as `openai_chat`, `openai_responses`, `anthropic`, `custom_openai_chat`, `openai_image`, and `custom_openai_image`. Short aliases such as `openai`, `custom`, or `messages` are accepted only as legacy/user-facing input aliases.
 
 ### 3. Contracts
 - The selected provider profile is mirrored into the existing flat fields (`analysisProviderName`, `analysisBaseUrl`, `imageApiKey`, etc.) before chat/generation/image-edit requests are sent.
@@ -709,6 +710,7 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
 - `config.py` must apply `active_provider_id` before building `AdapterConfig`, otherwise runtime calls ignore saved profile switching.
 - Legacy config files with only flat adapter sections must load as a one-item provider profile list.
 - UI-load conversion must preserve each stored provider `id`. Fallback ids are only for profiles missing an id; rewriting ids breaks `active_provider_id` matching and makes reload select the wrong provider.
+- UI-load conversion must preserve the endpoint-family choice. `openai_chat` / `custom_openai_chat` mean `/chat/completions`; `openai_responses` means `/responses`; `anthropic` means Anthropic Messages (`messages.create`); image formats mean Images API. Do not collapse canonical values into generic aliases when returning `analysisApiFormat`, `imageApiFormat`, or nested provider `apiFormat`.
 - Non-default users must not inherit default workspace keys. Clear default/base flat `api_key` and nested provider keys before merging account overrides, so a current user's own non-active provider keys are preserved while inherited workspace keys stay hidden.
 
 ### 4. Validation & Error Matrix
@@ -718,20 +720,25 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
 - Duplicate provider ids in save payload -> keep the first occurrence and ignore later duplicates.
 - Non-dict provider entries -> ignore them instead of crashing config load.
 - Active provider has an empty key but another current-user provider has a key -> preserve the non-active provider key in `GET /api/config`.
+- Legacy alias input such as `openai`, `custom`, `chat/completions`, `message`, or `messages` -> normalize before storage/load and return the canonical value (`openai_chat`, `custom_openai_chat`, or `anthropic`) from `GET /api/config`.
 
 ### 5. Good / Base / Bad Cases
 - Good: user saves two analysis providers and two image providers, selects provider B, reloads, and all calls use B without retyping key/Base URL/model.
 - Good: user saves provider A with a key and provider B without a key, selects provider B, reloads, and provider A still keeps its key for later switching.
+- Good: user selects `openai_chat`, reloads settings, and sees `analysisApiFormat=openai_chat`; the adapter calls `/chat/completions`. User selects `openai_responses`, reloads settings, and sees `analysisApiFormat=openai_responses`; the adapter calls `/responses`. User selects `messages`, reloads settings, and sees `analysisApiFormat=anthropic`; the adapter calls Anthropic Messages.
 - Good: old `config.json` without `providers` still appears as one editable provider profile.
 - Base: user only changes the current provider fields; flat fields and active profile remain synchronized.
 - Bad: storing profiles only in frontend localStorage; the backend then loses them on another browser or after reload.
 - Bad: changing the profile selector without syncing flat fields; generation/chat requests would still use the previous provider.
 - Bad: applying nested default-user provider keys to a logged-in user namespace that has not saved its own key.
+- Bad: returning `openai` or `custom` from `GET /api/config`, because the UI can no longer tell whether the selected endpoint family is Chat Completions or Responses.
 
 ### 6. Tests Required
 - Backend unit test for legacy section -> one UI provider profile.
 - Backend unit test for save round-trip with multiple provider profiles and active id, asserting stored ids are returned unchanged.
 - Backend unit test proving current-user non-active provider keys survive config load even when the active provider key is empty.
+- Backend test asserting legacy alias input normalizes to canonical `apiFormat` values on config load.
+- Adapter tests asserting `openai_chat` calls `/chat/completions`, `openai_responses` calls `/responses`, and `messages` / `anthropic` builds the Anthropic Messages adapter.
 - Backend config test proving `active_provider_id` affects `build_config_from_dict`.
 - Frontend build/typecheck covering `ApiProviderProfile` and `ApiConfig` additions.
 - Frontend/API client test or static assertion that save sends both profile JSON and active ids.
@@ -764,4 +771,19 @@ api_format = d.get("api_format")
 ```python
 d = active_provider_overlay(d)
 api_format = d.get("api_format")
+```
+
+#### Wrong
+
+```python
+# This hides the endpoint family from the UI and makes users think a Responses profile is chat-compatible.
+def _ui_api_format(api_format: str) -> str:
+    return "openai" if normalize_api_format(api_format) == "openai_chat" else normalize_api_format(api_format)
+```
+
+#### Correct
+
+```python
+def _ui_api_format(api_format: str) -> str:
+    return normalize_api_format(api_format)
 ```

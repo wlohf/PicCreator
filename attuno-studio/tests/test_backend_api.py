@@ -150,7 +150,7 @@ def test_chat_endpoint_routes_logo_name_brainstorm_to_daily_chat_model(tmp_path,
             "context": {"workspace_mode": "chat"},
             "api_config": {
                 "analysisProviderName": "Configured Chat",
-                "analysisApiFormat": "openai",
+                "analysisApiFormat": "openai_chat",
                 "analysisBaseUrl": "https://chat.example/v1",
                 "analysisApiKey": "chat-key",
                 "analysisModel": "chat-model",
@@ -197,7 +197,7 @@ def test_daily_chat_endpoint_uses_configured_analysis_model(tmp_path, monkeypatc
             "reasoning_effort": "low",
             "api_config": {
                 "analysisProviderName": "Configured Chat",
-                "analysisApiFormat": "openai",
+                "analysisApiFormat": "openai_chat",
                 "analysisBaseUrl": "https://chat.example/v1",
                 "analysisApiKey": "chat-key",
                 "analysisModel": "chat-model",
@@ -650,7 +650,7 @@ def test_daily_chat_session_identity_wins_over_namespace_header_for_config(tmp_p
         "/api/config/save",
         data={
             "analysis_provider_name": "Session Chat",
-            "analysis_api_format": "openai",
+            "analysis_api_format": "openai_chat",
             "analysis_base_url": "https://session-chat.example/v1",
             "analysis_api_key": "session-chat-key",
             "analysis_model": "session-chat-model",
@@ -954,7 +954,7 @@ def test_image_api_format_save_and_load_preserves_openai_image_option(tmp_path, 
     assert load_response.status_code == 200
     payload = load_response.json()
     assert payload["ok"] is True
-    assert payload["config"]["analysisApiFormat"] == "openai"
+    assert payload["config"]["analysisApiFormat"] == "openai_chat"
     assert payload["config"]["imageApiFormat"] == "openai_image"
 
 
@@ -985,8 +985,38 @@ def test_image_api_format_save_and_load_preserves_custom_openai_image_option(tmp
     assert load_response.status_code == 200
     payload = load_response.json()
     assert payload["ok"] is True
-    assert payload["config"]["analysisApiFormat"] == "custom"
+    assert payload["config"]["analysisApiFormat"] == "custom_openai_chat"
     assert payload["config"]["imageApiFormat"] == "custom_openai_image"
+
+
+def test_analysis_api_format_save_and_load_accepts_messages_alias(tmp_path, monkeypatch):
+    _patch_runtime_files(monkeypatch, tmp_path)
+    monkeypatch.chdir(tmp_path)
+    client = _auth_client("messages-format-user")
+
+    response = client.post(
+        "/api/config/save",
+        data={
+            "analysis_provider_name": "Anthropic",
+            "analysis_api_format": "messages",
+            "analysis_base_url": "https://api.anthropic.com/v1",
+            "analysis_api_key": "analysis-key",
+            "analysis_model": "claude-test",
+            "img_provider_name": "Image",
+            "img_api_format": "openai_image",
+            "img_base_url": "https://image.example/v1",
+            "img_api_key": "image-key",
+            "img_model": "gpt-image-2",
+        },
+    )
+    load_response = client.get("/api/config")
+
+    assert response.status_code == 200
+    assert response.json()["ok"] is True
+    assert load_response.status_code == 200
+    payload = load_response.json()
+    assert payload["ok"] is True
+    assert payload["config"]["analysisApiFormat"] == "anthropic"
 
 
 def test_config_save_and_load_preserves_multiple_provider_profiles(tmp_path, monkeypatch):
@@ -1000,7 +1030,7 @@ def test_config_save_and_load_preserves_multiple_provider_profiles(tmp_path, mon
         {
             "id": "analysis-primary",
             "providerName": "Analysis Primary",
-            "apiFormat": "openai",
+            "apiFormat": "openai_chat",
             "baseUrl": "https://analysis-primary.example/v1",
             "apiKey": "analysis-primary-key",
             "model": "analysis-primary-model",
@@ -1008,7 +1038,7 @@ def test_config_save_and_load_preserves_multiple_provider_profiles(tmp_path, mon
         {
             "id": "analysis-backup",
             "providerName": "Analysis Backup",
-            "apiFormat": "custom",
+            "apiFormat": "custom_openai_chat",
             "baseUrl": "https://analysis-backup.example/v1",
             "apiKey": "analysis-backup-key",
             "model": "analysis-backup-model",
@@ -1037,7 +1067,7 @@ def test_config_save_and_load_preserves_multiple_provider_profiles(tmp_path, mon
         "/api/config/save",
         data={
             "analysis_provider_name": "Analysis Backup",
-            "analysis_api_format": "custom",
+            "analysis_api_format": "custom_openai_chat",
             "analysis_base_url": "https://analysis-backup.example/v1",
             "analysis_api_key": "analysis-backup-key",
             "analysis_model": "analysis-backup-model",
@@ -1074,7 +1104,9 @@ def test_config_save_and_load_preserves_multiple_provider_profiles(tmp_path, mon
     assert [item["id"] for item in config["analysisProviders"]] == ["analysis-primary", "analysis-backup"]
     assert [item["id"] for item in config["imageProviders"]] == ["image-primary", "image-backup"]
     assert config["analysisProviders"][0]["providerName"] == "Analysis Primary"
+    assert config["analysisProviders"][0]["apiFormat"] == "openai_chat"
     assert config["analysisProviderName"] == "Analysis Backup"
+    assert config["analysisApiFormat"] == "custom_openai_chat"
     assert config["imageProviders"][0]["providerName"] == "Image Primary"
     assert config["imageProviderName"] == "Image Backup"
 
@@ -1088,7 +1120,7 @@ def test_config_load_preserves_non_active_provider_keys_for_current_user(tmp_pat
         {
             "id": "analysis-saved",
             "providerName": "Analysis Saved",
-            "apiFormat": "openai",
+            "apiFormat": "openai_chat",
             "baseUrl": "https://analysis-saved.example/v1",
             "apiKey": "analysis-saved-key",
             "model": "analysis-saved-model",
@@ -1096,7 +1128,7 @@ def test_config_load_preserves_non_active_provider_keys_for_current_user(tmp_pat
         {
             "id": "analysis-empty",
             "providerName": "Analysis Empty",
-            "apiFormat": "custom",
+            "apiFormat": "custom_openai_chat",
             "baseUrl": "https://analysis-empty.example/v1",
             "apiKey": "",
             "model": "analysis-empty-model",
@@ -1125,7 +1157,7 @@ def test_config_load_preserves_non_active_provider_keys_for_current_user(tmp_pat
         "/api/config/save",
         data={
             "analysis_provider_name": "Analysis Empty",
-            "analysis_api_format": "custom",
+            "analysis_api_format": "custom_openai_chat",
             "analysis_base_url": "https://analysis-empty.example/v1",
             "analysis_api_key": "",
             "analysis_model": "analysis-empty-model",
@@ -1148,6 +1180,8 @@ def test_config_load_preserves_non_active_provider_keys_for_current_user(tmp_pat
     config = load_response.json()["config"]
     assert config["activeAnalysisProviderId"] == "analysis-empty"
     assert config["activeImageProviderId"] == "image-empty"
+    assert config["analysisProviders"][0]["apiFormat"] == "openai_chat"
+    assert config["analysisProviders"][1]["apiFormat"] == "custom_openai_chat"
     assert config["analysisProviders"][0]["apiKey"] == "analysis-saved-key"
     assert config["analysisProviders"][1]["apiKey"] == ""
     assert config["imageProviders"][0]["apiKey"] == "image-saved-key"
