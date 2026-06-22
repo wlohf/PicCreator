@@ -50,7 +50,7 @@ install_system_packages() {
   fi
   log "Installing Ubuntu packages needed by Attuno..."
   as_root apt-get update
-  as_root apt-get install -y git python3 python3-venv python3-pip nginx curl ca-certificates
+  as_root apt-get install -y git python3 python3-venv python3-pip nginx curl ca-certificates postgresql postgresql-client libpq-dev
 }
 
 check_node() {
@@ -129,6 +129,13 @@ Next steps on Ubuntu:
   1. Edit server secrets/config:
      $APP_DIR/.env
      $APP_DIR/config.json
+
+     Production requires PostgreSQL:
+     sudo -u postgres createuser attuno --pwprompt
+     sudo -u postgres createdb -O attuno attuno
+     Set DATABASE_URL in the systemd service, for example:
+     Environment=ATTUNO_ENV=production
+     Environment=DATABASE_URL=postgresql://attuno:REPLACE_ME@127.0.0.1:5432/attuno
 
   2. Install and start the API service:
      sudo cp $REPO_ROOT/deploy/attuno-api.service.example /etc/systemd/system/attuno-api.service

@@ -1,0 +1,11 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for routes, services, DB, deployment, and error contracts"}
+{"file": ".trellis/spec/backend/database-guidelines.md", "reason": "PostgreSQL storage conventions and migration guidance for this task"}
+{"file": ".trellis/spec/backend/deployment-operations.md", "reason": "Deployment and update-script contracts for web update flow and production DB setup"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "API diagnostics, search error handling, and safe failure reporting"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Account namespace and runtime data contracts touched by storage migration"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for UI/state/type updates"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Chat metadata, account state, and durable server-state contracts"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Type updates for web_search metadata and update status models"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Settings/update UI component conventions"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Feature spans database, API, frontend, deployment, and auth"}

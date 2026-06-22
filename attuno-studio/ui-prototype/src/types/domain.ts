@@ -19,6 +19,57 @@ export type ChatThinkingStatus = {
   state?: "running" | "done" | "error";
 };
 
+export type WebSearchResult = {
+  title: string;
+  url: string;
+  snippet?: string;
+  published_date?: string;
+  score?: number;
+};
+
+export type WebSearchDiagnostic = {
+  provider?: string;
+  ok?: boolean;
+  status?: string;
+  message?: string;
+  attempts?: number;
+  key_count?: number | null;
+};
+
+export type WebSearchMetadata = {
+  query: string;
+  results: WebSearchResult[];
+  ok: boolean;
+  provider?: string;
+  answer?: string;
+  search_profile?: string;
+  search_parameters?: Record<string, unknown>;
+  diagnostics?: WebSearchDiagnostic[];
+  decision?: {
+    source?: string;
+    reason?: string;
+  };
+};
+
+export type SystemUpdateStatus = {
+  ok: boolean;
+  enabled: boolean;
+  repo_root?: string;
+  branch?: string;
+  remote?: string;
+  remote_branch?: string;
+  current_commit?: string;
+  remote_commit?: string;
+  has_update?: boolean;
+  fast_forward?: boolean;
+  dirty?: boolean;
+  checked_at?: string;
+  error?: string;
+  applied?: boolean;
+  message?: string;
+  log?: string;
+};
+
 export type ApiProviderProfile = {
   id: string;
   providerName: string;
@@ -80,6 +131,7 @@ export type ChatMessageVariant = {
   draftInstruction?: string;
   memoryCandidate?: ChatMemoryCandidate;
   thinkingStatus?: ChatThinkingStatus;
+  webSearch?: WebSearchMetadata;
   model?: string;
   createdAt?: string;
 };
@@ -101,6 +153,7 @@ export type ChatMessage = {
   draftInstruction?: string;
   memoryCandidate?: ChatMemoryCandidate;
   thinkingStatus?: ChatThinkingStatus;
+  webSearch?: WebSearchMetadata;
   feedback?: "like" | "dislike";
   variants?: ChatMessageVariant[];
   activeVariantIndex?: number;

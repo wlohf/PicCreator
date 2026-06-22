@@ -5,6 +5,12 @@ from urllib.parse import unquote, urlencode, urlparse, parse_qs
 import httpx
 
 from app_runtime import DEFAULT_CONFIG_USER_ID, claim_tavily_api_keys
+from backend.app.services.search_state_store import (
+    order_tavily_keys,
+    record_search_event,
+    record_tavily_key_failure,
+    record_tavily_key_success,
+)
 
 
 SEARCH_INTENT_MARKERS = (
@@ -312,10 +318,21 @@ def _ordered_tavily_keys(user_id: str, attempt_count: int | None = None) -> list
     keys, start_index = claim_tavily_api_keys(user_id)
     if not keys:
         return []
-    ordered = keys[start_index:] + keys[:start_index]
+    ordered = order_tavily_keys(user_id, keys, start_index)
     if attempt_count is None:
         return ordered
     return ordered[:max(0, attempt_count)]
+
+
+def _ordered_tavily_key_attempts(user_id: str) -> tuple[list[str], list[tuple[str, int]]]:
+    keys, start_index = claim_tavily_api_keys(user_id)
+    if not keys:
+        return [], []
+    ordered = order_tavily_keys(user_id, keys, start_index)
+    first_indexes: dict[str, int] = {}
+    for index, key in enumerate(keys):
+        first_indexes.setdefault(key, index)
+    return keys, [(key, first_indexes.get(key, 0)) for key in ordered]
 
 
 def _normalize_tavily_results(data: Any, limit: int) -> list[dict[str, Any]]:
@@ -401,9 +418,9 @@ async def search_tavily_detailed(query: str, limit: int = 5, user_id: str = DEFA
     if not normalized_query:
         detail.update({"status": "query_empty", "message": "搜索词为空或过短，需要结合上下文生成更明确的查询。"})
         return detail
-    keys = _ordered_tavily_keys(user_id)
-    detail["key_count"] = len(keys)
-    if not keys:
+    raw_keys, attempts = _ordered_tavily_key_attempts(user_id)
+    detail["key_count"] = len(raw_keys)
+    if not attempts:
         detail.update({
             "status": "missing_api_key",
             "message": "当前账号未配置 Tavily API key；请在设置里添加 Tavily API Keys，系统会继续尝试 DuckDuckGo fallback。",
@@ -411,15 +428,18 @@ async def search_tavily_detailed(query: str, limit: int = 5, user_id: str = DEFA
         return detail
 
     async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
-        for key in keys:
+        for key, key_index in attempts:
             detail["attempts"] = int(detail.get("attempts") or 0) + 1
             try:
                 search_response = await _search_tavily_with_key(client, key, normalized_query, limit)
             except Exception as exc:
-                detail["attempt_details"].append(_provider_exception_detail("tavily", exc))
+                failure_detail = _provider_exception_detail("tavily", exc)
+                detail["attempt_details"].append(failure_detail)
+                record_tavily_key_failure(user_id, key, key_index, failure_detail)
                 continue
             results = list(search_response.get("results") or [])
             if results:
+                record_tavily_key_success(user_id, key, key_index)
                 detail.update({
                     "ok": True,
                     "status": "ok",
@@ -432,11 +452,13 @@ async def search_tavily_detailed(query: str, limit: int = 5, user_id: str = DEFA
                     "search_parameters": search_response.get("search_parameters") or detail["search_parameters"],
                 })
                 return detail
-            detail["attempt_details"].append({
+            empty_detail = {
                 "provider": "tavily",
                 "status": "empty_results",
                 "message": "Tavily 请求成功但没有返回可用搜索结果。",
-            })
+            }
+            detail["attempt_details"].append(empty_detail)
+            record_tavily_key_failure(user_id, key, key_index, empty_detail)
     detail.update(_summarize_failed_attempts(detail, fallback_message="Tavily 已尝试所有 key，但没有取得可用结果。"))
     return detail
 
@@ -518,6 +540,7 @@ async def search_web_detailed(query: str, limit: int = 5, user_id: str = DEFAULT
             "status": "ok",
             "message": "Tavily 搜索成功。",
         })
+        _record_search_event_from_detail(user_id, detail)
         return detail
 
     duckduckgo = await search_duckduckgo_detailed(normalized_query, limit=limit)
@@ -530,12 +553,14 @@ async def search_web_detailed(query: str, limit: int = 5, user_id: str = DEFAULT
             "status": "ok",
             "message": "Tavily 未返回结果，DuckDuckGo fallback 搜索成功。",
         })
+        _record_search_event_from_detail(user_id, detail)
         return detail
 
     detail.update({
         "status": "all_providers_failed",
         "message": "Tavily 和 DuckDuckGo fallback 都未取得可用结果。",
     })
+    _record_search_event_from_detail(user_id, detail)
     return detail
 
 
@@ -655,6 +680,21 @@ def _public_diagnostic(detail: dict[str, Any]) -> dict[str, Any]:
         "attempts": int(detail.get("attempts") or 0),
         "key_count": detail.get("key_count"),
     }
+
+
+def _record_search_event_from_detail(user_id: str, detail: dict[str, Any]) -> None:
+    diagnostics = detail.get("diagnostics") if isinstance(detail.get("diagnostics"), list) else []
+    search_parameters = detail.get("search_parameters") if isinstance(detail.get("search_parameters"), dict) else {}
+    record_search_event(
+        user_id=user_id,
+        query=str(detail.get("query") or ""),
+        provider=str(detail.get("provider") or ""),
+        status=str(detail.get("status") or ""),
+        result_count=len(detail.get("results") or []),
+        diagnostics=diagnostics,
+        search_profile=str(detail.get("search_profile") or ""),
+        search_parameters=search_parameters,
+    )
 
 
 def _build_failure_context(query: str, detail: dict[str, Any]) -> str:

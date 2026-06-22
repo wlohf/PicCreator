@@ -651,6 +651,13 @@ def claim_tavily_api_keys(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> tuple
         if not keys:
             return [], 0
         start_index = int(section.get("tavily_next_key_index") or 0) % len(keys)
+        try:
+            from backend.app.services.search_state_store import claim_tavily_start_index
+            db_start_index = claim_tavily_start_index(user_id or DEFAULT_CONFIG_USER_ID, len(keys), start_index)
+            if db_start_index is not None:
+                start_index = db_start_index
+        except Exception:
+            pass
         section["tavily_next_key_index"] = (start_index + 1) % len(keys)
         config_data["web_search"] = section
         _persist_effective_config_json(user_id, config_data)

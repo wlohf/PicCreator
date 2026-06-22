@@ -8,6 +8,7 @@ function assert(condition: unknown, message: string) {
 }
 
 const chatApiSource = readFileSync(new URL("../src/api/chat.ts", import.meta.url), "utf8");
+const systemApiSource = readFileSync(new URL("../src/api/system.ts", import.meta.url), "utf8");
 const chatHistorySource = readFileSync(new URL("../src/api/chatHistory.ts", import.meta.url), "utf8");
 const resultsApiSource = readFileSync(new URL("../src/api/results.ts", import.meta.url), "utf8");
 const generationApiSource = readFileSync(new URL("../src/api/generation.ts", import.meta.url), "utf8");
@@ -21,6 +22,27 @@ assert(
   chatApiSource.includes('reasoning_effort?: ChatReasoningEffort') &&
   chatApiSource.includes('attachments?: ChatImageAttachment[]'),
   "chat API request type should carry active provider/model config, selected effort, and image attachments",
+);
+
+assert(
+  chatApiSource.includes("web_search?: WebSearchMetadata") &&
+  appSource.includes("webSearch: streamResponse.web_search") &&
+  appSource.includes("webSearch: response.web_search") &&
+  appSource.includes("<WebSearchSourcesCard search={activeMessage.webSearch} locale={locale} />") &&
+  appSource.includes("function WebSearchSourcesCard"),
+  "chat API and message rendering should preserve and display web search source metadata",
+);
+
+assert(
+  systemApiSource.includes("getSystemUpdateStatus") &&
+  systemApiSource.includes("checkSystemUpdate") &&
+  systemApiSource.includes("applySystemUpdate") &&
+  systemApiSource.includes("Authorization: authHeader(credentials)") &&
+  appSource.includes('panel: "system" as const') &&
+  appSource.includes('runSystemUpdateRequest("check")') &&
+  appSource.includes('runSystemUpdateRequest("apply")') &&
+  !appSource.includes(["WHL", "whl", "666"].join("")),
+  "system update UI should use the update API with admin authorization and must not embed the real password",
 );
 
 const sendDesignChatBlock = chatApiSource.match(/export async function sendDesignChat[\s\S]*?export async function applyChatMemory/m)?.[0] ?? "";

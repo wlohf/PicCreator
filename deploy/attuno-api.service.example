@@ -10,7 +10,16 @@ Group=attuno
 WorkingDirectory=/opt/attuno/PicCreator/attuno-studio
 Environment=APP_HOST=127.0.0.1
 Environment=APP_PORT=8787
+Environment=ATTUNO_ENV=production
 Environment=ATTUNO_STUDIO_DATA_DIR=/var/lib/attuno
+# Production deployments must configure PostgreSQL for structured metadata.
+Environment=DATABASE_URL=postgresql://attuno:REPLACE_ME@127.0.0.1:5432/attuno
+# Web update execution is disabled unless explicitly enabled.
+# Generate the password hash with:
+#   python -c "from backend.app.services.update_service import hash_update_admin_password; print(hash_update_admin_password('REPLACE_ME'))"
+Environment=ATTUNO_UPDATE_ENABLED=0
+Environment=ATTUNO_UPDATE_ADMIN_USERNAME=admin
+Environment=ATTUNO_UPDATE_ADMIN_PASSWORD_HASH=REPLACE_WITH_HASH
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/attuno/PicCreator/attuno-studio/.venv/bin/python /opt/attuno/PicCreator/attuno-studio/api_server.py
 Restart=always

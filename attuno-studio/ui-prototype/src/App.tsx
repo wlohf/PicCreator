@@ -12,6 +12,7 @@ import {
   Clock3,
   Download,
   Edit3,
+  ExternalLink,
   Eye,
   EyeOff,
   FileText,
@@ -34,6 +35,7 @@ import {
   Save,
   Send,
   Settings,
+  Shield,
   Share2,
   SlidersHorizontal,
   Sparkles,
@@ -53,6 +55,7 @@ import { isGenerationStreamAbortedError, requestGenerationStream } from "./api/g
 import { requestAnnotatedImageEdit, requestImageEdit } from "./api/imageEdits";
 import { createMemoryItem, deleteMemoryItem, loadMemoryView, loadPromptSkillPreferences, loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, savePromptSkillPreferences, saveShortcutPreferences, updateMemoryItem, type MemoryItem, type MemorySection, type MemoryView, type PromptSkillPreference, type StyleProfile } from "./api/preferences";
 import { deleteResult, listResults, normalizeApiResult } from "./api/results";
+import { applySystemUpdate, checkSystemUpdate, getSystemUpdateStatus } from "./api/system";
 import { ConfigStatus, type ConfigStatusState } from "./components/ConfigStatus";
 import { AnnotationEditor } from "./components/AnnotationEditor";
 import {
@@ -74,7 +77,7 @@ import {
   directionItems,
   modelOptions
 } from "./data/studioData";
-import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatMessageVariant, ChatReasoningEffort, ChatThinkingStatus, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem } from "./types/domain";
+import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatMessageVariant, ChatReasoningEffort, ChatThinkingStatus, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem, SystemUpdateStatus, WebSearchMetadata } from "./types/domain";
 import { appendMessageVariant, buildLinearChatContext, canSwitchWorkspaceMode, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariantIndex, getBranchInfo, getMessagePathTo, getMessageVariants, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, updateActiveMessageVariant, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
 import { apiConfigStorageKey, apiConfigStorageReadKeys } from "./utils/apiConfigStorage";
 import { filesFromList, imageFilesFromClipboardItems, imageFilesFromFiles, imageSourcesFromClipboardData, mergeFloorPlanFiles } from "./utils/fileAttachments";
@@ -171,8 +174,8 @@ type PreviewImage = {
 type ComposerMode = "new-generation" | "edit-selected-result";
 type WorkspaceMode = "chat" | "image";
 type PrimaryView = "workspace" | "image-management";
-type UtilityPanel = "analysis" | "shortcuts" | "preferences" | "setup" | "prompts";
-type SettingsUtilityPanel = Extract<UtilityPanel, "preferences" | "setup" | "analysis" | "prompts">;
+type UtilityPanel = "analysis" | "shortcuts" | "preferences" | "setup" | "prompts" | "system";
+type SettingsUtilityPanel = Extract<UtilityPanel, "preferences" | "setup" | "analysis" | "prompts" | "system">;
 type ResizablePanel = "sidebar" | "drawer";
 type DetectedModelState = Record<ConfigRole, string[]>;
 type ConfigAction = "save" | "analysis" | "image" | "models-analysis" | "models-image";
@@ -188,7 +191,7 @@ type MessageEditState = {
 };
 
 const DEFAULT_WORKSPACE_MODE: WorkspaceMode = "chat";
-const settingsUtilityPanels = new Set<UtilityPanel>(["preferences", "setup", "analysis", "prompts"]);
+const settingsUtilityPanels = new Set<UtilityPanel>(["preferences", "setup", "analysis", "prompts", "system"]);
 
 function isSettingsPanel(panel: UtilityPanel | null): panel is SettingsUtilityPanel {
   return panel !== null && settingsUtilityPanels.has(panel);
@@ -1017,6 +1020,80 @@ function AssistantThinkingStatusCard({ status, locale, nowMs }: { status: ChatTh
         <div className="assistant-thinking-tool">
           <Search size={14} aria-hidden="true" />
           <span>{toolVerb} {toolText}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function shortCommit(value?: string) {
+  return String(value || "").slice(0, 12) || "-";
+}
+
+function formatDateTimeLabel(value: string | undefined, locale: Locale) {
+  if (!value) return locale === "zh" ? "尚未检测" : "Not checked";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return date.toLocaleString(locale === "zh" ? "zh-CN" : "en-US", {
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatSearchStrategy(search: WebSearchMetadata) {
+  const profile = String(search.search_profile || "").trim();
+  const params = search.search_parameters && typeof search.search_parameters === "object"
+    ? Object.entries(search.search_parameters)
+      .filter(([, value]) => value !== undefined && value !== "")
+      .map(([key, value]) => `${key}=${String(value)}`)
+    : [];
+  if (!profile && params.length === 0) return "";
+  return [profile, params.join(", ")].filter(Boolean).join(" / ");
+}
+
+function WebSearchSourcesCard({ search, locale }: { search?: WebSearchMetadata; locale: Locale }) {
+  if (!search) return null;
+  const strategy = formatSearchStrategy(search);
+  const diagnostics = search.diagnostics ?? [];
+  return (
+    <div className={`web-search-sources ${search.ok ? "web-search-sources--ok" : "web-search-sources--warning"}`}>
+      <div className="web-search-sources__head">
+        <div>
+          <span className="eyebrow">{search.provider || (locale === "zh" ? "联网搜索" : "Web search")}</span>
+          <strong>{search.query || (locale === "zh" ? "搜索已触发" : "Search triggered")}</strong>
+        </div>
+        <span className="score-pill">{search.ok ? (locale === "zh" ? "有来源" : "Sources") : (locale === "zh" ? "需处理" : "Needs attention")}</span>
+      </div>
+      {strategy && <p className="web-search-sources__strategy">{strategy}</p>}
+      {search.answer && <p className="web-search-sources__answer">{search.answer}</p>}
+      {search.results?.length > 0 && (
+        <div className="web-search-source-list">
+          {search.results.slice(0, 5).map((item, index) => (
+            <a href={item.url} target="_blank" rel="noreferrer" className="web-search-source-card" key={`${item.url}-${index}`}>
+              <span>{index + 1}</span>
+              <div>
+                <strong>{item.title || item.url}</strong>
+                {item.snippet && <p>{item.snippet}</p>}
+                <small>
+                  {item.published_date ? `${item.published_date} · ` : ""}
+                  {typeof item.score === "number" ? `${locale === "zh" ? "相关性" : "Score"} ${item.score}` : item.url}
+                </small>
+              </div>
+              <ExternalLink size={14} />
+            </a>
+          ))}
+        </div>
+      )}
+      {!search.ok && diagnostics.length > 0 && (
+        <div className="web-search-diagnostics">
+          {diagnostics.map((item, index) => (
+            <p key={`${item.provider || "search"}-${index}`}>
+              <strong>{item.provider || "search"} · {item.status || "unknown"}</strong>
+              <span>{item.message || (locale === "zh" ? "没有更多诊断信息" : "No diagnostic details")}</span>
+            </p>
+          ))}
         </div>
       )}
     </div>
@@ -1877,6 +1954,10 @@ function App() {
   const [detectedModels, setDetectedModels] = useState<DetectedModelState>({ analysis: [], image: [] });
   const [addedDetectedModels, setAddedDetectedModels] = useState<DetectedModelState>({ analysis: [], image: [] });
   const [visibleApiKeys, setVisibleApiKeys] = useState<Record<ConfigRole, boolean>>({ analysis: false, image: false });
+  const [updateCredentials, setUpdateCredentials] = useState({ username: "admin", password: "" });
+  const [systemUpdateStatus, setSystemUpdateStatus] = useState<SystemUpdateStatus | null>(null);
+  const [systemUpdateAction, setSystemUpdateAction] = useState<"status" | "check" | "apply" | null>(null);
+  const [systemUpdateError, setSystemUpdateError] = useState("");
   const [learnedProfile, setLearnedProfile] = useState<StyleProfile | null>(null);
   const [memoryView, setMemoryView] = useState<MemoryView | null>(null);
   const [editingMemoryItemId, setEditingMemoryItemId] = useState<string | null>(null);
@@ -2162,14 +2243,16 @@ function App() {
     shortcuts: locale === "zh" ? "管理快捷短语" : "Manage quick phrases",
     preferences: locale === "zh" ? "个性化" : "Personalization",
     setup: locale === "zh" ? "供应商与模型" : "Providers & models",
-    prompts: locale === "zh" ? "提示词设置" : "Prompt settings"
+    prompts: locale === "zh" ? "提示词设置" : "Prompt settings",
+    system: locale === "zh" ? "系统维护" : "System"
   };
   const settingsPanelDescriptions: Record<UtilityPanel, string> = {
     analysis: locale === "zh" ? "严格复核、运行阶段和平面图分析集中在这里。" : "Strict review, run stages, and floor-plan analysis live here.",
     shortcuts: locale === "zh" ? "维护会插入到主输入框的快捷短语。" : "Manage phrases that insert into the main composer.",
     preferences: locale === "zh" ? "查看、编辑或删除聊天记忆、生图偏好和账号侧个性化选项。" : "Review, edit, or delete chat memory, image preferences, and account personalization.",
     setup: locale === "zh" ? "保存供应商、地址、密钥与默认模型，让真实后端接口继续接到当前前端样式。" : "Save providers, endpoints, keys, and default models while keeping the real backend wiring intact.",
-    prompts: locale === "zh" ? "管理自定义图像模式、快捷语，或覆盖分析与 3D 提示词。" : "Manage custom image modes, quick phrases, or override analysis and 3D prompts."
+    prompts: locale === "zh" ? "管理自定义图像模式、快捷语，或覆盖分析与 3D 提示词。" : "Manage custom image modes, quick phrases, or override analysis and 3D prompts.",
+    system: locale === "zh" ? "使用部署管理员凭据检测 GitHub 新版本，并在启用后执行受控更新。" : "Use deployment admin credentials to check GitHub updates and run the controlled updater when enabled."
   };
   const settingsPanelItems: Array<{
     panel: SettingsUtilityPanel;
@@ -2200,6 +2283,12 @@ function App() {
       icon: FileText,
       title: locale === "zh" ? "提示词设置" : "Prompt settings",
       description: settingsPanelDescriptions.prompts
+    },
+    {
+      panel: "system" as const,
+      icon: Shield,
+      title: locale === "zh" ? "系统维护" : "System",
+      description: settingsPanelDescriptions.system
     }
   ];
   const settingsDialogTitle = locale === "zh" ? "设置" : "Settings";
@@ -4146,6 +4235,45 @@ function App() {
     }));
   }
 
+  function updateAdminCredentialsReady() {
+    return Boolean(updateCredentials.username.trim() && updateCredentials.password);
+  }
+
+  async function runSystemUpdateRequest(action: "status" | "check" | "apply") {
+    if (!updateAdminCredentialsReady()) {
+      setSystemUpdateError(locale === "zh" ? "请先填写部署管理员用户名和密码。" : "Enter the deployment admin username and password first.");
+      return;
+    }
+    if (action === "apply") {
+      const confirmed = window.confirm(locale === "zh"
+        ? "确定开始更新吗？服务可能会短暂重启。"
+        : "Start the update now? The service may restart briefly.");
+      if (!confirmed) return;
+    }
+    setSystemUpdateAction(action);
+    setSystemUpdateError("");
+    try {
+      const credentials = { username: updateCredentials.username.trim(), password: updateCredentials.password };
+      const status = action === "status"
+        ? await getSystemUpdateStatus(credentials)
+        : action === "check"
+          ? await checkSystemUpdate(credentials)
+          : await applySystemUpdate(credentials);
+      setSystemUpdateStatus(status);
+      if (status.message) {
+        showToast(status.message);
+      } else if (action === "check") {
+        showToast(status.has_update
+          ? locale === "zh" ? "检测到新版，可以开始更新" : "Update available"
+          : locale === "zh" ? "当前已经是最新版本" : "Already up to date");
+      }
+    } catch (error) {
+      setSystemUpdateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSystemUpdateAction(null);
+    }
+  }
+
   function selectProviderProfile(role: "analysis" | "image", providerId: string) {
     setApiConfig((current) => {
       const providers = role === "analysis" ? current.analysisProviders : current.imageProviders;
@@ -4539,9 +4667,10 @@ function App() {
       imageUrl: patch.imageUrl,
       imageLabel: patch.imageLabel,
       attachments: patch.attachments,
-      sourceResultId: patch.sourceResultId,
-      draftInstruction: patch.draftInstruction,
-      memoryCandidate: patch.memoryCandidate,
+        sourceResultId: patch.sourceResultId,
+        draftInstruction: patch.draftInstruction,
+        memoryCandidate: patch.memoryCandidate,
+        webSearch: patch.webSearch,
     };
   }
 
@@ -5794,6 +5923,7 @@ function App() {
               bullets: extras.bullets,
               draftInstruction: extras.draftInstruction || undefined,
               memoryCandidate: extras.memoryCandidate,
+              webSearch: streamResponse.web_search,
               thinkingStatus: undefined,
             });
           }
@@ -5808,6 +5938,7 @@ function App() {
         bullets: extras.bullets,
         draftInstruction: extras.draftInstruction || undefined,
         memoryCandidate: extras.memoryCandidate,
+        webSearch: response.web_search,
         thinkingStatus: undefined,
       });
     } catch (error) {
@@ -6883,6 +7014,10 @@ function App() {
                           ))}
                           {activeMessage.attachments.length > 4 && <span className="chatgpt-chip">+{activeMessage.attachments.length - 4}</span>}
                         </div>
+                      )}
+
+                      {activeMessage.role === "assistant" && activeMessage.webSearch && (
+                        <WebSearchSourcesCard search={activeMessage.webSearch} locale={locale} />
                       )}
 
                       {activeMessage.bullets && (
@@ -8028,6 +8163,110 @@ function App() {
                           </button>
                         </div>
                       </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {activeUtilityPanel === "system" && (
+                <div className="chatgpt-drawer__stack settings-content settings-pane active" data-settings-pane="system">
+                  {activeSettingsSection && (
+                    <div className="chatgpt-drawer__section-head">
+                      <h3>{activeSettingsSection.title}</h3>
+                      <p>{activeSettingsSection.description}</p>
+                    </div>
+                  )}
+                  <div className="control-section system-update-panel">
+                    <div className="section-title">
+                      <Shield size={14} />
+                      {locale === "zh" ? "部署管理员" : "Deployment admin"}
+                    </div>
+                    <div className="api-config-grid">
+                      <label>
+                        <span>{locale === "zh" ? "用户名" : "Username"}</span>
+                        <input
+                          value={updateCredentials.username}
+                          onChange={(event) => setUpdateCredentials((current) => ({ ...current, username: event.target.value }))}
+                          autoComplete="username"
+                        />
+                      </label>
+                      <label>
+                        <span>{locale === "zh" ? "密码" : "Password"}</span>
+                        <input
+                          type="password"
+                          value={updateCredentials.password}
+                          onChange={(event) => setUpdateCredentials((current) => ({ ...current, password: event.target.value }))}
+                          onBlur={() => {
+                            if (!systemUpdateStatus && updateAdminCredentialsReady() && systemUpdateAction === null) {
+                              void runSystemUpdateRequest("check");
+                            }
+                          }}
+                          autoComplete="current-password"
+                        />
+                      </label>
+                    </div>
+                    <p className="config-hint">
+                      {locale === "zh"
+                        ? "凭据只用于本次请求，不会写入聊天历史或浏览器本地缓存。更新执行还需要服务器启用 ATTUNO_UPDATE_ENABLED=1。"
+                        : "Credentials are used for this request only and are not written into chat history or browser storage. Applying updates also requires ATTUNO_UPDATE_ENABLED=1 on the server."}
+                    </p>
+                    <div className="shortcut-editor__actions">
+                      <button type="button" onClick={() => void runSystemUpdateRequest("status")} disabled={systemUpdateAction !== null}>
+                        <Clock3 size={14} />
+                        {systemUpdateAction === "status" ? (locale === "zh" ? "读取中" : "Loading") : (locale === "zh" ? "查看状态" : "View status")}
+                      </button>
+                      <button type="button" onClick={() => void runSystemUpdateRequest("check")} disabled={systemUpdateAction !== null}>
+                        <Search size={14} />
+                        {systemUpdateAction === "check" ? (locale === "zh" ? "检测中" : "Checking") : (locale === "zh" ? "检查更新" : "Check updates")}
+                      </button>
+                      <button type="button" className="is-primary" onClick={() => void runSystemUpdateRequest("apply")} disabled={systemUpdateAction !== null || !systemUpdateStatus?.has_update}>
+                        <Download size={14} />
+                        {systemUpdateAction === "apply" ? (locale === "zh" ? "更新中" : "Updating") : (locale === "zh" ? "开始更新" : "Apply update")}
+                      </button>
+                    </div>
+                    {systemUpdateError && <p className="form-error">{systemUpdateError}</p>}
+                  </div>
+
+                  <div className="control-section system-update-status">
+                    <div className="section-title">
+                      <GitBranch size={14} />
+                      {locale === "zh" ? "版本状态" : "Version status"}
+                    </div>
+                    {systemUpdateStatus ? (
+                      <>
+                        <div className="system-update-grid">
+                          <div>
+                            <span>{locale === "zh" ? "当前提交" : "Current"}</span>
+                            <strong>{shortCommit(systemUpdateStatus.current_commit)}</strong>
+                          </div>
+                          <div>
+                            <span>{locale === "zh" ? "GitHub 最新" : "Remote"}</span>
+                            <strong>{shortCommit(systemUpdateStatus.remote_commit)}</strong>
+                          </div>
+                          <div>
+                            <span>{locale === "zh" ? "状态" : "Status"}</span>
+                            <strong>{systemUpdateStatus.has_update ? (locale === "zh" ? "有新版" : "Update available") : (locale === "zh" ? "已是最新" : "Up to date")}</strong>
+                          </div>
+                          <div>
+                            <span>{locale === "zh" ? "执行开关" : "Apply switch"}</span>
+                            <strong>{systemUpdateStatus.enabled ? "ON" : "OFF"}</strong>
+                          </div>
+                          <div>
+                            <span>{locale === "zh" ? "工作树" : "Worktree"}</span>
+                            <strong>{systemUpdateStatus.dirty ? (locale === "zh" ? "有改动" : "Dirty") : (locale === "zh" ? "干净" : "Clean")}</strong>
+                          </div>
+                          <div>
+                            <span>{locale === "zh" ? "检测时间" : "Checked"}</span>
+                            <strong>{formatDateTimeLabel(systemUpdateStatus.checked_at, locale)}</strong>
+                          </div>
+                        </div>
+                        {systemUpdateStatus.error && <p className="form-error">{systemUpdateStatus.error}</p>}
+                        {systemUpdateStatus.log && <pre className="system-update-log">{systemUpdateStatus.log}</pre>}
+                      </>
+                    ) : (
+                      <p className="config-hint">
+                        {locale === "zh" ? "填写管理员凭据后点击“检查更新”。" : "Enter admin credentials, then check for updates."}
+                      </p>
                     )}
                   </div>
                 </div>

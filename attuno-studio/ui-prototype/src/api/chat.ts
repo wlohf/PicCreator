@@ -1,6 +1,6 @@
 import { apiFetch, parseApiJson } from "./client";
 import { iterateSseEvents } from "./sse";
-import type { ApiConfig, ChatImageAttachment, ChatMemoryCandidate, ChatReasoningEffort } from "../types/domain";
+import type { ApiConfig, ChatImageAttachment, ChatMemoryCandidate, ChatReasoningEffort, WebSearchMetadata } from "../types/domain";
 export type { ChatMemoryCandidate } from "../types/domain";
 
 export type DesignChatContext = {
@@ -43,6 +43,7 @@ export type DesignChatResponse = {
     apply_to_composer?: boolean;
     switch_to_edit?: boolean;
   };
+  web_search?: WebSearchMetadata;
   error?: string;
 };
 

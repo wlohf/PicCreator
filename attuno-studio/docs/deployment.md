@@ -21,11 +21,11 @@ APP_PORT=8787
 
 ## 1. 安装系统依赖
 
-Ubuntu 服务器先准备 Git、Python、Nginx 和 Node.js 20+：
+Ubuntu 服务器先准备 Git、Python、Nginx、PostgreSQL 和 Node.js 20+：
 
 ```bash
 sudo apt update
-sudo apt install -y git python3 python3-venv python3-pip nginx curl ca-certificates
+sudo apt install -y git python3 python3-venv python3-pip nginx curl ca-certificates postgresql postgresql-client libpq-dev
 
 # Node.js 版本需要 >= 20。可用你习惯的 nvm / NodeSource / 面板工具安装。
 node --version
@@ -68,7 +68,23 @@ bash deploy/install.sh
 
 脚本不会覆盖已有的 `.env` 或 `config.json`。
 
-## 4. 配置 API Key 和模型
+## 4. 配置 PostgreSQL、API Key 和模型
+
+生产部署必须配置 PostgreSQL。示例：
+
+```bash
+sudo -u postgres createuser attuno --pwprompt
+sudo -u postgres createdb -O attuno attuno
+```
+
+在 systemd service 里配置：
+
+```ini
+Environment=ATTUNO_ENV=production
+Environment=DATABASE_URL=postgresql://attuno:你的数据库密码@127.0.0.1:5432/attuno
+```
+
+本地开发或测试不设置 `DATABASE_URL` 时，会继续使用 JSON fallback；生产环境缺少或无法连接 PostgreSQL 时，`/api/health` 会报告数据库错误，服务启动也会失败。
 
 编辑：
 
@@ -87,6 +103,25 @@ IMAGE_API_KEY=...
 
 如果用前端登录后的“模型与 API”设置保存配置，非默认用户的配置会写入 `/var/lib/attuno/users/<user>/config/`。
 
+### Web 更新管理员
+
+Web 端“设置 -> 系统维护”可以检测 GitHub 新版本。执行更新默认关闭，必须在服务器环境中显式启用：
+
+```ini
+Environment=ATTUNO_UPDATE_ENABLED=1
+Environment=ATTUNO_UPDATE_ADMIN_USERNAME=admin
+Environment=ATTUNO_UPDATE_ADMIN_PASSWORD_HASH=生成后的哈希
+```
+
+生成密码哈希：
+
+```bash
+cd /opt/attuno/PicCreator/attuno-studio
+.venv/bin/python -c "from backend.app.services.update_service import hash_update_admin_password; print(hash_update_admin_password('你的管理员密码'))"
+```
+
+不建议生产环境使用 `ATTUNO_UPDATE_ADMIN_PASSWORD` 明文变量；它只适合本地临时调试。管理员密码不要写入 Git、文档、前端代码或日志。
+
 ## 5. 安装 systemd 服务
 
 ```bash
@@ -102,6 +137,8 @@ Group=attuno
 WorkingDirectory=/opt/attuno/PicCreator/attuno-studio
 ExecStart=/opt/attuno/PicCreator/attuno-studio/.venv/bin/python /opt/attuno/PicCreator/attuno-studio/api_server.py
 Environment=ATTUNO_STUDIO_DATA_DIR=/var/lib/attuno
+Environment=ATTUNO_ENV=production
+Environment=DATABASE_URL=postgresql://attuno:你的数据库密码@127.0.0.1:5432/attuno
 ```
 
 启动服务：
@@ -156,11 +193,14 @@ bash deploy/update.sh
 
 1. `git pull --ff-only`
 2. 安装/刷新 Python 依赖
-3. `npm ci` 或 `npm install`
-4. `npm run build`
-5. `systemctl restart attuno-api`
-6. 检查 `http://127.0.0.1:8787/api/health`
-7. `nginx -t` 后 reload Nginx
+3. 初始化/迁移 PostgreSQL schema（配置 `DATABASE_URL` 时）
+4. `npm ci` 或 `npm install`
+5. `npm run build`
+6. `systemctl restart attuno-api`
+7. 检查 `http://127.0.0.1:8787/api/health`
+8. `nginx -t` 后 reload Nginx
+
+Web 端更新按钮使用同一套受控流程：只检测和更新当前仓库的 `origin/main`，不接受任意 shell 命令或任意分支参数。工作树有未提交改动、远端不是 fast-forward、构建失败或健康检查失败时，更新会停止并返回错误。
 
 常用覆盖项：
 

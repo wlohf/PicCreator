@@ -283,6 +283,7 @@ export function messageToVariant(message: ChatMessage): ChatMessageVariant {
     draftInstruction: message.draftInstruction,
     memoryCandidate: message.memoryCandidate,
     thinkingStatus: message.thinkingStatus,
+    webSearch: message.webSearch,
   };
 }
 
@@ -317,6 +318,7 @@ export function withActiveMessageVariant(message: ChatMessage): ChatMessage {
     draftInstruction: activeVariant.draftInstruction,
     memoryCandidate: activeVariant.memoryCandidate,
     thinkingStatus: activeVariant.thinkingStatus,
+    webSearch: activeVariant.webSearch,
   };
 }
 

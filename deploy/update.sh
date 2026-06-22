@@ -98,6 +98,26 @@ build_frontend() {
   npm run build
 }
 
+run_database_migrations() {
+  if [[ -z "${DATABASE_URL:-}" ]]; then
+    if [[ "${ATTUNO_ENV:-}" == "production" ]]; then
+      fail "ATTUNO_ENV=production requires DATABASE_URL before running update."
+    fi
+    log "DATABASE_URL is not set; local JSON fallback remains active."
+    return
+  fi
+  log "Running PostgreSQL migrations..."
+  cd "$APP_DIR"
+  "$VENV_DIR/bin/python" - <<'PY'
+from backend.app.services.db import initialize_database
+
+status = initialize_database()
+if not status.get("ok"):
+    raise SystemExit(status.get("error") or "database initialization failed")
+print(status)
+PY
+}
+
 prepare_runtime_files() {
   require_file "$APP_DIR/.env.example"
   require_file "$APP_DIR/config.example.json"
@@ -152,6 +172,7 @@ main() {
   pull_latest
   prepare_runtime_files
   install_python_deps
+  run_database_migrations
   build_frontend
   restart_api
   check_health
