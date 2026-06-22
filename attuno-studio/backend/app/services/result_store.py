@@ -12,6 +12,7 @@ _lock = Lock()
 _MAX_STORED_RESULTS = 500
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
+from backend.app.services import db
 from backend.app.services.file_service import image_record
 
 
@@ -64,8 +65,35 @@ def _ensure_storage(user_id: str = "default"):
         index_path.write_text("[]\n", encoding="utf-8")
 
 
-def _read_results(user_id: str = "default") -> list[dict[str, Any]]:
-    _ensure_storage(user_id)
+def _use_database_storage() -> bool:
+    return db.structured_storage_enabled()
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def _result_created_at(item: dict[str, Any]) -> datetime:
+    return _parse_iso_datetime(item.get("created_at")) or datetime.now(timezone.utc)
+
+
+def _result_deleted_at(item: dict[str, Any]) -> datetime | None:
+    return _parse_iso_datetime(item.get("deleted_at"))
+
+
+def _read_results_json(user_id: str = "default", *, create: bool = True) -> list[dict[str, Any]]:
+    if not create:
+        path = get_index_path(user_id)
+        if not path.exists():
+            return []
+    else:
+        _ensure_storage(user_id)
     try:
         data = json.loads(get_index_path(user_id).read_text(encoding="utf-8"))
     except json.JSONDecodeError:
@@ -75,6 +103,120 @@ def _read_results(user_id: str = "default") -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
+def _import_json_results_to_db(user_id: str = "default") -> None:
+    results = _read_results_json(user_id, create=False)
+    if not results:
+        return
+    normalized_user = normalize_user_id(user_id)
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            for item in results[:_MAX_STORED_RESULTS]:
+                result_id = str(item.get("id") or "").strip()
+                if not result_id:
+                    continue
+                payload = {**item, "user_id": item.get("user_id") or normalized_user}
+                cur.execute(
+                    """
+                    INSERT INTO result_records (
+                        user_id, result_id, payload, created_at, updated_at, deleted_at
+                    )
+                    VALUES (%s, %s, %s::jsonb, %s, now(), %s)
+                    ON CONFLICT (user_id, result_id) DO NOTHING
+                    """,
+                    (
+                        normalized_user,
+                        result_id,
+                        json.dumps(payload, ensure_ascii=False),
+                        _result_created_at(payload),
+                        _result_deleted_at(payload),
+                    ),
+                )
+        conn.commit()
+
+
+def _read_results_db(user_id: str = "default") -> list[dict[str, Any]]:
+    normalized_user = normalize_user_id(user_id)
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT payload
+                FROM result_records
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                """,
+                (normalized_user,),
+            )
+            rows = cur.fetchall()
+    if not rows and get_index_path(user_id).exists():
+        _import_json_results_to_db(user_id)
+        with db.connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT payload
+                    FROM result_records
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    """,
+                    (normalized_user,),
+                )
+                rows = cur.fetchall()
+    return [row["payload"] for row in rows if isinstance(row.get("payload"), dict)]
+
+
+def _upsert_result_db(item: dict[str, Any], user_id: str = "default") -> None:
+    normalized_user = normalize_user_id(user_id)
+    result_id = str(item.get("id") or "").strip()
+    if not result_id:
+        return
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO result_records (
+                    user_id, result_id, payload, created_at, updated_at, deleted_at
+                )
+                VALUES (%s, %s, %s::jsonb, %s, now(), %s)
+                ON CONFLICT (user_id, result_id) DO UPDATE
+                SET payload = EXCLUDED.payload,
+                    updated_at = now(),
+                    deleted_at = EXCLUDED.deleted_at
+                """,
+                (
+                    normalized_user,
+                    result_id,
+                    json.dumps(item, ensure_ascii=False),
+                    _result_created_at(item),
+                    _result_deleted_at(item),
+                ),
+            )
+            cur.execute(
+                """
+                DELETE FROM result_records
+                WHERE ctid IN (
+                    SELECT ctid
+                    FROM result_records
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    OFFSET %s
+                )
+                """,
+                (normalized_user, _MAX_STORED_RESULTS),
+            )
+        conn.commit()
+
+
+def _read_results(user_id: str = "default") -> list[dict[str, Any]]:
+    return _read_results_json(user_id)
+
+
+def _read_results_from_active_store(user_id: str = "default") -> list[dict[str, Any]]:
+    if _use_database_storage():
+        return _read_results_db(user_id)
+    return _read_results(user_id)
+
+
 def _write_results(results: list[dict[str, Any]], user_id: str = "default"):
     _ensure_storage(user_id)
     get_index_path(user_id).write_text(json.dumps(results, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -82,12 +224,16 @@ def _write_results(results: list[dict[str, Any]], user_id: str = "default"):
 
 def _read_results_locked(user_id: str = "default") -> list[dict[str, Any]]:
     with _lock:
-        return _read_results(user_id)
+        return _read_results_from_active_store(user_id)
 
 
 def _write_results_locked(results: list[dict[str, Any]], user_id: str = "default"):
     with _lock:
-        _write_results(results, user_id)
+        if _use_database_storage():
+            for item in results[:_MAX_STORED_RESULTS]:
+                _upsert_result_db(item, user_id)
+        else:
+            _write_results(results, user_id)
 
 
 def _copy_image(source_path: str, result_id: str, user_id: str = "default") -> tuple[str | None, str | None]:
@@ -230,8 +376,11 @@ def create_result(
         "user_id": user_id or "default",
     }
     with _lock:
-        results = [item, *_read_results(user_id)]
-        _write_results(results[:_MAX_STORED_RESULTS], user_id)
+        if _use_database_storage():
+            _upsert_result_db(item, user_id)
+        else:
+            results = [item, *_read_results(user_id)]
+            _write_results(results[:_MAX_STORED_RESULTS], user_id)
     response = result_to_response(item, user_id=user_id)
     if stored_path:
         record = image_record(stored_path, image_label or title or "render")
@@ -241,7 +390,7 @@ def create_result(
 
 
 def get_result(result_id: str, user_id: str = "default") -> dict[str, Any] | None:
-    for item in _read_results(user_id):
+    for item in _read_results_from_active_store(user_id):
         if item.get("id") == result_id:
             return item
     return None
@@ -273,7 +422,7 @@ def get_result_floor_plan_path(result_id: str, user_id: str = "default") -> Path
 
 def update_result_notes(result_id: str, notes: str, user_id: str = "default") -> dict[str, Any] | None:
     with _lock:
-        results = _read_results(user_id)
+        results = _read_results_from_active_store(user_id)
         updated = None
         for item in results:
             if item.get("id") == result_id:
@@ -283,13 +432,16 @@ def update_result_notes(result_id: str, notes: str, user_id: str = "default") ->
                 break
         if updated is None:
             return None
-        _write_results(results, user_id)
+        if _use_database_storage():
+            _upsert_result_db(updated, user_id)
+        else:
+            _write_results(results, user_id)
     return result_to_response(updated, user_id=user_id)
 
 
 def delete_result(result_id: str, user_id: str = "default") -> bool:
     with _lock:
-        results = _read_results(user_id)
+        results = _read_results_from_active_store(user_id)
         removed = None
         for item in results:
             if item.get("id") == result_id:
@@ -299,18 +451,26 @@ def delete_result(result_id: str, user_id: str = "default") -> bool:
                 break
         if removed is None:
             return False
-        _write_results(results, user_id)
+        if _use_database_storage():
+            _upsert_result_db(removed, user_id)
+        else:
+            _write_results(results, user_id)
     return True
 
 
 def clear_results(user_id: str = "default") -> int:
     with _lock:
-        results = _read_results(user_id)
+        results = _read_results_from_active_store(user_id)
         deleted = 0
         timestamp = datetime.now(timezone.utc).isoformat()
         for item in results:
             if not _is_deleted(item):
                 item["deleted_at"] = timestamp
                 deleted += 1
-        _write_results(results, user_id)
+        if _use_database_storage():
+            for item in results:
+                if _is_deleted(item):
+                    _upsert_result_db(item, user_id)
+        else:
+            _write_results(results, user_id)
     return deleted

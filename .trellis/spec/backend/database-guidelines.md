@@ -124,3 +124,91 @@ attuno-studio/backend/app/db/migrations/*.sql
 - 不要把生产数据库失败静默降级为 JSON fallback；只有非生产环境允许 fallback。
 - 不要把 Web 更新、搜索诊断或测试输出里的密码、数据库 URL 密码、Tavily key 写入日志或响应。
 - 不要在路由里手写迁移或连接逻辑；使用 `db.initialize_database()` 和 service 层仓储函数。
+
+## Scenario: Structured JSON Store Migration
+
+### 1. Scope / Trigger
+
+- Trigger: 迁移账号、session、聊天历史、结果索引、偏好/记忆等原 JSON 文件数据到 PostgreSQL。
+- Applies when changing `auth_service.py`, `chat_history_store.py`, `result_store.py`, `preferences_store.py`, `db.py`, or `backend/app/db/migrations/*.sql` for these domains.
+
+### 2. Signatures
+
+- Env:
+  - `DATABASE_URL=postgresql://...` enables PostgreSQL structured storage after migrations pass.
+  - No `DATABASE_URL` outside production keeps JSON fallback.
+  - `TEST_DATABASE_URL=postgresql://...` runs real PostgreSQL integration tests.
+- Service boundary:
+  - `db.structured_storage_enabled() -> bool`
+  - `register_user(...)`, `authenticate_user(...)`, `create_session(...)`, `delete_session(...)`
+  - `load_chat_history(user_id)`, `save_chat_history(payload, user_id)`
+  - `create_result(...)`, `list_results(...)`, `get_result(...)`, `update_result_notes(...)`, `delete_result(...)`, `clear_results(...)`
+  - `preferences_store` public load/save/memory/event helpers through `_read_preferences` / `_write_preferences`
+- DB:
+  - `users(user_id, username, password_salt, password_hash, created_at)`
+  - `auth_sessions(session_id, user_id, username, expires_at, created_at)`
+  - `chat_histories(user_id, payload JSONB, updated_at)`
+  - `result_records(user_id, result_id, payload JSONB, created_at, updated_at, deleted_at)`
+  - `user_preferences(user_id, payload JSONB, updated_at)`
+
+### 3. Contracts
+
+- Store modules must keep their existing public function signatures so routes and frontend contracts do not change during the first migration slice.
+- When `DATABASE_URL` is configured and migrations succeed, these stores read/write PostgreSQL first and must not create or update their old JSON files for new writes.
+- When `DATABASE_URL` is absent in development/test, these stores keep the legacy JSON behavior unchanged.
+- When PostgreSQL storage is required/configured but unavailable, do not silently fall back to JSON. Raise a clear storage error so production failures are visible.
+- Existing JSON data is a lazy import source only: if the matching PostgreSQL row/table is empty, read the old JSON payload, normalize it through the existing store logic, and upsert it into PostgreSQL. Do not delete or rewrite the JSON source.
+- Result binaries, annotations, floor plans, and downloads remain in the per-user filesystem namespace. `result_records.payload` stores only index metadata such as filenames, URLs, notes, status, and prompt fields.
+- Passwords are never stored in plaintext. PostgreSQL stores the existing PBKDF2 salt/hash fields, not raw credentials.
+
+### 4. Validation & Error Matrix
+
+- No `DATABASE_URL` + development/test -> JSON fallback, no DB writes.
+- `DATABASE_URL` configured + migration success -> DB-first read/write for accounts, chat history, result records, and preferences.
+- `DATABASE_URL` configured + migration/connection failure -> raise a PostgreSQL structured storage error; do not write JSON as fallback.
+- Existing JSON exists + DB table has no row for that user -> lazy import then return normalized DB payload.
+- Existing JSON exists + DB already has row for that user -> DB wins; do not merge stale JSON into current DB state.
+- Result asset metadata points to a missing file -> existing asset-serving behavior returns not found; do not store binaries in DB to compensate.
+
+### 5. Good/Base/Bad Cases
+
+- Good: configure `DATABASE_URL`, register/login, save chat history, create/delete a result, save shortcuts/prompt skills/memory, then verify rows in `users`, `auth_sessions`, `chat_histories`, `result_records`, and `user_preferences`.
+- Base: local developer runs without PostgreSQL; the same calls create/update existing JSON files under `ATTUNO_STUDIO_DATA_DIR`.
+- Bad: production DB connection fails and the service silently writes fresh `users.json` or `preferences.json`.
+- Bad: moving image bytes into `result_records.payload`, which makes DB backups heavy and breaks the filesystem asset contract.
+- Bad: importing old JSON on every read and overriding newer DB data.
+
+### 6. Tests Required
+
+- Existing backend/API tests must keep passing without `DATABASE_URL`, proving JSON fallback compatibility.
+- Real PostgreSQL integration test gated by `TEST_DATABASE_URL` must initialize migrations and assert:
+  - Account row/session row are written to PostgreSQL.
+  - Chat history payload round-trips through `chat_histories`.
+  - Result index metadata, notes, and soft delete state round-trip through `result_records`.
+  - Shortcuts, prompt skills, and memory write through `user_preferences`.
+  - Old JSON files are not created for those new DB-backed writes.
+  - Raw password is not stored in the users row.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```python
+try:
+    write_postgres(payload)
+except Exception:
+    write_json(payload)
+```
+
+This hides production database loss and splits one user's data across two stores.
+
+#### Correct
+
+```python
+if db.structured_storage_enabled():
+    write_postgres(payload)
+else:
+    write_json(payload)
+```
+
+`structured_storage_enabled()` only returns `False` when no database is configured and JSON fallback is allowed.

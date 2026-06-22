@@ -142,3 +142,13 @@ def get_database_status() -> dict[str, Any]:
 def ensure_database_ready() -> bool:
     status = initialize_database()
     return bool(status.get("ok") and status.get("configured"))
+
+
+def structured_storage_enabled() -> bool:
+    status = initialize_database()
+    if status.get("ok") and status.get("configured"):
+        return True
+    if database_configured() or database_required():
+        message = status.get("error") or "Database has not been initialized."
+        raise RuntimeError(f"PostgreSQL structured storage is unavailable: {message}")
+    return False

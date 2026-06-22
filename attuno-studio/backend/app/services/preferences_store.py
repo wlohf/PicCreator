@@ -3,7 +3,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from backend.app.services.result_store import get_data_dir, get_user_data_dir
+from backend.app.services import db
+from backend.app.services.result_store import get_data_dir, get_user_data_dir, normalize_user_id
 
 
 def get_preferences_path(user_id: str = "default") -> Path:
@@ -41,12 +42,24 @@ def _ensure_preferences(user_id: str = "default") -> None:
         path.write_text(json.dumps(_empty_preferences(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _read_preferences(user_id: str = "default") -> dict[str, Any]:
-    _ensure_preferences(user_id)
+def _use_database_storage() -> bool:
+    return db.structured_storage_enabled()
+
+
+def _read_preferences_json(user_id: str = "default", *, create: bool = True) -> dict[str, Any]:
+    if create:
+        _ensure_preferences(user_id)
+    path = get_preferences_path(user_id)
+    if not path.exists():
+        return {}
     try:
-        data = json.loads(get_preferences_path(user_id).read_text(encoding="utf-8"))
+        data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError:
         data = {}
+    return data if isinstance(data, dict) else {}
+
+
+def _merge_preferences(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         data = {}
     merged = _empty_preferences()
@@ -58,7 +71,48 @@ def _read_preferences(user_id: str = "default") -> dict[str, Any]:
     return merged
 
 
+def _read_preferences_db(user_id: str = "default") -> dict[str, Any]:
+    normalized_user = normalize_user_id(user_id)
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT payload FROM user_preferences WHERE user_id = %s", (normalized_user,))
+            row = cur.fetchone()
+    if row:
+        return _merge_preferences(row.get("payload"))
+    if get_preferences_path(user_id).exists():
+        imported = _merge_preferences(_read_preferences_json(user_id, create=False))
+        _write_preferences_db(imported, user_id)
+        return imported
+    return _merge_preferences({})
+
+
+def _write_preferences_db(data: dict[str, Any], user_id: str = "default") -> None:
+    normalized_user = normalize_user_id(user_id)
+    with db.connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO user_preferences (user_id, payload, updated_at)
+                VALUES (%s, %s::jsonb, now())
+                ON CONFLICT (user_id) DO UPDATE
+                SET payload = EXCLUDED.payload,
+                    updated_at = now()
+                """,
+                (normalized_user, json.dumps(data, ensure_ascii=False)),
+            )
+        conn.commit()
+
+
+def _read_preferences(user_id: str = "default") -> dict[str, Any]:
+    if _use_database_storage():
+        return _read_preferences_db(user_id)
+    return _merge_preferences(_read_preferences_json(user_id))
+
+
 def _write_preferences(data: dict[str, Any], user_id: str = "default") -> None:
+    if _use_database_storage():
+        _write_preferences_db(data, user_id)
+        return
     _ensure_preferences(user_id)
     get_preferences_path(user_id).write_text(json.dumps(data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
