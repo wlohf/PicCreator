@@ -78,12 +78,40 @@ assert(
 
 assert(
   chatHistorySource.includes("export async function loadChatHistory(userId: string)") &&
+  chatHistorySource.includes("export async function loadChatHistorySummary(userId: string)") &&
+  chatHistorySource.includes("export async function loadChatSession(sessionId: string, userId: string)") &&
+  chatHistorySource.includes('options.summary ? { summary: "1" } : {}') &&
+  chatHistorySource.includes("`/api/chat-history/${encodeURIComponent(sessionId)}`") &&
   chatHistorySource.includes("export async function saveChatHistory(history: ChatHistoryPayload, userId: string)") &&
-  appSource.includes("withStartupRetry(() => loadChatHistory(currentUserId))") &&
-  appSource.includes("saveChatHistory(historyPayload, currentUserId)") &&
+  appSource.includes("withStartupRetry(() => loadChatHistorySummary(currentUserId))") &&
+  appSource.includes("const localStored = loadStoredSessions(currentUserId)") &&
+  appSource.includes("applyStoredSessionSummaries(serverStored)") &&
+  appSource.includes("const shouldLoadDetail = isSummaryOnlySession(target)") &&
+  appSource.includes("await loadChatSession(sessionId, currentUserId)") &&
+  appSource.includes("sessionsForBackendSave(persistableSessions)") &&
   appSource.includes("saveChatHistory(recoveredStored, currentUserId)") &&
   appSource.includes("lastSavedChatHistoryRef.current = \"\";"),
-  "chat history load/save and namespace switching should stay scoped to the active signed-in account",
+  "chat history startup should use summary loading, lazy-load session detail, and keep save namespace scoped to the active account",
+);
+
+const localHistoryStartupIndex = appSource.indexOf("const localStored = loadStoredSessions(currentUserId)");
+const serverSummaryStartupIndex = appSource.indexOf("withStartupRetry(() => loadChatHistorySummary(currentUserId))");
+assert(
+  localHistoryStartupIndex >= 0 &&
+  serverSummaryStartupIndex > localHistoryStartupIndex &&
+  appSource.includes("session.searchText || \"\"") &&
+  appSource.includes("isSummaryOnlySession(session)") &&
+  appSource.includes("messages: [], activeMessageId: null"),
+  "chat history startup should apply account-local cache before server summary, search summary text, and avoid saving summaries as full empty sessions",
+);
+
+assert(
+  appSource.includes("const serverTarget = preferredStoredSession(serverStored)") &&
+  appSource.includes("selectCurrentSession(serverTarget.id)") &&
+  appSource.includes("const detailTarget = selectedSession ?? serverTarget") &&
+  appSource.includes("await loadChatSession(detailTarget.id, currentUserId)") &&
+  !appSource.includes("if (!didApplyLocalStored && !currentSessionIdRef.current)"),
+  "server-only summary startup should open and lazy-load the server current session instead of creating a blank new chat",
 );
 
 const chatHistoryKeysBlock = appSource.match(/function chatHistoryCandidateKeys[\s\S]*?function loadStoredSessions/m)?.[0] ?? "";

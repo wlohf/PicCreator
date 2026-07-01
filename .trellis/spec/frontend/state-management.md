@@ -49,6 +49,85 @@ hasConversationContent({
 
 This contract matters for `New Conversation`: clicking it while the current session only has transient draft state should keep the user in the same empty session; clicking it after durable content exists may create/switch to a new session.
 
+### Scenario: Chat History Summary Loading
+
+#### 1. Scope / Trigger
+- Trigger: chat history startup crosses browser cache, frontend session state, `/api/chat-history` response shape, backend persistence, and account isolation.
+- Applies when changing chat-history load/save APIs, startup bootstrapping, session switching, or localStorage recovery.
+
+#### 2. Signatures
+- `GET /api/chat-history?summary=1` returns `ChatHistoryPayload` with lightweight `sessions[]`.
+- `GET /api/chat-history/{session_id}` returns `{ ok: true, session: ChatSessionPayload }`.
+- `GET /api/chat-history` remains the full-history compatibility endpoint.
+- `PUT /api/chat-history` remains the full-history save endpoint, but must tolerate summary placeholders without deleting existing messages.
+- Frontend API helpers should expose `loadChatHistorySummary(userId)`, `loadChatSession(sessionId, userId)`, and `saveChatHistory(history, userId)`.
+
+#### 3. Contracts
+- Summary sessions must keep `messages: []` and include `hasMessages`, `messageCount`, and `searchText` so the sidebar/search can render without full message payloads.
+- Frontend startup must read account-scoped localStorage before requesting the server summary. LocalStorage is a fast cache, not the authoritative store.
+- When local cache is absent and server summary exists, select the server `currentSessionId` (or first summary) and immediately lazy-load that session detail. Do not put a blank new session in front of real server history.
+- Opening a summary-only session must call `loadChatSession(...)` before applying it as the visible conversation.
+- Merging server summaries into local state must preserve any existing full `messages` and `activeMessageId` for the same session id.
+- Saving must not treat a summary-only session as an intentionally empty conversation. Frontend saves may send summary placeholders, and the backend must merge those placeholders with existing full history before writing.
+- Account identity and namespace compatibility rules still apply: signed-in users use the authenticated account, while legacy `user_id` query compatibility stays scoped to that explicit namespace.
+
+#### 4. Validation & Error Matrix
+- Summary request succeeds -> render sidebar sessions without full messages.
+- Summary request has sessions but local cache is empty -> select server current session and lazy-load its detail.
+- Detail request returns 404 -> keep current state and show an explicit load failure; do not replace the session with an empty conversation.
+- Summary merge collides with a local full session -> keep local full messages and use summary metadata only where safe.
+- Save payload includes `messages: []` plus `hasMessages/messageCount` -> preserve existing backend messages for that session.
+- Missing auth/session -> follow the normal auth flow; do not fall back to another account's localStorage keys.
+
+#### 5. Good / Base / Bad Cases
+- Good: a returning user sees local cached history immediately, then the server summary refreshes titles/order in the background.
+- Good: a user on a new browser sees the server current session selected and lazily hydrated from `/api/chat-history/{session_id}`.
+- Base: full `GET /api/chat-history` still works for legacy clients and migration paths.
+- Bad: startup waits for full `GET /api/chat-history` before showing any history.
+- Bad: server summaries overwrite local full messages with `messages: []`.
+- Bad: saving a summary-only placeholder deletes the backend's complete conversation.
+
+#### 6. Tests Required
+- Backend API test asserting `summary=1` returns empty `messages` plus `hasMessages/messageCount/searchText`.
+- Backend API test asserting session detail returns full messages and missing session returns 404.
+- Backend API test asserting saving a summary placeholder preserves existing full messages.
+- Frontend/API test or static assertion that startup uses `loadChatHistorySummary(...)` after local cache recovery.
+- Frontend/API test or static assertion that summary-only session open uses `loadChatSession(...)`.
+- Frontend/API test or static assertion that server-summary-only startup selects and lazy-loads the server current session instead of creating a blank chat.
+
+#### 7. Wrong vs Correct
+
+#### Wrong
+
+```typescript
+// Blocks first paint on the complete message payload.
+withStartupRetry(() => loadChatHistory(currentUserId)).then(applyStoredSessionCollection);
+```
+
+#### Correct
+
+```typescript
+const localStored = loadStoredSessions(currentUserId);
+applyStoredSessionCollection(localStored);
+withStartupRetry(() => loadChatHistorySummary(currentUserId)).then(applyStoredSessionSummaries);
+```
+
+#### Wrong
+
+```typescript
+// This can persist a summary placeholder as a destructive empty conversation.
+saveChatHistory({ currentSessionId, sessions: persistableSessions }, currentUserId);
+```
+
+#### Correct
+
+```typescript
+saveChatHistory({
+  currentSessionId,
+  sessions: sessionsForBackendSave(persistableSessions),
+}, currentUserId);
+```
+
 ### Assistant Reply Retry Variants
 
 Retrying a daily-chat assistant reply must update the original assistant message as a reply variant, not append the previous user prompt as a new user message.

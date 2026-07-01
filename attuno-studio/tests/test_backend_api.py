@@ -1412,6 +1412,62 @@ def test_authenticated_chat_history_persists_and_is_isolated(tmp_path, monkeypat
     assert saved["currentSessionId"] == "session-alice"
 
 
+def test_chat_history_summary_and_detail_endpoints(tmp_path, monkeypatch):
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
+    client = _auth_client("summary-chat-history")
+    payload = {
+        "currentSessionId": "session-summary",
+        "sessions": [
+            {
+                "id": "session-summary",
+                "title": "Summary conversation",
+                "createdAt": "2026-07-01T10:00:00Z",
+                "updatedAt": "2026-07-01T10:01:00Z",
+                "messages": [
+                    {
+                        "id": "m-1",
+                        "role": "user",
+                        "kind": "text",
+                        "content": "summary detail hello",
+                    }
+                ],
+                "activeMessageId": "m-1",
+                "chatInput": "",
+                "workspaceMode": "chat",
+                "generationMode": "standard",
+                "composerMode": "new-generation",
+                "activeResultId": None,
+            }
+        ],
+    }
+
+    save_response = client.put("/api/chat-history", json=payload)
+    summary_response = client.get("/api/chat-history?summary=1")
+    detail_response = client.get("/api/chat-history/session-summary")
+    missing_response = client.get("/api/chat-history/missing-session")
+
+    assert save_response.status_code == 200
+    assert summary_response.status_code == 200
+    summary_session = summary_response.json()["history"]["sessions"][0]
+    assert summary_session["id"] == "session-summary"
+    assert summary_session["messages"] == []
+    assert summary_session["hasMessages"] is True
+    assert summary_session["messageCount"] == 1
+    assert "summary detail hello" in summary_session["searchText"]
+    assert detail_response.status_code == 200
+    detail_session = detail_response.json()["session"]
+    assert detail_session["messages"][0]["content"] == "summary detail hello"
+    assert detail_session["activeMessageId"] == "m-1"
+    assert missing_response.status_code == 404
+
+    save_summary_response = client.put("/api/chat-history", json=summary_response.json()["history"])
+    preserved_detail_response = client.get("/api/chat-history/session-summary")
+
+    assert save_summary_response.status_code == 200
+    assert preserved_detail_response.status_code == 200
+    assert preserved_detail_response.json()["session"]["messages"][0]["content"] == "summary detail hello"
+
+
 def test_fresh_non_default_user_cannot_fallback_to_workspace_keys_at_runtime(tmp_path, monkeypatch):
     import app_runtime
 

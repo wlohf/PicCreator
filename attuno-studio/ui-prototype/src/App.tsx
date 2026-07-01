@@ -50,7 +50,7 @@ import {
 import { loadAuthMe, login, logout, register, type AuthUser } from "./api/auth";
 import { detectConfigModels, loadConfig, saveConfig, verifyConfig, type ConfigRole } from "./api/config";
 import { applyChatMemory, isChatStreamAbortedError, streamDesignChat, type DesignChatProgress } from "./api/chat";
-import { loadChatHistory, saveChatHistory } from "./api/chatHistory";
+import { loadChatHistorySummary, loadChatSession, saveChatHistory } from "./api/chatHistory";
 import { isGenerationStreamAbortedError, requestGenerationStream } from "./api/generation";
 import { requestAnnotatedImageEdit, requestImageEdit } from "./api/imageEdits";
 import { createMemoryItem, deleteMemoryItem, loadMemoryView, loadPromptSkillPreferences, loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, savePromptSkillPreferences, saveShortcutPreferences, updateMemoryItem, type MemoryItem, type MemorySection, type MemoryView, type PromptSkillPreference, type StyleProfile } from "./api/preferences";
@@ -212,6 +212,9 @@ type ChatSessionRecord = {
   activeResultId: string | null;
   pinnedAt?: string | null;
   titleLocked?: boolean;
+  hasMessages?: boolean;
+  messageCount?: number;
+  searchText?: string;
 };
 
 type StoredChatSessions = {
@@ -1248,6 +1251,9 @@ function normalizeStoredSession(value: unknown, fallbackId = ""): ChatSessionRec
     activeResultId: session.activeResultId ? String(session.activeResultId) : null,
     pinnedAt: typeof session.pinnedAt === "string" ? session.pinnedAt : null,
     titleLocked: Boolean(session.titleLocked),
+    hasMessages: Boolean(session.hasMessages),
+    messageCount: Number.isFinite(Number(session.messageCount)) ? Math.max(0, Number(session.messageCount)) : messages.length,
+    searchText: typeof session.searchText === "string" ? session.searchText : "",
   };
 }
 
@@ -1294,8 +1300,28 @@ function parseStoredSessions(raw: string | null, fallbackIdPrefix: string): Stor
   };
 }
 
+function isSummaryOnlySession(session: ChatSessionRecord) {
+  return session.messages.length === 0 && (Boolean(session.hasMessages) || Number(session.messageCount || 0) > 0);
+}
+
+function hasSessionHistoryContent(session: ChatSessionRecord) {
+  return hasDurableConversationContent(session.messages) || Boolean(session.chatInput.trim()) || isSummaryOnlySession(session);
+}
+
+function sessionsForBackendSave(sessions: ChatSessionRecord[]) {
+  return sessions.map((session) => (
+    isSummaryOnlySession(session)
+      ? { ...session, messages: [], activeMessageId: null }
+      : session
+  ));
+}
+
 function hasRecoverableStoredSessions(sessions: ChatSessionRecord[]) {
-  return sessions.some((session) => hasDurableConversationContent(session.messages) || Boolean(session.chatInput.trim()));
+  return sessions.some(hasSessionHistoryContent);
+}
+
+function preferredStoredSession(stored: StoredChatSessions) {
+  return stored.sessions.find((session) => session.id === stored.currentSessionId) ?? stored.sessions[0] ?? null;
 }
 
 function chatHistoryCandidateKeys(userId: string) {
@@ -1422,8 +1448,45 @@ function sessionSearchText(session: ChatSessionRecord) {
   return [
     session.title,
     session.chatInput,
+    session.searchText || "",
     messageText,
   ].join(" ").toLowerCase();
+}
+
+function mergeSessionPreservingDetail(existing: ChatSessionRecord | undefined, nextSession: ChatSessionRecord) {
+  if (!existing) return nextSession;
+  if (isSummaryOnlySession(nextSession) && !isSummaryOnlySession(existing) && existing.messages.length > 0) {
+    return {
+      ...nextSession,
+      messages: existing.messages,
+      activeMessageId: existing.activeMessageId,
+      chatInput: existing.chatInput || nextSession.chatInput,
+      workspaceMode: existing.workspaceMode,
+      generationMode: existing.generationMode,
+      promptModeId: existing.promptModeId,
+      composerMode: existing.composerMode,
+      activeResultId: existing.activeResultId ?? nextSession.activeResultId,
+      titleLocked: existing.titleLocked || nextSession.titleLocked,
+    };
+  }
+  return nextSession;
+}
+
+function mergeSessionCollections(current: ChatSessionRecord[], incoming: ChatSessionRecord[]) {
+  const byId = new Map(current.map((session) => [session.id, session]));
+  for (const session of incoming) {
+    byId.set(session.id, mergeSessionPreservingDetail(byId.get(session.id), session));
+  }
+  return Array.from(byId.values())
+    .sort((left, right) => {
+      const pinnedRank = Number(Boolean(right.pinnedAt)) - Number(Boolean(left.pinnedAt));
+      if (pinnedRank !== 0) return pinnedRank;
+      if (left.pinnedAt || right.pinnedAt) {
+        return String(right.pinnedAt || "").localeCompare(String(left.pinnedAt || ""));
+      }
+      return right.updatedAt.localeCompare(left.updatedAt);
+    })
+    .slice(0, 100);
 }
 
 function clampPanelWidth(value: number, min: number, max: number) {
@@ -3384,11 +3447,17 @@ function App() {
   }
 
   function applyStoredSessionCollection(stored: StoredChatSessions) {
-    const target = stored.sessions.find((session) => session.id === stored.currentSessionId) ?? stored.sessions[0];
+    const target = preferredStoredSession(stored);
     if (!target) return false;
     setChatSessions(upsertSession(stored.sessions, target));
     selectCurrentSession(target.id);
     applySession(target);
+    return true;
+  }
+
+  function applyStoredSessionSummaries(stored: StoredChatSessions) {
+    if (stored.sessions.length === 0) return false;
+    setChatSessions((current) => mergeSessionCollections(current, stored.sessions));
     return true;
   }
 
@@ -3425,20 +3494,49 @@ function App() {
         isBootstrappingSessionRef.current = false;
       };
     }
-    withStartupRetry(() => loadChatHistory(currentUserId))
+    const localStored = loadStoredSessions(currentUserId);
+    const didApplyLocalStored = hasRecoverableStoredSessions(localStored.sessions) && applyStoredSessionCollection(localStored);
+
+    withStartupRetry(() => loadChatHistorySummary(currentUserId))
       .then(async (serverHistory) => {
         if (!isMounted) return;
         const serverStored = parseStoredSessions(JSON.stringify(serverHistory), "server-session");
-        if (hasRecoverableStoredSessions(serverStored.sessions) && applyStoredSessionCollection(serverStored)) {
+        if (hasRecoverableStoredSessions(serverStored.sessions)) {
+          const baseSessions = didApplyLocalStored ? localStored.sessions : chatSessions;
+          const mergedSessions = mergeSessionCollections(baseSessions, serverStored.sessions);
+          const serverTarget = preferredStoredSession(serverStored);
+          const selectedSessionId = currentSessionIdRef.current || serverTarget?.id || serverStored.currentSessionId;
+          const selectedSession = mergedSessions.find((session) => session.id === selectedSessionId) ?? serverTarget;
+          applyStoredSessionSummaries(serverStored);
           lastSavedChatHistoryRef.current = JSON.stringify({
-            currentSessionId: serverStored.currentSessionId,
-            sessions: serverStored.sessions,
+            currentSessionId: selectedSessionId || serverStored.currentSessionId,
+            sessions: mergedSessions,
           });
+          if (!currentSessionIdRef.current && serverTarget) {
+            selectCurrentSession(serverTarget.id);
+            applySession(serverTarget);
+          }
+          const detailTarget = selectedSession ?? serverTarget;
+          if (detailTarget && isSummaryOnlySession(detailTarget)) {
+            try {
+              const loadedSession = normalizeStoredSession(
+                await loadChatSession(detailTarget.id, currentUserId),
+                `server-session-${detailTarget.id}`,
+              );
+              if (!isMounted || !loadedSession) return;
+              setChatSessions((current) => mergeSessionCollections(current, [loadedSession]));
+              if (currentSessionIdRef.current === detailTarget.id) {
+                applySession(loadedSession);
+              }
+              lastSavedChatHistoryRef.current = "";
+            } catch {
+              // Keep the summary row usable; clicking it will retry the lazy detail load.
+            }
+          }
           return;
         }
 
-        const localStored = loadStoredSessions(currentUserId);
-        if (hasRecoverableStoredSessions(localStored.sessions) && applyStoredSessionCollection(localStored)) {
+        if (didApplyLocalStored) {
           await saveChatHistory({
             currentSessionId: localStored.currentSessionId,
             sessions: localStored.sessions,
@@ -3521,7 +3619,10 @@ function App() {
     }
     if (isBootstrappingSessionRef.current || serialized === lastSavedChatHistoryRef.current) return;
     lastSavedChatHistoryRef.current = serialized;
-    void saveChatHistory(historyPayload, currentUserId).catch(() => {
+    void saveChatHistory({
+      ...historyPayload,
+      sessions: sessionsForBackendSave(persistableSessions),
+    }, currentUserId).catch(() => {
       lastSavedChatHistoryRef.current = "";
     });
   }, [chatSessions, currentSessionId, currentUserId]);
@@ -4459,7 +4560,7 @@ function App() {
     showToast(locale === "zh" ? "已新建对话" : "New chat created");
   }
 
-  function handleOpenSession(sessionId: string) {
+  async function handleOpenSession(sessionId: string) {
     if (!sessionId) return;
     setActivePrimaryView("workspace");
     setIsAccountMenuOpen(false);
@@ -4467,17 +4568,34 @@ function App() {
     setActiveHistoryMenuId(null);
     setHistoryMenuPosition(null);
     setRenamingSessionId(null);
-    if (sessionId === currentSessionId) {
+    const target = chatSessions.find((session) => session.id === sessionId);
+    if (!target) return;
+    const shouldLoadDetail = isSummaryOnlySession(target);
+    if (sessionId === currentSessionId && !shouldLoadDetail) {
       window.setTimeout(() => composerRef.current?.focus(), 0);
       return;
     }
-    const currentSnapshot = snapshotCurrentSession();
-    const target = chatSessions.find((session) => session.id === sessionId);
-    if (!target) return;
-    setChatSessions((current) => currentSnapshot ? upsertSession(current, currentSnapshot) : current);
+    const currentSnapshot = sessionId === currentSessionId ? null : snapshotCurrentSession();
+    let nextTarget = target;
+    if (shouldLoadDetail && currentUserId) {
+      try {
+        const loadedSession = normalizeStoredSession(await loadChatSession(sessionId, currentUserId), `server-session-${sessionId}`);
+        if (!loadedSession) {
+          throw new Error(locale === "zh" ? "聊天记录格式无效" : "Invalid chat session payload");
+        }
+        nextTarget = loadedSession;
+      } catch (error) {
+        showToast(`${locale === "zh" ? "加载聊天详情失败" : "Failed to load chat session"}: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
+    setChatSessions((current) => {
+      const seeded = currentSnapshot ? upsertSession(current, currentSnapshot) : current;
+      return mergeSessionCollections(seeded, [nextTarget]);
+    });
     selectCurrentSession(sessionId);
     clearAttachments(true);
-    applySession(target);
+    applySession(nextTarget);
     showToast(locale === "zh" ? "已切换聊天记录" : "Chat session switched");
   }
 

@@ -95,12 +95,14 @@ def _normalize_session(value: Any, index: int) -> dict[str, Any] | None:
     if not isinstance(messages, list):
         messages = []
     now = datetime.now(timezone.utc).isoformat()
+    active_message_id = value.get("activeMessageId", value.get("active_message_id"))
     return {
         "id": session_id,
         "title": str(value.get("title") or "新对话"),
         "createdAt": str(value.get("createdAt") or value.get("created_at") or now),
         "updatedAt": str(value.get("updatedAt") or value.get("updated_at") or value.get("createdAt") or now),
         "messages": [item for item in messages if isinstance(item, dict)],
+        "activeMessageId": str(active_message_id) if active_message_id else None,
         "chatInput": str(value.get("chatInput") or value.get("chat_input") or ""),
         "workspaceMode": str(value.get("workspaceMode") or "chat"),
         "generationMode": str(value.get("generationMode") or "standard"),
@@ -110,6 +112,59 @@ def _normalize_session(value: Any, index: int) -> dict[str, Any] | None:
         "pinnedAt": str(value.get("pinnedAt")) if value.get("pinnedAt") else None,
         "titleLocked": bool(value.get("titleLocked")),
         "_index": index,
+    }
+
+
+def _text_from_localized(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return " ".join(str(item) for item in value.values() if isinstance(item, str))
+    if isinstance(value, list):
+        return " ".join(str(item) for item in value if isinstance(item, str))
+    return ""
+
+
+def _message_search_text(message: dict[str, Any]) -> str:
+    parts = [
+        _text_from_localized(message.get("content")),
+        _text_from_localized(message.get("bullets", {}).get("zh") if isinstance(message.get("bullets"), dict) else None),
+        _text_from_localized(message.get("bullets", {}).get("en") if isinstance(message.get("bullets"), dict) else None),
+        str(message.get("promptText") or ""),
+        str(message.get("imageLabel") or ""),
+        str(message.get("draftInstruction") or ""),
+    ]
+    variants = message.get("variants")
+    if isinstance(variants, list):
+        for variant in variants[:5]:
+            if not isinstance(variant, dict):
+                continue
+            parts.extend([
+                _text_from_localized(variant.get("content")),
+                _text_from_localized(variant.get("bullets", {}).get("zh") if isinstance(variant.get("bullets"), dict) else None),
+                _text_from_localized(variant.get("bullets", {}).get("en") if isinstance(variant.get("bullets"), dict) else None),
+                str(variant.get("promptText") or ""),
+                str(variant.get("imageLabel") or ""),
+                str(variant.get("draftInstruction") or ""),
+            ])
+    return " ".join(part for part in parts if part).strip()
+
+
+def _summarize_session(session: dict[str, Any]) -> dict[str, Any]:
+    messages = session.get("messages") if isinstance(session.get("messages"), list) else []
+    search_text = " ".join([
+        str(session.get("title") or ""),
+        str(session.get("chatInput") or ""),
+        " ".join(_message_search_text(message) for message in messages if isinstance(message, dict)),
+    ]).strip()
+    if len(search_text) > 2048:
+        search_text = search_text[:2048]
+    return {
+        **session,
+        "messages": [],
+        "hasMessages": len(messages) > 0,
+        "messageCount": len(messages),
+        "searchText": search_text,
     }
 
 
@@ -136,17 +191,83 @@ def _normalize_chat_history(value: Any) -> dict[str, Any]:
     }
 
 
+def _load_chat_history_unlocked(user_id: str = "default") -> dict[str, Any]:
+    if _use_database_storage():
+        return _load_chat_history_db(user_id)
+    data = _read_chat_history_json(user_id)
+    return _normalize_chat_history(data)
+
+
 def load_chat_history(user_id: str = "default") -> dict[str, Any]:
     with _lock:
-        if _use_database_storage():
-            return _load_chat_history_db(user_id)
-        data = _read_chat_history_json(user_id)
-        return _normalize_chat_history(data)
+        return _load_chat_history_unlocked(user_id)
+
+
+def load_chat_history_summary(user_id: str = "default") -> dict[str, Any]:
+    with _lock:
+        history = _load_chat_history_unlocked(user_id)
+    return {
+        **history,
+        "sessions": [_summarize_session(session) for session in history["sessions"]],
+    }
+
+
+def load_chat_session(session_id: str, user_id: str = "default") -> dict[str, Any] | None:
+    target_id = str(session_id or "").strip()
+    if not target_id:
+        return None
+    with _lock:
+        history = _load_chat_history_unlocked(user_id)
+    return next((session for session in history["sessions"] if session["id"] == target_id), None)
+
+
+def _is_summary_only_payload_session(value: Any) -> bool:
+    if not isinstance(value, dict):
+        return False
+    messages = value.get("messages")
+    if not isinstance(messages, list) or len(messages) > 0:
+        return False
+    try:
+        message_count = int(value.get("messageCount") or 0)
+    except (TypeError, ValueError):
+        message_count = 0
+    return bool(value.get("hasMessages")) or message_count > 0
+
+
+def _merge_summary_payload_with_existing(payload: dict[str, Any], existing: dict[str, Any]) -> dict[str, Any]:
+    raw_sessions = payload.get("sessions")
+    if not isinstance(raw_sessions, list):
+        return payload
+    existing_by_id = {
+        session["id"]: session
+        for session in existing.get("sessions", [])
+        if isinstance(session, dict) and session.get("id")
+    }
+    merged_sessions: list[Any] = []
+    for session in raw_sessions:
+        if _is_summary_only_payload_session(session):
+            session_id = str(session.get("id") or "")
+            previous = existing_by_id.get(session_id)
+            previous_messages = previous.get("messages") if isinstance(previous, dict) else None
+            if isinstance(previous_messages, list) and previous_messages:
+                merged_sessions.append({
+                    **session,
+                    "messages": previous_messages,
+                    "activeMessageId": session.get("activeMessageId") or previous.get("activeMessageId"),
+                })
+                continue
+        merged_sessions.append(session)
+    return {
+        **payload,
+        "sessions": merged_sessions,
+    }
 
 
 def save_chat_history(payload: dict[str, Any], user_id: str = "default") -> dict[str, Any]:
-    normalized = _normalize_chat_history({**payload, "updatedAt": datetime.now(timezone.utc).isoformat()})
     with _lock:
+        existing = _load_chat_history_unlocked(user_id)
+        merged_payload = _merge_summary_payload_with_existing(payload, existing)
+        normalized = _normalize_chat_history({**merged_payload, "updatedAt": datetime.now(timezone.utc).isoformat()})
         if _use_database_storage():
             _save_chat_history_db(normalized, user_id)
             return normalized
