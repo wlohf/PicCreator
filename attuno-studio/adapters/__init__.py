@@ -17,25 +17,11 @@ def build_adapter(cfg: AdapterConfig, role: str):
 
     if api_format == "anthropic":
         if role == "image":
-            raise ValueError("Anthropic API 格式当前不支持 image 生图，请改用 openai_chat 或 openai_image。")
+            raise ValueError("message 格式当前不支持 image 生图，请改用 completion。")
         return AnthropicAdapter(cfg)
-    if api_format in ("openai_image", "custom_openai_image"):
-        if role != "image":
-            raise ValueError("openai_image API 格式当前仅支持 image 生图。")
-        return GoogleImagenAdapter(cfg)
     if role == "image" and _prefers_images_endpoint(resolved_model):
         return GoogleImagenAdapter(cfg)
-    if api_format in (
-        "openai_chat",
-        "openai_responses",
-        "gemini",
-        "azure_openai",
-        "custom_openai_chat",
-        "new_api",
-        "cherryin",
-        "ollama",
-        "",
-    ):
+    if api_format in ("openai_chat", "openai_responses", ""):
         return OpenAICompatAdapter(cfg)
 
     raise ValueError(f"不支持的 API 格式: {api_format}")

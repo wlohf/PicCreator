@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for release/update/config changes"}
+{"file": ".trellis/spec/backend/deployment-operations.md", "reason": "Deployment update and system status contracts touched by current WIP"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Generation/message contracts touched by image result and chat changes"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for UI/state changes"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Frontend state persistence and chat/session boundaries"}

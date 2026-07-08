@@ -1,5 +1,6 @@
 import { type ChangeEvent, type ClipboardEvent as ReactClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Activity,
   Aperture,
   Box,
   Camera,
@@ -17,6 +18,7 @@ import {
   EyeOff,
   FileText,
   GitBranch,
+  Globe,
   ImagePlus,
   KeyRound,
   LogOut,
@@ -55,7 +57,7 @@ import { isGenerationStreamAbortedError, requestGenerationStream } from "./api/g
 import { requestAnnotatedImageEdit, requestImageEdit } from "./api/imageEdits";
 import { createMemoryItem, deleteMemoryItem, loadMemoryView, loadPromptSkillPreferences, loadShortcutPreferences, loadStyleProfile, recordPreferenceEvent, savePromptSkillPreferences, saveShortcutPreferences, updateMemoryItem, type MemoryItem, type MemorySection, type MemoryView, type PromptSkillPreference, type StyleProfile } from "./api/preferences";
 import { deleteResult, listResults, normalizeApiResult } from "./api/results";
-import { applySystemUpdate, checkSystemUpdate, getSystemUpdateStatus } from "./api/system";
+import { applySystemUpdate, checkSystemUpdate, getSystemRuntimeStatus, getSystemUpdateStatus } from "./api/system";
 import { ConfigStatus, type ConfigStatusState } from "./components/ConfigStatus";
 import { AnnotationEditor } from "./components/AnnotationEditor";
 import {
@@ -77,7 +79,7 @@ import {
   directionItems,
   modelOptions
 } from "./data/studioData";
-import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatMessageVariant, ChatReasoningEffort, ChatThinkingStatus, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem, SystemUpdateStatus, WebSearchMetadata } from "./types/domain";
+import type { ApiConfig, ApiProviderProfile, ChatImageAttachment, ChatMemoryCandidate, ChatMessage, ChatMessageVariant, ChatReasoningEffort, ChatThinkingStatus, FilePreview, GenerateResponse, GenerationMode, GenerationProgress, Locale, RenderHistoryItem, SystemRuntimeStatus, SystemUpdateStatus, WebSearchMetadata } from "./types/domain";
 import { appendMessageVariant, buildLinearChatContext, canSwitchWorkspaceMode, cloneMessagePath, countGenerationRecords, getActiveMessagePath, getActiveMessageVariantIndex, getBranchInfo, getMessagePathTo, getMessageVariants, hasConversationContent, hasDurableConversationContent, inferMessageGenerationMode, inferStoredWorkspaceMode, isCurrentConversationRun, isImageWorkflowMessage, mergeMessageTreeById, mergeMessagesIntoSessionSnapshot, normalizeMessageTree, setActiveMessageVariantIndex, switchMessageSibling, updateActiveMessageVariant, upsertSessionSnapshot, withActiveMessageVariant, type ConversationRunGuard } from "./utils/chatSessions";
 import { apiConfigStorageKey, apiConfigStorageReadKeys } from "./utils/apiConfigStorage";
 import { filesFromList, imageFilesFromClipboardItems, imageFilesFromFiles, imageSourcesFromClipboardData, mergeFloorPlanFiles } from "./utils/fileAttachments";
@@ -103,6 +105,7 @@ const SIDEBAR_COLLAPSED_WIDTH = 72;
 const GENERATION_SLOW_NOTICE_MS = 5 * 60 * 1000;
 const MAX_ITERATIONS_UPPER_BOUND = 50;
 const COMPOSER_MAX_VISIBLE_HEIGHT = 232;
+const CHAT_AUTO_FOLLOW_BOTTOM_THRESHOLD = 96;
 const SIDEBAR_WIDTH_MIN = 316;
 const SIDEBAR_WIDTH_MAX = 316;
 const DRAWER_WIDTH_MIN = 420;
@@ -412,6 +415,42 @@ type ImageComparisonCandidate = {
   result?: RenderHistoryItem;
 };
 
+type ComparisonSlot = "left" | "right";
+type MemoryProjectPreferenceGroup = "style" | "furniture" | "structure" | "materials" | "lighting" | "avoid";
+
+type MemoryDraft = {
+  text: string;
+  sectionId: string;
+  group: MemoryProjectPreferenceGroup;
+};
+
+const writableMemorySectionIds = new Set([
+  "daily_memories",
+  "long_term_preferences",
+  "avoid_items",
+  "project_preferences",
+  "evaluation_standards",
+]);
+
+const projectPreferenceGroupOptions: { value: MemoryProjectPreferenceGroup; zh: string; en: string }[] = [
+  { value: "style", zh: "风格", en: "Style" },
+  { value: "furniture", zh: "家具", en: "Furniture" },
+  { value: "structure", zh: "结构", en: "Structure" },
+  { value: "materials", zh: "材质", en: "Materials" },
+  { value: "lighting", zh: "灯光", en: "Lighting" },
+  { value: "avoid", zh: "避免项", en: "Avoid" },
+];
+
+function memoryCreateTargetSectionId(sectionId: string) {
+  return writableMemorySectionIds.has(sectionId) ? sectionId : "long_term_preferences";
+}
+
+function normalizeProjectPreferenceGroup(group?: string): MemoryProjectPreferenceGroup {
+  return projectPreferenceGroupOptions.some((option) => option.value === group)
+    ? group as MemoryProjectPreferenceGroup
+    : "style";
+}
+
 function areSameImageComparisonCandidate(left: ImageComparisonCandidate, right: ImageComparisonCandidate) {
   return left.id === right.id ||
     (Boolean(left.sourceResultId) && left.sourceResultId === right.sourceResultId) ||
@@ -539,6 +578,9 @@ function apiFormatDisplayName(value: string) {
 
 function normalizeApiFormatValue(value: string) {
   const normalized = String(value || "").trim();
+  if (!normalized) {
+    return "openai_chat";
+  }
   const aliases: Record<string, string> = {
     openai: "openai_chat",
     openai_compat: "openai_chat",
@@ -549,16 +591,34 @@ function normalizeApiFormatValue(value: string) {
     "openai chat completions": "openai_chat",
     chat_completions: "openai_chat",
     "chat/completions": "openai_chat",
-    custom: "custom_openai_chat",
-    custom_chat: "custom_openai_chat",
-    "custom openai": "custom_openai_chat",
-    "custom openai-compatible chat": "custom_openai_chat",
-    "custom openai chat": "custom_openai_chat",
-    "custom openai chat completions": "custom_openai_chat",
-    newapi: "custom_openai_chat",
-    "new-api": "custom_openai_chat",
-    cherry_in: "custom_openai_chat",
-    "cherry-in": "custom_openai_chat",
+    completion: "openai_chat",
+    completions: "openai_chat",
+    openai_image: "openai_chat",
+    "openai image": "openai_chat",
+    "openai images api": "openai_chat",
+    custom: "openai_chat",
+    custom_openai_chat: "openai_chat",
+    custom_chat: "openai_chat",
+    "custom openai": "openai_chat",
+    "custom openai-compatible chat": "openai_chat",
+    "custom openai chat": "openai_chat",
+    "custom openai chat completions": "openai_chat",
+    custom_openai_image: "openai_chat",
+    custom_image: "openai_chat",
+    "custom openai image": "openai_chat",
+    "custom openai images api": "openai_chat",
+    gemini: "openai_chat",
+    "gemini compatible": "openai_chat",
+    azure_openai: "openai_chat",
+    "azure openai": "openai_chat",
+    ollama: "openai_chat",
+    newapi: "openai_chat",
+    new_api: "openai_chat",
+    "new-api": "openai_chat",
+    cherryin: "openai_chat",
+    cherry_in: "openai_chat",
+    "cherry-in": "openai_chat",
+    response: "openai_responses",
     responses: "openai_responses",
     "openai-response": "openai_responses",
     "openai responses": "openai_responses",
@@ -698,6 +758,18 @@ function normalizeApiConfig(value: unknown): ApiConfig {
     imageApiKey: String(saved.imageApiKey ?? defaultApiConfig.imageApiKey),
     imageModel: String(saved.imageModel ?? defaultApiConfig.imageModel),
     tavilyApiKeys: String(saved.tavilyApiKeys ?? defaultApiConfig.tavilyApiKeys),
+    chatMaxOutputTokens: normalizePositiveInteger(
+      saved.chatMaxOutputTokens,
+      defaultApiConfig.chatMaxOutputTokens,
+      256,
+      200000
+    ),
+    chatContextSize: normalizePositiveInteger(
+      saved.chatContextSize,
+      defaultApiConfig.chatContextSize,
+      1024,
+      2000000
+    ),
     floorAnalysisSystemPrompt: String(saved.floorAnalysisSystemPrompt ?? defaultApiConfig.floorAnalysisSystemPrompt),
     promptGenSystem3dCn: String(saved.promptGenSystem3dCn ?? defaultApiConfig.promptGenSystem3dCn),
     fallbackModels: String(saved.fallbackModels ?? defaultApiConfig.fallbackModels),
@@ -732,6 +804,14 @@ function normalizeMaxIterations(value: number) {
     return 1;
   }
   return Math.min(MAX_ITERATIONS_UPPER_BOUND, Math.max(1, Math.trunc(value)));
+}
+
+function normalizePositiveInteger(value: unknown, fallback: number, min = 1, max = Number.MAX_SAFE_INTEGER) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  return Math.min(max, Math.max(min, Math.trunc(numeric)));
 }
 
 function wait(ms: number) {
@@ -876,24 +956,346 @@ function emptyGenerationResultError(result: GenerateResponse, locale: Locale) {
     : `The image service did not return an image result${detail ? `: ${detail}` : ""}`);
 }
 
-function renderInlineMarkdown(text: string, keyPrefix: string): ReactNode[] {
-  const nodes: ReactNode[] = [];
-  const boldPattern = /\*\*([^*\n]+)\*\*/g;
+function safeExternalHref(value?: string) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === "http:" || parsed.protocol === "https:" ? parsed.href : "";
+  } catch {
+    return "";
+  }
+}
+
+function formatSourceHost(value?: string) {
+  const href = safeExternalHref(value);
+  if (!href) return String(value || "").trim();
+  try {
+    return new URL(href).hostname.replace(/^www\./i, "");
+  } catch {
+    return href;
+  }
+}
+
+interface CitationItem {
+  index: number;
+  href: string;
+}
+
+interface InlineToken {
+  type: "text" | "bold" | "link" | "citation";
+  text: string;
+  href?: string;
+  index?: number;
+}
+
+interface GroupedCitationItem {
+  index: number;
+  href: string;
+}
+
+type GroupedToken =
+  | { type: "text"; text: string }
+  | { type: "bold"; text: string }
+  | { type: "link"; text: string; href: string }
+  | { type: "citation_group"; items: GroupedCitationItem[] };
+
+function Favicon({ url, className }: { url: string; className?: string }) {
+  const [isError, setIsError] = useState(false);
+  const domain = useMemo(() => {
+    try {
+      return new URL(url).hostname.replace(/^www\./i, "");
+    } catch {
+      return "";
+    }
+  }, [url]);
+
+  if (isError || !domain) {
+    return <Globe size={11} className={className} style={{ flexShrink: 0 }} />;
+  }
+
+  return (
+    <img
+      src={`https://www.google.com/s2/favicons?sz=32&domain=${domain}`}
+      alt=""
+      className={className}
+      onError={() => setIsError(true)}
+      style={{
+        width: 12,
+        height: 12,
+        borderRadius: 2,
+        objectFit: "contain",
+        flexShrink: 0,
+        display: "block",
+      }}
+    />
+  );
+}
+
+function CitationPill({ items, webSearch, locale }: { items: GroupedCitationItem[]; webSearch?: WebSearchMetadata; locale: Locale }) {
+  const [isPopoverVisible, setIsPopoverVisible] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const timeoutRef = useRef<any>(null);
+
+  const handleMouseEnter = () => {
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    setIsPopoverVisible(true);
+  };
+
+  const handleMouseLeave = () => {
+    timeoutRef.current = setTimeout(() => {
+      setIsPopoverVisible(false);
+    }, 150);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  if (!items || items.length === 0) return null;
+
+  const resolvedItems = items.map((item) => {
+    const url = item.href;
+    const match = webSearch?.results?.find((r) => {
+      try {
+        const u1 = new URL(r.url).href;
+        const u2 = new URL(url).href;
+        return u1 === u2;
+      } catch {
+        return r.url === url;
+      }
+    });
+
+    const host = formatSourceHost(url);
+    const title = match?.title || host;
+    const snippet = match?.snippet || "";
+
+    let siteName = host;
+    if (match?.title) {
+      const separators = [" | ", " - ", " _ ", "—"];
+      for (const sep of separators) {
+        if (match.title.includes(sep)) {
+          const parts = match.title.split(sep);
+          const lastPart = parts[parts.length - 1].trim();
+          if (lastPart && lastPart.length > 0 && lastPart.length < 25) {
+            siteName = lastPart;
+            break;
+          }
+          const firstPart = parts[0].trim();
+          if (firstPart && firstPart.length > 0 && firstPart.length < 25) {
+            siteName = firstPart;
+            break;
+          }
+        }
+      }
+    }
+
+    return {
+      index: item.index,
+      href: url,
+      title,
+      snippet,
+      siteName,
+    };
+  });
+
+  const activeItem = resolvedItems[activeIndex] || resolvedItems[0];
+  const firstItem = resolvedItems[0];
+
+  const handlePrev = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setActiveIndex((prev) => (prev > 0 ? prev - 1 : prev));
+  };
+
+  const handleNext = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    setActiveIndex((prev) => (prev < resolvedItems.length - 1 ? prev + 1 : prev));
+  };
+
+  return (
+    <span
+      className="citation-pill-container"
+      onMouseEnter={handleMouseEnter}
+      onMouseLeave={handleMouseLeave}
+    >
+      <a
+        href={firstItem.href}
+        target="_blank"
+        rel="noreferrer"
+        className="citation-pill"
+      >
+        <span className="citation-pill__icon">
+          <Favicon url={firstItem.href} />
+        </span>
+        <span className="citation-pill__text">
+          {firstItem.siteName}
+          {resolvedItems.length > 1 && ` +${resolvedItems.length - 1}`}
+        </span>
+      </a>
+
+      {isPopoverVisible && (
+        <div
+          className="citation-popover"
+          onMouseEnter={handleMouseEnter}
+          onMouseLeave={handleMouseLeave}
+          onClick={() => {
+            window.open(activeItem.href, "_blank");
+          }}
+        >
+          {resolvedItems.length > 1 && (
+            <div className="citation-popover__header" onClick={(e) => e.stopPropagation()}>
+              <div className="citation-popover__nav">
+                <button
+                  type="button"
+                  onClick={handlePrev}
+                  disabled={activeIndex === 0}
+                  className="citation-popover__nav-btn"
+                >
+                  <ChevronLeft size={10} />
+                </button>
+                <button
+                  type="button"
+                  onClick={handleNext}
+                  disabled={activeIndex === resolvedItems.length - 1}
+                  className="citation-popover__nav-btn"
+                >
+                  <ChevronRight size={10} />
+                </button>
+              </div>
+              <span className="citation-popover__index">
+                {activeIndex + 1} / {resolvedItems.length}
+              </span>
+            </div>
+          )}
+
+          <div className="citation-popover__body">
+            <div className="citation-popover__site">
+              <Favicon url={activeItem.href} className="citation-popover__site-icon" />
+              <span>{activeItem.siteName}</span>
+            </div>
+            <h4 className="citation-popover__title">{activeItem.title}</h4>
+            {activeItem.snippet && (
+              <p className="citation-popover__snippet">{activeItem.snippet}</p>
+            )}
+          </div>
+
+          <div className="citation-popover__footer">
+            <span>{locale === "zh" ? "点击访问源网页" : "Click to visit source"}</span>
+            <ExternalLink size={10} />
+          </div>
+        </div>
+      )}
+    </span>
+  );
+}
+
+function renderInlineMarkdown(
+  text: string,
+  keyPrefix: string,
+  webSearch?: WebSearchMetadata,
+  locale: Locale = "zh"
+): ReactNode[] {
+  const tokens: InlineToken[] = [];
+  const inlinePattern = /\*\*([^*\n]+)\*\*|\[\[?(\d+)\]\]?\((https?:\/\/[^\s)]+)\)|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)/g;
   let lastIndex = 0;
-  let matchIndex = 0;
-  for (const match of text.matchAll(boldPattern)) {
+
+  for (const match of text.matchAll(inlinePattern)) {
     const index = match.index ?? 0;
     if (index > lastIndex) {
-      nodes.push(text.slice(lastIndex, index));
+      tokens.push({ type: "text", text: text.slice(lastIndex, index) });
     }
-    nodes.push(<strong key={`${keyPrefix}-strong-${matchIndex}`}>{match[1]}</strong>);
+    if (match[1]) {
+      tokens.push({ type: "bold", text: match[1] });
+    } else if (match[2] && match[3]) {
+      tokens.push({
+        type: "citation",
+        text: match[2],
+        index: parseInt(match[2], 10),
+        href: match[3],
+      });
+    } else if (match[4] && match[5]) {
+      tokens.push({
+        type: "link",
+        text: match[4],
+        href: match[5],
+      });
+    }
     lastIndex = index + match[0].length;
-    matchIndex += 1;
   }
   if (lastIndex < text.length) {
-    nodes.push(text.slice(lastIndex));
+    tokens.push({ type: "text", text: text.slice(lastIndex) });
   }
-  return nodes.length ? nodes : [text];
+
+  const groupedTokens: GroupedToken[] = [];
+  for (const token of tokens) {
+    if (token.type === "citation") {
+      const last = groupedTokens[groupedTokens.length - 1];
+      if (last && last.type === "citation_group") {
+        last.items.push({ index: token.index!, href: token.href! });
+      } else if (last && last.type === "text" && last.text.trim() === "") {
+        const prev = groupedTokens[groupedTokens.length - 2];
+        if (prev && prev.type === "citation_group") {
+          groupedTokens.pop();
+          prev.items.push({ index: token.index!, href: token.href! });
+        } else {
+          groupedTokens.push({
+            type: "citation_group",
+            items: [{ index: token.index!, href: token.href! }],
+          });
+        }
+      } else {
+        groupedTokens.push({
+          type: "citation_group",
+          items: [{ index: token.index!, href: token.href! }],
+        });
+      }
+    } else {
+      groupedTokens.push(token as GroupedToken);
+    }
+  }
+
+  if (groupedTokens.length === 0) {
+    return [text];
+  }
+
+  return groupedTokens.map((token, index) => {
+    const tokenKey = `${keyPrefix}-${token.type}-${index}`;
+    if (token.type === "text") {
+      return <span key={tokenKey}>{token.text}</span>;
+    }
+    if (token.type === "bold") {
+      return <strong key={tokenKey}>{token.text}</strong>;
+    }
+    if (token.type === "link") {
+      return (
+        <a
+          className="message-markdown-link"
+          href={token.href}
+          target="_blank"
+          rel="noreferrer"
+          key={tokenKey}
+        >
+          <span>{token.text}</span>
+          <ExternalLink size={12} aria-hidden="true" />
+        </a>
+      );
+    }
+    if (token.type === "citation_group") {
+      return (
+        <CitationPill
+          key={tokenKey}
+          items={token.items}
+          webSearch={webSearch}
+          locale={locale}
+        />
+      );
+    }
+    return null;
+  });
 }
 
 type MarkdownBlock =
@@ -983,7 +1385,7 @@ function parseMarkdownBlocks(rawText: string): MarkdownBlock[] {
   return blocks;
 }
 
-function MessageContent({ content, locale }: { content: ChatMessage["content"]; locale: Locale }) {
+function MessageContent({ content, locale, webSearch }: { content: ChatMessage["content"]; locale: Locale; webSearch?: WebSearchMetadata }) {
   const blocks = parseMarkdownBlocks(localized(content, locale));
   if (!blocks.length) return null;
 
@@ -992,13 +1394,13 @@ function MessageContent({ content, locale }: { content: ChatMessage["content"]; 
       {blocks.map((block, blockIndex) => {
         if (block.type === "heading") {
           const HeadingTag = block.level === 2 ? "h2" : "h3";
-          return <HeadingTag key={`heading-${blockIndex}`}>{renderInlineMarkdown(block.text, `heading-${blockIndex}`)}</HeadingTag>;
+          return <HeadingTag key={`heading-${blockIndex}`}>{renderInlineMarkdown(block.text, `heading-${blockIndex}`, webSearch, locale)}</HeadingTag>;
         }
         if (block.type === "unordered-list") {
           return (
             <ul key={`ul-${blockIndex}`}>
               {block.items.map((item, itemIndex) => (
-                <li key={`${itemIndex}-${item.slice(0, 24)}`}>{renderInlineMarkdown(item, `ul-${blockIndex}-${itemIndex}`)}</li>
+                <li key={`${itemIndex}-${item.slice(0, 24)}`}>{renderInlineMarkdown(item, `ul-${blockIndex}-${itemIndex}`, webSearch, locale)}</li>
               ))}
             </ul>
           );
@@ -1007,7 +1409,7 @@ function MessageContent({ content, locale }: { content: ChatMessage["content"]; 
           return (
             <ol key={`ol-${blockIndex}`} start={block.start}>
               {block.items.map((item, itemIndex) => (
-                <li key={`${itemIndex}-${item.slice(0, 24)}`}>{renderInlineMarkdown(item, `ol-${blockIndex}-${itemIndex}`)}</li>
+                <li key={`${itemIndex}-${item.slice(0, 24)}`}>{renderInlineMarkdown(item, `ol-${blockIndex}-${itemIndex}`, webSearch, locale)}</li>
               ))}
             </ol>
           );
@@ -1015,7 +1417,7 @@ function MessageContent({ content, locale }: { content: ChatMessage["content"]; 
         if (block.type === "code") {
           return <pre key={`code-${blockIndex}`}><code>{block.text}</code></pre>;
         }
-        return <p key={`paragraph-${blockIndex}`}>{renderInlineMarkdown(block.text, `paragraph-${blockIndex}`)}</p>;
+        return <p key={`paragraph-${blockIndex}`}>{renderInlineMarkdown(block.text, `paragraph-${blockIndex}`, webSearch, locale)}</p>;
       })}
     </div>
   );
@@ -1067,6 +1469,33 @@ function shortCommit(value?: string) {
   return String(value || "").slice(0, 12) || "-";
 }
 
+function systemUpdateSourceLabel(status: SystemUpdateStatus, locale: Locale) {
+  if (status.update_source === "release") {
+    return locale === "zh" ? "GitHub Release" : "GitHub release";
+  }
+  if (status.update_source === "branch") {
+    return locale === "zh" ? "Git 分支" : "Git branch";
+  }
+  return status.update_source || "-";
+}
+
+function systemUpdateVersionLabel(status: SystemUpdateStatus, target: "current" | "latest") {
+  if (target === "current") {
+    return status.current_version || shortCommit(status.current_commit);
+  }
+  return status.latest_version || status.latest_release_tag || shortCommit(status.latest_release_commit || status.remote_commit);
+}
+
+function systemUpdateBlockers(status: SystemUpdateStatus | null) {
+  return Array.isArray(status?.apply_blockers)
+    ? status.apply_blockers.map((item) => String(item || "").trim()).filter(Boolean)
+    : [];
+}
+
+function statusToneLabel(ok: boolean | undefined, locale: Locale) {
+  return ok ? (locale === "zh" ? "正常" : "OK") : (locale === "zh" ? "需处理" : "Needs attention");
+}
+
 function formatDateTimeLabel(value: string | undefined, locale: Locale) {
   if (!value) return locale === "zh" ? "尚未检测" : "Not checked";
   const date = new Date(value);
@@ -1090,40 +1519,59 @@ function formatSearchStrategy(search: WebSearchMetadata) {
   return [profile, params.join(", ")].filter(Boolean).join(" / ");
 }
 
+function formatSearchResultMeta(item: WebSearchMetadata["results"][number], locale: Locale) {
+  const host = formatSourceHost(item.url);
+  const bits = [host];
+  if (item.published_date) {
+    bits.push(String(item.published_date));
+  }
+  if (typeof item.score === "number") {
+    bits.push(`${locale === "zh" ? "相关性" : "Score"} ${item.score}`);
+  }
+  return bits.filter(Boolean).join(" · ");
+}
+
 function WebSearchSourcesCard({ search, locale }: { search?: WebSearchMetadata; locale: Locale }) {
   if (!search) return null;
   const strategy = formatSearchStrategy(search);
   const diagnostics = search.diagnostics ?? [];
+  const results = (search.results ?? [])
+    .map((item) => ({ item, href: safeExternalHref(item.url) }))
+    .filter((entry, index, entries) => entry.href && entries.findIndex((candidate) => candidate.href === entry.href) === index)
+    .slice(0, 5);
+  const hasSources = results.length > 0;
+  if (!hasSources && search.ok && diagnostics.length === 0) return null;
+
   return (
     <div className={`web-search-sources ${search.ok ? "web-search-sources--ok" : "web-search-sources--warning"}`}>
       <div className="web-search-sources__head">
-        <div>
-          <span className="eyebrow">{search.provider || (locale === "zh" ? "联网搜索" : "Web search")}</span>
-          <strong>{search.query || (locale === "zh" ? "搜索已触发" : "Search triggered")}</strong>
-        </div>
-        <span className="score-pill">{search.ok ? (locale === "zh" ? "有来源" : "Sources") : (locale === "zh" ? "需处理" : "Needs attention")}</span>
+        <Search size={14} aria-hidden="true" />
+        <strong>{hasSources ? (locale === "zh" ? "来源" : "References") : (locale === "zh" ? "来源不可用" : "Sources unavailable")}</strong>
+        {search.provider && <span>{search.provider}</span>}
       </div>
-      {strategy && <p className="web-search-sources__strategy">{strategy}</p>}
-      {search.answer && <p className="web-search-sources__answer">{search.answer}</p>}
-      {search.results?.length > 0 && (
-        <div className="web-search-source-list">
-          {search.results.slice(0, 5).map((item, index) => (
-            <a href={item.url} target="_blank" rel="noreferrer" className="web-search-source-card" key={`${item.url}-${index}`}>
-              <span>{index + 1}</span>
-              <div>
-                <strong>{item.title || item.url}</strong>
-                {item.snippet && <p>{item.snippet}</p>}
-                <small>
-                  {item.published_date ? `${item.published_date} · ` : ""}
-                  {typeof item.score === "number" ? `${locale === "zh" ? "相关性" : "Score"} ${item.score}` : item.url}
-                </small>
-              </div>
-              <ExternalLink size={14} />
+      {search.query && <p className="web-search-sources__query">{locale === "zh" ? "检索" : "Query"}: {search.query}</p>}
+      {hasSources && (
+        <div className="web-search-citation-list">
+          {results.map(({ item, href }, index) => {
+            const host = formatSourceHost(href);
+            const title = String(item.title || "").trim();
+            const label = title && title !== item.url ? title : host || item.url;
+            return (
+            <a href={href} target="_blank" rel="noreferrer" className="web-search-citation" key={`${href}-${index}`} title={title || href}>
+              <span className="web-search-citation__index">{index + 1}</span>
+              <span className="web-search-citation__body">
+                <strong>{label}</strong>
+                <small>{formatSearchResultMeta(item, locale)}</small>
+              </span>
+              <ExternalLink size={13} aria-hidden="true" />
             </a>
-          ))}
+            );
+          })}
         </div>
       )}
-      {!search.ok && diagnostics.length > 0 && (
+      {strategy && <p className="web-search-sources__strategy">{strategy}</p>}
+      {!hasSources && search.answer && <p className="web-search-sources__answer">{search.answer}</p>}
+      {!hasSources && diagnostics.length > 0 && (
         <div className="web-search-diagnostics">
           {diagnostics.map((item, index) => (
             <p key={`${item.provider || "search"}-${index}`}>
@@ -1220,7 +1668,7 @@ function normalizeStoredSession(value: unknown, fallbackId = ""): ChatSessionRec
   const rawMessages = Array.isArray(session.messages) ? session.messages as ChatMessage[] : [];
   const normalizedTree = normalizeMessageTree(rawMessages, session.activeMessageId ? String(session.activeMessageId) : null);
   const messages = normalizedTree.messages;
-  const generationMode = session.generationMode === "render3d" || session.generationMode === "standard"
+  const generationMode = session.generationMode === "render3d" || session.generationMode === "standard" || session.generationMode === "colored_floor_plan"
     ? session.generationMode
     : "standard";
   const rawPromptModeId = String(session.promptModeId || "").trim();
@@ -2052,14 +2500,17 @@ function App() {
   const [addedDetectedModels, setAddedDetectedModels] = useState<DetectedModelState>({ analysis: [], image: [] });
   const [visibleApiKeys, setVisibleApiKeys] = useState<Record<ConfigRole, boolean>>({ analysis: false, image: false });
   const [updateCredentials, setUpdateCredentials] = useState({ username: "admin", password: "" });
+  const [systemRuntimeStatus, setSystemRuntimeStatus] = useState<SystemRuntimeStatus | null>(null);
   const [systemUpdateStatus, setSystemUpdateStatus] = useState<SystemUpdateStatus | null>(null);
-  const [systemUpdateAction, setSystemUpdateAction] = useState<"status" | "check" | "apply" | null>(null);
+  const [systemUpdateAction, setSystemUpdateAction] = useState<"runtime" | "status" | "check" | "apply" | null>(null);
   const [systemUpdateError, setSystemUpdateError] = useState("");
+  const currentSystemUpdateBlockers = systemUpdateBlockers(systemUpdateStatus);
+  const canApplySystemUpdate = Boolean(systemUpdateStatus?.can_apply);
   const [learnedProfile, setLearnedProfile] = useState<StyleProfile | null>(null);
   const [memoryView, setMemoryView] = useState<MemoryView | null>(null);
   const [editingMemoryItemId, setEditingMemoryItemId] = useState<string | null>(null);
   const [memoryDraftText, setMemoryDraftText] = useState("");
-  const [newMemoryDraft, setNewMemoryDraft] = useState({ text: "", sectionId: "long_term_preferences" });
+  const [newMemoryDraft, setNewMemoryDraft] = useState<MemoryDraft>({ text: "", sectionId: "long_term_preferences", group: "style" });
   const [memoryActionId, setMemoryActionId] = useState<string | null>(null);
   const [renderHistory, setRenderHistory] = useState<RenderHistoryItem[]>([]);
   const [activeResultId, setActiveResultId] = useState<string | null>(null);
@@ -2105,6 +2556,8 @@ function App() {
   const [editingPromptSkillId, setEditingPromptSkillId] = useState<string | null>(null);
   const [promptSkillDraft, setPromptSkillDraft] = useState<PromptSkillDraft>(DEFAULT_PROMPT_SKILL_DRAFT);
   const [isComparisonOpen, setIsComparisonOpen] = useState(false);
+  const [comparisonActiveSlot, setComparisonActiveSlot] = useState<ComparisonSlot>("right");
+  const [comparisonCandidateSource, setComparisonCandidateSource] = useState<ImageComparisonCandidateSource>("conversation");
   const [showPromptConfig, setShowPromptConfig] = useState(true);
   const [isDraggingFiles, setIsDraggingFiles] = useState(false);
   const [generationStartedAt, setGenerationStartedAt] = useState<number | null>(null);
@@ -2122,6 +2575,7 @@ function App() {
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const chatThreadRef = useRef<HTMLDivElement | null>(null);
+  const memoryCreateTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const chatSearchInputRef = useRef<HTMLInputElement | null>(null);
   const promptPlazaSearchInputRef = useRef<HTMLInputElement | null>(null);
@@ -2138,6 +2592,7 @@ function App() {
   const lastSavedChatHistoryRef = useRef("");
   const chatAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const generationAbortControllersRef = useRef<Map<string, AbortController>>(new Map());
+  const shouldAutoFollowChatRef = useRef(true);
 
   const t = copy[locale];
   const isImageWorkspace = workspaceMode === "image";
@@ -2151,7 +2606,7 @@ function App() {
   const normalizedHistoryQuery = chatHistoryQuery.trim().toLowerCase();
   const durableChatSessions = currentUserId
     ? chatSessions
-      .filter((session) => hasDurableConversationContent(session.messages))
+      .filter(hasSessionHistoryContent)
       .slice()
       .sort((left, right) => {
         const pinnedRank = Number(Boolean(right.pinnedAt)) - Number(Boolean(left.pinnedAt));
@@ -2460,6 +2915,15 @@ function App() {
     const nextHeight = Math.min(textarea.scrollHeight, COMPOSER_MAX_VISIBLE_HEIGHT);
     textarea.style.height = `${nextHeight}px`;
     textarea.style.overflowY = textarea.scrollHeight > COMPOSER_MAX_VISIBLE_HEIGHT ? "auto" : "hidden";
+  }
+
+  function isChatThreadNearBottom(element: HTMLDivElement | null) {
+    if (!element) return true;
+    return element.scrollHeight - element.scrollTop - element.clientHeight <= CHAT_AUTO_FOLLOW_BOTTOM_THRESHOLD;
+  }
+
+  function handleChatThreadScroll() {
+    shouldAutoFollowChatRef.current = isChatThreadNearBottom(chatThreadRef.current);
   }
 
   function clearComposerDraft() {
@@ -3699,6 +4163,10 @@ function App() {
   }, [activeUtilityPanel, currentUserId]);
 
   useEffect(() => {
+    shouldAutoFollowChatRef.current = true;
+  }, [currentSessionId]);
+
+  useEffect(() => {
     const previous = previousGenerationModeRef.current;
     if (previous !== generationMode) {
       firePreferenceEvent("mode_switch", { from: previous, to: generationMode });
@@ -3729,7 +4197,9 @@ function App() {
   }, [isVisibleChatResponding]);
 
   useEffect(() => {
-    chatThreadRef.current?.scrollTo({ top: chatThreadRef.current.scrollHeight, behavior: "smooth" });
+    const thread = chatThreadRef.current;
+    if (!thread || !shouldAutoFollowChatRef.current) return;
+    thread.scrollTo({ top: thread.scrollHeight, behavior: "smooth" });
   }, [messages.length, isVisibleRendering, chatStatusNowMs]);
 
   useEffect(() => {
@@ -4374,6 +4844,24 @@ function App() {
     return Boolean(updateCredentials.username.trim() && updateCredentials.password);
   }
 
+  async function runSystemRuntimeRequest() {
+    if (!updateAdminCredentialsReady()) {
+      setSystemUpdateError(locale === "zh" ? "请先填写部署管理员用户名和密码。" : "Enter the deployment admin username and password first.");
+      return;
+    }
+    setSystemUpdateAction("runtime");
+    setSystemUpdateError("");
+    try {
+      const credentials = { username: updateCredentials.username.trim(), password: updateCredentials.password };
+      const status = await getSystemRuntimeStatus(credentials);
+      setSystemRuntimeStatus(status);
+    } catch (error) {
+      setSystemUpdateError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSystemUpdateAction(null);
+    }
+  }
+
   async function runSystemUpdateRequest(action: "status" | "check" | "apply") {
     if (!updateAdminCredentialsReady()) {
       setSystemUpdateError(locale === "zh" ? "请先填写部署管理员用户名和密码。" : "Enter the deployment admin username and password first.");
@@ -4425,7 +4913,7 @@ function App() {
       const newProvider: ApiProviderProfile = {
         id: createProviderId(role),
         providerName: locale === "zh" ? "新供应商" : "New provider",
-        apiFormat: role === "image" ? "openai_image" : "openai_chat",
+        apiFormat: "openai_chat",
         baseUrl: defaultApiBaseUrl,
         apiKey: "",
         model: role === "image" ? modelOptions[0] : ""
@@ -5177,6 +5665,48 @@ function App() {
     };
   }
 
+  function getMemorySectionOptionLabel(sectionId: string) {
+    const labels: Record<string, string> = {
+      daily_memories: locale === "zh" ? "日常聊天记忆" : "Daily chat memory",
+      long_term_preferences: locale === "zh" ? "生图长期偏好" : "Image preferences",
+      avoid_items: locale === "zh" ? "避免项" : "Avoid items",
+      project_preferences: locale === "zh" ? "项目偏好" : "Project preferences",
+      evaluation_standards: locale === "zh" ? "评判标准" : "Evaluation standards",
+    };
+    return labels[sectionId] ?? sectionId;
+  }
+
+  function getProjectPreferenceGroupLabel(group?: string) {
+    const option = projectPreferenceGroupOptions.find((item) => item.value === group);
+    return option ? option[locale] : "";
+  }
+
+  function focusMemoryCreateForm() {
+    window.requestAnimationFrame(() => {
+      memoryCreateTextareaRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+      memoryCreateTextareaRef.current?.focus();
+    });
+  }
+
+  function handlePrepareMemoryDraftForSection(section: MemorySection, seedText?: string, seedGroup?: string) {
+    const targetSectionId = memoryCreateTargetSectionId(section.id);
+    setNewMemoryDraft((current) => ({
+      text: seedText ?? current.text,
+      sectionId: targetSectionId,
+      group: targetSectionId === "project_preferences"
+        ? normalizeProjectPreferenceGroup(seedGroup || current.group)
+        : current.group,
+    }));
+    setEditingMemoryItemId(null);
+    setMemoryDraftText("");
+    focusMemoryCreateForm();
+  }
+
+  function handleCopyMemoryItemToDraft(section: MemorySection, item: MemoryItem) {
+    handlePrepareMemoryDraftForSection(section, item.text, item.group);
+    showToast(locale === "zh" ? "已带入新增表单，可保存为正式记忆" : "Copied into the add form; save it as formal memory");
+  }
+
   function startEditingMemoryItem(item: MemoryItem) {
     if (item.editable === false) return;
     setEditingMemoryItemId(item.id);
@@ -5191,7 +5721,7 @@ function App() {
     }
     setMemoryActionId("new-memory");
     try {
-      const response = await createMemoryItem(nextText, newMemoryDraft.sectionId, DEFAULT_PROJECT_ID);
+      const response = await createMemoryItem(nextText, newMemoryDraft.sectionId, DEFAULT_PROJECT_ID, newMemoryDraft.group);
       setMemoryView(response.memory);
       if (response.profile) {
         setLearnedProfile(response.profile);
@@ -5430,6 +5960,29 @@ function App() {
     return null;
   }
 
+  function handleAssignComparisonCandidate(slot: ComparisonSlot, candidateId: string) {
+    if (comparisonImage?.mode !== "history-vs-history") {
+      return;
+    }
+    const candidate = comparisonCandidates.find((item) => item.id === candidateId);
+    if (!candidate) {
+      return;
+    }
+    const currentSlotId = slot === "left" ? comparisonImage.leftResultId : comparisonImage.rightResultId;
+    if (candidateId === currentSlotId) {
+      return;
+    }
+    const otherSlotId = slot === "left" ? comparisonImage.rightResultId : comparisonImage.leftResultId;
+    const otherCandidate = comparisonCandidates.find((item) => item.id === otherSlotId);
+    if (otherCandidate && areSameImageComparisonCandidate(candidate, otherCandidate)) {
+      showToast(locale === "zh" ? "A 和 B 需要选择不同图片" : "Choose different images for A and B");
+      return;
+    }
+    setComparisonImage(slot === "left"
+      ? { ...comparisonImage, leftResultId: candidateId }
+      : { ...comparisonImage, rightResultId: candidateId });
+  }
+
   function handleOpenComparison(item?: PreviewImage | RenderHistoryItem | null) {
     const selectedResult = item && !("url" in item) ? item : item?.sourceResultId ? renderHistory.find((result) => result.id === item.sourceResultId) ?? null : activeResult;
     const renderUrl = item && "url" in item ? item.url : selectedResult?.imageUrl;
@@ -5441,6 +5994,8 @@ function App() {
         return;
       }
       setComparisonImage({ mode: "history-vs-history", leftResultId: defaultPair.leftResult.id, rightResultId: defaultPair.rightResult.id });
+      setComparisonActiveSlot("right");
+      setComparisonCandidateSource(defaultPair.rightResult.source);
       setIsComparisonOpen(true);
       firePreferenceEvent("compare", { mode: "history-vs-history" }, selectedResult?.id || "");
       return;
@@ -5632,9 +6187,11 @@ function App() {
     const idBase = Date.now();
     const runGuard = createConversationRunGuard();
     const userBrief = instruction.trim() || (locale === "zh" ? "仅使用图片标注，保持其他区域不变" : "Use the image annotation only and keep other regions unchanged");
+    const annotationUserMessageId = `m-user-annotation-${idBase}`;
+    const annotationProgressMessageId = `m-ai-annotation-${idBase}`;
     appendMessagesToRunSession(runGuard, [
       {
-        id: `m-user-annotation-${idBase}`,
+        id: annotationUserMessageId,
         role: "user",
         kind: "text",
         workflowMode: "image",
@@ -5642,7 +6199,8 @@ function App() {
         content: locale === "zh" ? `标注续改：${userBrief}` : `Annotated edit: ${userBrief}`
       },
       {
-        id: `m-ai-annotation-${idBase}`,
+        id: annotationProgressMessageId,
+        parentId: annotationUserMessageId,
         role: "assistant",
         kind: "analysis",
         workflowMode: "image",
@@ -5703,17 +6261,16 @@ function App() {
       if (activeUtilityPanel === "preferences") {
         void refreshLearnedProfile(target.projectId || DEFAULT_PROJECT_ID, target.userId || currentUserId || DEFAULT_PROJECT_ID);
       }
+      removeRunSessionMessage(runGuard, annotationProgressMessageId);
       appendMessagesToRunSession(runGuard, [
         {
-          id: `m-api-annotation-analysis-${idBase}`,
+          id: `m-api-annotation-render-${idBase}`,
+          parentId: annotationUserMessageId,
           role: "assistant",
-          kind: "analysis",
+          kind: "render",
           workflowMode: "image",
           generationMode: historyItem.generationMode || target.generationMode || generationMode,
-          content: {
-            zh: "标注改图完成。新版本已保存在历史图片中，并记录了标注图、修改文字和分析结果。",
-            en: "Annotated edit completed. The new version is stored with its annotation image, edit request, and analysis result."
-          },
+          content: response.ok ? (locale === "zh" ? "标注修改后的真实渲染结果已返回" : "Annotated edit result returned") : response.error || t.requestFailed,
           bullets: {
             zh: compactLines([
               historyItem.status || "",
@@ -5728,15 +6285,7 @@ function App() {
               historyItem.modelWarning || ""
             ])
           },
-          promptText: historyItem.prompt
-        },
-        {
-          id: `m-api-annotation-render-${idBase}`,
-          role: "assistant",
-          kind: "render",
-          workflowMode: "image",
-          generationMode: historyItem.generationMode || target.generationMode || generationMode,
-          content: response.ok ? (locale === "zh" ? "标注修改后的真实渲染结果已返回" : "Annotated edit result returned") : response.error || t.requestFailed,
+          promptText: historyItem.prompt,
           imageUrl: historyItem.imageUrl,
           imageLabel: historyItem.imageLabel || historyItem.title,
           sourceResultId: historyItem.id,
@@ -6359,22 +6908,8 @@ function App() {
           } else {
             appendMessagesToRunSession(runGuard, [
               {
-                id: `m-api-analysis-${idBase}`,
-                parentId: userMessageId,
-                role: "assistant",
-                kind: "analysis",
-                workflowMode: "image",
-                generationMode: submitMode,
-                content: {
-                  zh: "上传图续改完成。默认模式已把上传图片作为参考图，并按输入框要求生成新图。",
-                  en: "Uploaded image edit completed. Default mode used the uploaded image as a reference and generated a new image from the request."
-                },
-                bullets: renderPatch.bullets,
-                promptText: finalPrompt
-              },
-              {
                 id: `m-api-render-${idBase}`,
-                parentId: `m-api-analysis-${idBase}`,
+                parentId: userMessageId,
                 role: "assistant",
                 ...variantPatchToAssistantMessage(renderPatch, {
                   kind: "render",
@@ -6440,22 +6975,8 @@ function App() {
         } else {
           appendMessagesToRunSession(runGuard, [
             {
-              id: `m-api-analysis-${idBase}`,
-              parentId: userMessageId,
-              role: "assistant",
-              kind: "analysis",
-              workflowMode: "image",
-              generationMode: submitMode,
-              content: {
-                zh: "改图完成。新版本已保存在历史图片中，并与上一版建立版本关系。",
-                en: "Image edit completed. The new version is saved in image history and linked to the previous version."
-              },
-              bullets: renderPatch.bullets,
-              promptText: historyItem.prompt
-            },
-            {
               id: `m-api-render-${idBase}`,
-              parentId: `m-api-analysis-${idBase}`,
+              parentId: userMessageId,
               role: "assistant",
               ...variantPatchToAssistantMessage(renderPatch, {
                 kind: "render",
@@ -6547,22 +7068,8 @@ function App() {
       };
       const resultMessages: ChatMessage[] = [
         {
-          id: `m-api-analysis-${idBase}`,
-          parentId: userMessageId,
-          role: "assistant",
-          kind: "analysis",
-          workflowMode: "image",
-          generationMode: submitMode,
-          content: {
-            zh: submitMode === "standard" ? "生成完成。默认模式已按输入框文本直通出图。" : "生成完成。空间分析已整理到右侧栏，最终提示词可在这里展开查看。",
-            en: submitMode === "standard" ? "Generation completed. Default mode sent the composer text directly to image generation." : "Generation completed. Spatial analysis is shown in the right panel, and the final prompt can be expanded here."
-          },
-          bullets: renderPatch.bullets,
-          promptText: finalPrompt
-        },
-        {
           id: `m-api-render-${idBase}`,
-          parentId: `m-api-analysis-${idBase}`,
+          parentId: userMessageId,
           role: "assistant",
           ...variantPatchToAssistantMessage(renderPatch, {
             kind: "render",
@@ -6870,12 +7377,27 @@ function App() {
   const comparisonRightResult = comparisonImage?.mode === "history-vs-history"
     ? comparisonCandidates.find((item) => item.id === comparisonImage.rightResultId) ?? null
     : null;
+  const comparisonPickerCandidates = comparisonImage?.mode === "history-vs-history"
+    ? uniqueImageComparisonCandidates(comparisonCandidates).filter((candidate) => candidate.source === comparisonCandidateSource)
+    : [];
+  const comparisonConversationCandidateCount = uniqueImageComparisonCandidates(conversationComparisonCandidates).length;
+  const comparisonLibraryCandidateCount = uniqueImageComparisonCandidates(comparisonCandidates.filter((candidate) => candidate.source === "library")).length;
   const comparisonSourceLabel = (candidate: ImageComparisonCandidate) => (
     candidate.source === "conversation"
       ? locale === "zh" ? "当前聊天" : "Current chat"
       : locale === "zh" ? "图片库" : "Image library"
   );
   const comparisonOptionLabel = (candidate: ImageComparisonCandidate) => `${comparisonSourceLabel(candidate)} · ${candidate.label}`;
+  const comparisonAssetTypeLabel = (candidate: ImageComparisonCandidate) => (
+    candidate.assetType === "source-image"
+      ? locale === "zh" ? "上传源图" : "Uploaded source"
+      : locale === "zh" ? "结果图" : "Result image"
+  );
+  const comparisonSlotLabel = (slot: ComparisonSlot) => (
+    slot === "left"
+      ? locale === "zh" ? "A 基准图" : "A reference"
+      : locale === "zh" ? "B 对比图" : "B comparison"
+  );
   const activeSettingsPanel = isSettingsPanel(activeUtilityPanel) ? activeUtilityPanel : null;
   const isShortcutDrawerOpen = activeUtilityPanel === "shortcuts" && !isImageManagementView;
   const isSettingsDialogOpen = activeSettingsPanel !== null && !isImageManagementView;
@@ -7022,7 +7544,12 @@ function App() {
             onOpenComparison={() => handleOpenComparison()}
           />
 
-          <div className={`chatgpt-thread chat-shell ${isEmptyConversation ? "is-empty" : ""}`} aria-label={t.designChat} ref={chatThreadRef}>
+          <div
+            className={`chatgpt-thread chat-shell ${isEmptyConversation ? "is-empty" : ""}`}
+            aria-label={t.designChat}
+            ref={chatThreadRef}
+            onScroll={handleChatThreadScroll}
+          >
             {isEmptyConversation ? (
               <EmptyConversationState
                 locale={locale}
@@ -7146,7 +7673,7 @@ function App() {
                               nowMs={chatStatusNowMs}
                             />
                           )}
-                          <MessageContent content={activeMessage.content} locale={locale} />
+                          <MessageContent content={activeMessage.content} locale={locale} webSearch={activeMessage.webSearch} />
                         </>
                       )}
 
@@ -7701,6 +8228,7 @@ function App() {
                       <label>
                         <span>{locale === "zh" ? "新增记忆" : "Add memory"}</span>
                         <textarea
+                          ref={memoryCreateTextareaRef}
                           rows={3}
                           value={newMemoryDraft.text}
                           onChange={(event) => setNewMemoryDraft((current) => ({ ...current, text: event.target.value }))}
@@ -7714,13 +8242,28 @@ function App() {
                             value={newMemoryDraft.sectionId}
                             onChange={(event) => setNewMemoryDraft((current) => ({ ...current, sectionId: event.target.value }))}
                           >
-                            <option value="long_term_preferences">{locale === "zh" ? "生图长期偏好" : "Image preferences"}</option>
-                            <option value="daily_memories">{locale === "zh" ? "日常聊天记忆" : "Daily chat memory"}</option>
-                            <option value="avoid_items">{locale === "zh" ? "避免项" : "Avoid items"}</option>
-                            <option value="project_preferences">{locale === "zh" ? "项目偏好" : "Project preferences"}</option>
-                            <option value="evaluation_standards">{locale === "zh" ? "评判标准" : "Evaluation standards"}</option>
+                            <option value="long_term_preferences">{getMemorySectionOptionLabel("long_term_preferences")}</option>
+                            <option value="daily_memories">{getMemorySectionOptionLabel("daily_memories")}</option>
+                            <option value="avoid_items">{getMemorySectionOptionLabel("avoid_items")}</option>
+                            <option value="project_preferences">{getMemorySectionOptionLabel("project_preferences")}</option>
+                            <option value="evaluation_standards">{getMemorySectionOptionLabel("evaluation_standards")}</option>
                           </select>
                         </label>
+                        {newMemoryDraft.sectionId === "project_preferences" && (
+                          <label>
+                            <span>{locale === "zh" ? "项目分组" : "Project group"}</span>
+                            <select
+                              value={newMemoryDraft.group}
+                              onChange={(event) => setNewMemoryDraft((current) => ({ ...current, group: normalizeProjectPreferenceGroup(event.target.value) }))}
+                            >
+                              {projectPreferenceGroupOptions.map((option) => (
+                                <option key={option.value} value={option.value}>
+                                  {option[locale]}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        )}
                         <button type="button" onClick={() => void handleCreateMemoryItem()} disabled={memoryActionId === "new-memory"}>
                           <Plus size={14} />
                           {memoryActionId === "new-memory" ? (locale === "zh" ? "保存中" : "Saving") : (locale === "zh" ? "添加记忆" : "Add memory")}
@@ -7733,8 +8276,18 @@ function App() {
                           const sectionCopy = getMemorySectionCopy(section);
                           return (
                             <div className="learned-profile-block" key={section.id}>
-                              <strong>{sectionCopy.title}</strong>
-                              <p>{sectionCopy.description}</p>
+                              <div className="memory-section-head">
+                                <div>
+                                  <strong>{sectionCopy.title}</strong>
+                                  <p>{sectionCopy.description}</p>
+                                </div>
+                                <button type="button" onClick={() => handlePrepareMemoryDraftForSection(section)}>
+                                  <Plus size={13} />
+                                  {section.id === "frequent_edit_requests"
+                                    ? locale === "zh" ? "转为正式记忆" : "Add as formal memory"
+                                    : locale === "zh" ? "添加到这里" : "Add here"}
+                                </button>
+                              </div>
                               {section.items.length === 0 ? (
                                 <p className="memory-item-empty">{locale === "zh" ? "暂无内容" : "Nothing saved yet"}</p>
                               ) : (
@@ -7750,8 +8303,19 @@ function App() {
                                       ) : (
                                         <span>{item.text}</span>
                                       )}
+                                      {section.id === "project_preferences" && item.group && editingMemoryItemId !== item.id && (
+                                        <small className="memory-item-group">
+                                          {getProjectPreferenceGroupLabel(item.group)}
+                                        </small>
+                                      )}
                                       {item.editable === false ? (
-                                        <small>{locale === "zh" ? "只读" : "Read-only"}</small>
+                                        <div className="memory-item-actions">
+                                          <small>{locale === "zh" ? "只读" : "Read-only"}</small>
+                                          <button type="button" onClick={() => handleCopyMemoryItemToDraft(section, item)}>
+                                            <Clipboard size={13} />
+                                            {locale === "zh" ? "转为记忆" : "Use as memory"}
+                                          </button>
+                                        </div>
                                       ) : editingMemoryItemId === item.id ? (
                                         <div className="memory-item-actions">
                                           <button type="button" onClick={() => void handleSaveMemoryItem(item.id)} disabled={memoryActionId === item.id}>
@@ -7875,7 +8439,7 @@ function App() {
                             onChange={(event) => updateAnalysisProvider({ apiFormat: event.target.value })}
                           >
                             {apiFormatOptions.map((option) => (
-                              <option key={option.value || "config"} value={option.value}>
+                              <option key={option.value} value={option.value}>
                                 {option.label}
                               </option>
                             ))}
@@ -7915,6 +8479,36 @@ function App() {
                             value={apiConfig.analysisModel}
                             onChange={(event) => handleChatModelChange(event.target.value)}
                             placeholder="gpt-4o"
+                          />
+                        </label>
+                        <label>
+                          <span>{locale === "zh" ? "输出 Token 上限" : "Output token limit"}</span>
+                          <input
+                            type="number"
+                            min={256}
+                            max={200000}
+                            step={256}
+                            value={apiConfig.chatMaxOutputTokens}
+                            onChange={(event) => setApiConfig((current) => ({
+                              ...current,
+                              chatMaxOutputTokens: normalizePositiveInteger(event.target.value, current.chatMaxOutputTokens, 256, 200000)
+                            }))}
+                            placeholder="131072"
+                          />
+                        </label>
+                        <label>
+                          <span>{locale === "zh" ? "上下文大小" : "Context size"}</span>
+                          <input
+                            type="number"
+                            min={1024}
+                            max={2000000}
+                            step={1024}
+                            value={apiConfig.chatContextSize}
+                            onChange={(event) => setApiConfig((current) => ({
+                              ...current,
+                              chatContextSize: normalizePositiveInteger(event.target.value, current.chatContextSize, 1024, 2000000)
+                            }))}
+                            placeholder="131072"
                           />
                         </label>
                         <label className="api-config-wide">
@@ -8025,7 +8619,7 @@ function App() {
                             onChange={(event) => updateImageProvider({ apiFormat: event.target.value })}
                           >
                             {apiFormatOptions.map((option) => (
-                              <option key={option.value || "config"} value={option.value}>
+                              <option key={option.value} value={option.value}>
                                 {option.label}
                               </option>
                             ))}
@@ -8363,6 +8957,10 @@ function App() {
                         : "Credentials are used for this request only and are not written into chat history or browser storage. Applying updates also requires ATTUNO_UPDATE_ENABLED=1 on the server."}
                     </p>
                     <div className="shortcut-editor__actions">
+                      <button type="button" onClick={() => void runSystemRuntimeRequest()} disabled={systemUpdateAction !== null}>
+                        <Activity size={14} />
+                        {systemUpdateAction === "runtime" ? (locale === "zh" ? "诊断中" : "Checking") : (locale === "zh" ? "系统状态" : "System status")}
+                      </button>
                       <button type="button" onClick={() => void runSystemUpdateRequest("status")} disabled={systemUpdateAction !== null}>
                         <Clock3 size={14} />
                         {systemUpdateAction === "status" ? (locale === "zh" ? "读取中" : "Loading") : (locale === "zh" ? "查看状态" : "View status")}
@@ -8371,13 +8969,54 @@ function App() {
                         <Search size={14} />
                         {systemUpdateAction === "check" ? (locale === "zh" ? "检测中" : "Checking") : (locale === "zh" ? "检查更新" : "Check updates")}
                       </button>
-                      <button type="button" className="is-primary" onClick={() => void runSystemUpdateRequest("apply")} disabled={systemUpdateAction !== null || !systemUpdateStatus?.has_update}>
+                      <button type="button" className="is-primary" onClick={() => void runSystemUpdateRequest("apply")} disabled={systemUpdateAction !== null || !canApplySystemUpdate}>
                         <Download size={14} />
                         {systemUpdateAction === "apply" ? (locale === "zh" ? "更新中" : "Updating") : (locale === "zh" ? "开始更新" : "Apply update")}
                       </button>
                     </div>
                     {systemUpdateError && <p className="form-error">{systemUpdateError}</p>}
                   </div>
+
+                  {systemRuntimeStatus && (
+                    <div className="control-section system-update-status">
+                      <div className="section-title">
+                        <Activity size={14} />
+                        {locale === "zh" ? "系统状态" : "System status"}
+                      </div>
+                      <div className="system-update-grid">
+                        <div>
+                          <span>{locale === "zh" ? "整体" : "Overall"}</span>
+                          <strong>{statusToneLabel(systemRuntimeStatus.ok, locale)}</strong>
+                        </div>
+                        <div>
+                          <span>{locale === "zh" ? "环境" : "Environment"}</span>
+                          <strong>{systemRuntimeStatus.environment || "-"}</strong>
+                        </div>
+                        <div>
+                          <span>{locale === "zh" ? "数据库" : "Database"}</span>
+                          <strong>{systemRuntimeStatus.database?.configured ? statusToneLabel(systemRuntimeStatus.database?.ok, locale) : (locale === "zh" ? "JSON fallback" : "JSON fallback")}</strong>
+                        </div>
+                        <div>
+                          <span>{locale === "zh" ? "数据目录" : "Data dir"}</span>
+                          <strong>{systemRuntimeStatus.storage?.writable ? (locale === "zh" ? "可写" : "Writable") : (locale === "zh" ? "不可写" : "Not writable")}</strong>
+                        </div>
+                        <div>
+                          <span>{locale === "zh" ? "更新来源" : "Update source"}</span>
+                          <strong>{systemRuntimeStatus.update?.update_source || "-"}</strong>
+                        </div>
+                        <div>
+                          <span>{locale === "zh" ? "检测时间" : "Checked"}</span>
+                          <strong>{formatDateTimeLabel(systemRuntimeStatus.checked_at, locale)}</strong>
+                        </div>
+                      </div>
+                      {systemRuntimeStatus.storage?.data_dir && (
+                        <p className="config-hint">{systemRuntimeStatus.storage.data_dir}</p>
+                      )}
+                      {systemRuntimeStatus.database?.error && <p className="form-error">{systemRuntimeStatus.database.error}</p>}
+                      {systemRuntimeStatus.storage?.error && <p className="form-error">{systemRuntimeStatus.storage.error}</p>}
+                      {systemRuntimeStatus.update?.error && <p className="form-error">{systemRuntimeStatus.update.error}</p>}
+                    </div>
+                  )}
 
                   <div className="control-section system-update-status">
                     <div className="section-title">
@@ -8388,16 +9027,28 @@ function App() {
                       <>
                         <div className="system-update-grid">
                           <div>
-                            <span>{locale === "zh" ? "当前提交" : "Current"}</span>
+                            <span>{locale === "zh" ? "更新来源" : "Source"}</span>
+                            <strong>{systemUpdateSourceLabel(systemUpdateStatus, locale)}</strong>
+                          </div>
+                          <div>
+                            <span>{locale === "zh" ? "当前版本" : "Current version"}</span>
+                            <strong>{systemUpdateVersionLabel(systemUpdateStatus, "current")}</strong>
+                          </div>
+                          <div>
+                            <span>{systemUpdateStatus.update_source === "release" ? (locale === "zh" ? "最新 Release" : "Latest release") : (locale === "zh" ? "远端版本" : "Remote version")}</span>
+                            <strong>{systemUpdateVersionLabel(systemUpdateStatus, "latest")}</strong>
+                          </div>
+                          <div>
+                            <span>{locale === "zh" ? "当前提交" : "Current commit"}</span>
                             <strong>{shortCommit(systemUpdateStatus.current_commit)}</strong>
                           </div>
                           <div>
-                            <span>{locale === "zh" ? "GitHub 最新" : "Remote"}</span>
-                            <strong>{shortCommit(systemUpdateStatus.remote_commit)}</strong>
+                            <span>{systemUpdateStatus.update_source === "release" ? (locale === "zh" ? "Release 提交" : "Release commit") : (locale === "zh" ? "远端提交" : "Remote commit")}</span>
+                            <strong>{shortCommit(systemUpdateStatus.latest_release_commit || systemUpdateStatus.remote_commit)}</strong>
                           </div>
                           <div>
                             <span>{locale === "zh" ? "状态" : "Status"}</span>
-                            <strong>{systemUpdateStatus.has_update ? (locale === "zh" ? "有新版" : "Update available") : (locale === "zh" ? "已是最新" : "Up to date")}</strong>
+                            <strong>{systemUpdateStatus.has_update ? (canApplySystemUpdate ? (locale === "zh" ? "可更新" : "Ready") : (locale === "zh" ? "有新版但需处理" : "Blocked")) : (locale === "zh" ? "已是最新" : "Up to date")}</strong>
                           </div>
                           <div>
                             <span>{locale === "zh" ? "执行开关" : "Apply switch"}</span>
@@ -8412,6 +9063,24 @@ function App() {
                             <strong>{formatDateTimeLabel(systemUpdateStatus.checked_at, locale)}</strong>
                           </div>
                         </div>
+                        {systemUpdateStatus.latest_release_url && (
+                          <p className="config-hint">
+                            <a href={systemUpdateStatus.latest_release_url} target="_blank" rel="noreferrer">
+                              {systemUpdateStatus.latest_release_name || systemUpdateStatus.latest_release_tag || (locale === "zh" ? "查看 Release" : "View release")}
+                            </a>
+                            {systemUpdateStatus.latest_release_published_at
+                              ? ` · ${formatDateTimeLabel(systemUpdateStatus.latest_release_published_at, locale)}`
+                              : ""}
+                          </p>
+                        )}
+                        {currentSystemUpdateBlockers.length > 0 && (
+                          <div className="system-update-blockers" role="status">
+                            <strong>{locale === "zh" ? "暂不能直接更新" : "Apply is blocked"}</strong>
+                            {currentSystemUpdateBlockers.map((blocker) => (
+                              <p key={blocker}>{blocker}</p>
+                            ))}
+                          </div>
+                        )}
                         {systemUpdateStatus.error && <p className="form-error">{systemUpdateStatus.error}</p>}
                         {systemUpdateStatus.log && <pre className="system-update-log">{systemUpdateStatus.log}</pre>}
                       </>
@@ -8880,54 +9549,131 @@ function App() {
               <button type="button" onClick={() => { setIsComparisonOpen(false); setComparisonImage(null); }}>{locale === "zh" ? "关闭" : "Close"}</button>
             </div>
             {comparisonImage.mode === "history-vs-history" && (
-              <div className="comparison-selectors">
+              <div className="comparison-picker">
                 <p className="comparison-selectors__note">
-                  {locale === "zh" ? "默认优先选当前聊天的上传源图和最新结果；也可以从当前聊天或图片库手动指定 A/B。" : "Defaults to the uploaded source and latest result in this chat; you can also choose A/B from the current chat or image library."}
+                  {locale === "zh" ? "默认优先选当前聊天的上传源图和最新结果；点选 A/B 槽位后，再点缩略图指定图片。" : "Defaults to the uploaded source and latest result in this chat; choose an A/B slot, then click a thumbnail."}
                 </p>
-                <label>
-                  <span>{locale === "zh" ? "A 基准图" : "A reference image"}</span>
-                  <select
-                    value={comparisonImage.leftResultId}
-                    onChange={(event) => setComparisonImage((current) => {
-                      if (current?.mode !== "history-vs-history") {
-                        return current;
-                      }
-                      if (event.target.value === current.rightResultId) {
-                        showToast(locale === "zh" ? "A 和 B 需要选择不同图片" : "Choose different images for A and B");
-                        return current;
-                      }
-                      return { ...current, leftResultId: event.target.value };
-                    })}
+                <div className="comparison-slot-row" role="group" aria-label={locale === "zh" ? "A/B 槽位选择" : "A/B slot selection"}>
+                  <button
+                    type="button"
+                    className={`comparison-slot-card ${comparisonActiveSlot === "left" ? "is-active" : ""}`}
+                    aria-pressed={comparisonActiveSlot === "left"}
+                    onClick={() => setComparisonActiveSlot("left")}
                   >
-                    {comparisonCandidates.map((candidate) => (
-                      <option key={candidate.id} value={candidate.id}>
-                        {comparisonOptionLabel(candidate)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>{locale === "zh" ? "B 对比图" : "B comparison image"}</span>
-                  <select
-                    value={comparisonImage.rightResultId}
-                    onChange={(event) => setComparisonImage((current) => {
-                      if (current?.mode !== "history-vs-history") {
-                        return current;
-                      }
-                      if (event.target.value === current.leftResultId) {
-                        showToast(locale === "zh" ? "A 和 B 需要选择不同图片" : "Choose different images for A and B");
-                        return current;
-                      }
-                      return { ...current, rightResultId: event.target.value };
-                    })}
+                    <span>{comparisonSlotLabel("left")}</span>
+                    {comparisonLeftResult?.imageUrl ? (
+                      <img src={comparisonLeftResult.imageUrl} alt={comparisonLeftResult.alt} />
+                    ) : (
+                      <em>{locale === "zh" ? "未选择" : "Not selected"}</em>
+                    )}
+                    {comparisonLeftResult && <small>{comparisonOptionLabel(comparisonLeftResult)}</small>}
+                  </button>
+                  <button
+                    type="button"
+                    className={`comparison-slot-card ${comparisonActiveSlot === "right" ? "is-active" : ""}`}
+                    aria-pressed={comparisonActiveSlot === "right"}
+                    onClick={() => setComparisonActiveSlot("right")}
                   >
-                    {comparisonCandidates.map((candidate) => (
-                      <option key={candidate.id} value={candidate.id}>
-                        {comparisonOptionLabel(candidate)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    <span>{comparisonSlotLabel("right")}</span>
+                    {comparisonRightResult?.imageUrl ? (
+                      <img src={comparisonRightResult.imageUrl} alt={comparisonRightResult.alt} />
+                    ) : (
+                      <em>{locale === "zh" ? "未选择" : "Not selected"}</em>
+                    )}
+                    {comparisonRightResult && <small>{comparisonOptionLabel(comparisonRightResult)}</small>}
+                  </button>
+                </div>
+                <div className="comparison-source-tabs" role="tablist" aria-label={locale === "zh" ? "图片来源" : "Image source"}>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={comparisonCandidateSource === "conversation"}
+                    className={comparisonCandidateSource === "conversation" ? "is-active" : ""}
+                    onClick={() => setComparisonCandidateSource("conversation")}
+                  >
+                    {locale === "zh" ? "当前聊天" : "Current chat"}
+                    <span>{comparisonConversationCandidateCount}</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={comparisonCandidateSource === "library"}
+                    className={comparisonCandidateSource === "library" ? "is-active" : ""}
+                    onClick={() => setComparisonCandidateSource("library")}
+                  >
+                    {locale === "zh" ? "图片库" : "Image library"}
+                    <span>{comparisonLibraryCandidateCount}</span>
+                  </button>
+                </div>
+                {comparisonPickerCandidates.length > 0 ? (
+                  <div className="comparison-thumbnail-grid">
+                    {comparisonPickerCandidates.map((candidate) => {
+                      const isSelectedAsLeft = comparisonLeftResult ? areSameImageComparisonCandidate(candidate, comparisonLeftResult) : false;
+                      const isSelectedAsRight = comparisonRightResult ? areSameImageComparisonCandidate(candidate, comparisonRightResult) : false;
+                      return (
+                        <button
+                          type="button"
+                          key={candidate.id}
+                          className={`comparison-thumbnail ${isSelectedAsLeft || isSelectedAsRight ? "is-selected" : ""}`}
+                          aria-pressed={isSelectedAsLeft || isSelectedAsRight}
+                          data-source={candidate.source}
+                          onClick={() => handleAssignComparisonCandidate(comparisonActiveSlot, candidate.id)}
+                        >
+                          <img src={candidate.imageUrl} alt={candidate.alt} />
+                          <span>
+                            <strong>{comparisonAssetTypeLabel(candidate)}</strong>
+                            <small>{candidate.label}</small>
+                          </span>
+                          {(isSelectedAsLeft || isSelectedAsRight) && (
+                            <b>{isSelectedAsLeft ? "A" : "B"}</b>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="comparison-picker__empty">
+                    {comparisonCandidateSource === "conversation"
+                      ? locale === "zh" ? "当前聊天还没有可对比图片。" : "No comparable images in the current chat yet."
+                      : locale === "zh" ? "图片库还没有其他候选图。" : "No other image-library candidates yet."}
+                  </p>
+                )}
+                <div className="comparison-selectors comparison-selectors--native" aria-label={locale === "zh" ? "备用下拉选择" : "Fallback dropdown selection"}>
+                  <label>
+                    <span>{locale === "zh" ? "A 基准图" : "A reference image"}</span>
+                    <select
+                      value={comparisonImage.leftResultId}
+                      onFocus={() => setComparisonActiveSlot("left")}
+                      onChange={(event) => {
+                        setComparisonActiveSlot("left");
+                        handleAssignComparisonCandidate("left", event.target.value);
+                      }}
+                    >
+                      {uniqueImageComparisonCandidates(comparisonCandidates).map((candidate) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {comparisonOptionLabel(candidate)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label>
+                    <span>{locale === "zh" ? "B 对比图" : "B comparison image"}</span>
+                    <select
+                      value={comparisonImage.rightResultId}
+                      onFocus={() => setComparisonActiveSlot("right")}
+                      onChange={(event) => {
+                        setComparisonActiveSlot("right");
+                        handleAssignComparisonCandidate("right", event.target.value);
+                      }}
+                    >
+                      {uniqueImageComparisonCandidates(comparisonCandidates).map((candidate) => (
+                        <option key={candidate.id} value={candidate.id}>
+                          {comparisonOptionLabel(candidate)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
               </div>
             )}
             <div className="comparison-grid">

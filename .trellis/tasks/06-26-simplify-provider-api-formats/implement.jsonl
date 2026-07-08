@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared pre-development rules for modifying constants and cross-layer format contracts."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "API format constants are reused across backend and frontend; search and update all instances."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Config format values cross storage, backend API, and frontend UI boundaries."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend spec index for config/runtime changes."}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Existing API config provider profile contract is affected by simplifying visible API formats."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend spec index for settings UI changes."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Frontend config values cross API/domain types and should stay aligned."}

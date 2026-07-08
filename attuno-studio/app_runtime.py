@@ -57,13 +57,12 @@ def _ensure_min_timeout(cfg: AdapterConfig, minimum_seconds: int) -> AdapterConf
     return cfg
 
 API_FORMAT_HELP = (
-    "API格式是请求/响应协议，不是供应商名称。当前支持："
-    "OpenAI Chat Completions、OpenAI Image、OpenAI Responses、Gemini、Anthropic Messages、Azure OpenAI、Ollama、"
-    "Custom OpenAI Chat Completions、Custom OpenAI Image。"
-    "OpenAI Chat Completions / Custom OpenAI Chat Completions 走 /chat/completions；"
-    "OpenAI Responses 走 /responses；OpenAI Image / Custom OpenAI Image 走 Images API，gpt-image-2 可验证参考图输入。"
+    "API格式是请求/响应协议，不是供应商名称。当前只保留三类："
+    "response 走 /responses；completion 走 /chat/completions；message 走 Anthropic Messages。"
+    "config.json 仍是应用配置文件，但不再作为一种 API 格式；"
+    "旧的 OpenAI Image、Gemini、Azure、Ollama、Custom OpenAI 等选项会作为兼容别名自动归到 completion。"
 )
-UI_API_FORMAT_CHOICES = (("使用 config.json", ""), *COMMON_API_FORMAT_CHOICES)
+UI_API_FORMAT_CHOICES = COMMON_API_FORMAT_CHOICES
 
 def _is_default_config_user(user_id: str | None) -> bool:
     return normalize_user_id(user_id) == DEFAULT_CONFIG_USER_ID
@@ -341,8 +340,6 @@ def _validate_model_list_config(name: str, cfg: AdapterConfig, *, allow_env_fall
     if api_format not in SUPPORTED_API_FORMATS:
         label = API_FORMAT_LABELS.get(api_format, api_format)
         raise RuntimeError(f"{name} 暂未实现 {label} 模型列表检测。")
-    if api_format == "ollama":
-        return
     if not (cfg.api_key or "").strip():
         if allow_env_fallback:
             raise RuntimeError(f"{name} 配置缺少 API Key。请在 UI 中填写，或在 .env 中设置对应变量。")
@@ -430,15 +427,6 @@ def _model_list_requests(cfg: AdapterConfig) -> list[tuple[str, dict[str, str]]]
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
         })]
-    if api_format == "azure_openai":
-        raise RuntimeError("Azure OpenAI 的模型列表接口依赖资源和 api-version，请先手动填写模型名。")
-    if api_format == "gemini":
-        base_url = (cfg.base_url or "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-        return [(_url_with_path(base_url, "models"), {"x-goog-api-key": api_key})]
-    if api_format == "ollama":
-        base_url = (cfg.base_url or "http://localhost:11434").rstrip("/")
-        return [(_url_with_path(base_url, "api/tags"), {})]
-
     return [(url, {"Authorization": f"Bearer {api_key}"}) for url in _openai_compatible_model_urls(cfg.base_url or "https://api.openai.com/v1")]
 
 
@@ -506,7 +494,7 @@ def _validate_adapter_config(name: str, cfg: AdapterConfig, *, allow_env_fallbac
         label = API_FORMAT_LABELS.get(api_format, api_format)
         raise RuntimeError(
             f"{name} 暂未实现 {label} 原生适配。"
-            "当前可用：OpenAI Chat Completions、OpenAI Responses、Gemini、Anthropic Messages、Azure OpenAI、Ollama、Custom OpenAI Chat Completions。"
+            "当前可用：response、completion、message。"
         )
     if not (cfg.model or "").strip():
         raise RuntimeError(f"{name} 配置缺少 model")
@@ -772,6 +760,8 @@ def save_model_config_to_files(
     fallback_models_text="",
     model_switch_after_failures=2,
     stop_after_last_model_failures=2,
+    chat_max_output_tokens=131072,
+    chat_context_size=131072,
     *,
     analysis_providers_json: str = "",
     active_analysis_provider_id: str = "",
@@ -845,6 +835,8 @@ def save_model_config_to_files(
     data["image_model_fallbacks"] = fallback_models
     data["model_switch_after_failures"] = max(1, int(model_switch_after_failures or 2))
     data["stop_after_last_model_failures"] = max(1, int(stop_after_last_model_failures or 2))
+    data["chat_max_output_tokens"] = max(1, int(chat_max_output_tokens or 131072))
+    data["chat_context_size"] = max(1, int(chat_context_size or 131072))
     data["prompt_overrides"] = {
         "floorAnalysisSystemPrompt": (floor_analysis_system_prompt or prompt_assets.FLOOR_ANALYSIS_SYSTEM_PROMPT).strip(),
         "promptGenSystem3dCn": (prompt_gen_system_3d_cn or prompt_assets.PROMPT_GEN_SYSTEM_3D_CN).strip(),
@@ -917,13 +909,15 @@ def load_model_config_for_ui(user_id: str | None = DEFAULT_CONFIG_USER_ID) -> di
         "fallbackModels": "\n".join(cfg.image_model_fallbacks or []),
         "modelSwitchAfterFailures": cfg.model_switch_after_failures,
         "stopAfterLastModelFailures": cfg.stop_after_last_model_failures,
+        "chatMaxOutputTokens": cfg.chat_max_output_tokens,
+        "chatContextSize": cfg.chat_context_size,
         "floorAnalysisSystemPrompt": prompt_overrides["floorAnalysisSystemPrompt"],
         "promptGenSystem3dCn": prompt_overrides["promptGenSystem3dCn"],
     }
 
 
 def _ui_api_format(api_format: str) -> str:
-    return normalize_api_format(api_format)
+    return normalize_api_format(api_format) or "openai_chat"
 
 
 def _build_runtime_config(

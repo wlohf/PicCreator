@@ -51,17 +51,20 @@ def test_openai_model_detection_adds_v1_fallback_for_host_base_url():
     ]
 
 
-def test_ollama_model_detection_uses_tags_without_api_key():
+def test_legacy_ollama_format_collapses_to_completion_model_detection():
     cfg = app_runtime.AdapterConfig(
         provider="ollama",
         api_format="ollama",
         base_url="http://localhost:11434",
-        api_key="",
+        api_key="test-key",
         model="llama3.2",
     )
 
     app_runtime._validate_model_list_config("分析模型", cfg)
-    assert app_runtime._model_list_requests(cfg) == [("http://localhost:11434/api/tags", {})]
+    assert app_runtime._model_list_requests(cfg) == [
+        ("http://localhost:11434/models", {"Authorization": "Bearer test-key"}),
+        ("http://localhost:11434/v1/models", {"Authorization": "Bearer test-key"}),
+    ]
 
 
 def test_run_pipeline_allows_floor_plan_with_text_only_image_model(tmp_path, monkeypatch):
@@ -345,23 +348,26 @@ def test_verify_image_api_fails_when_supported_edit_probe_fails(monkeypatch):
     assert "edit route rejected" in message
 
 
-def test_ui_api_format_preserves_images_api_options():
-    assert app_runtime._ui_api_format("openai_image") == "openai_image"
-    assert app_runtime._ui_api_format("custom_openai_image") == "custom_openai_image"
+def test_ui_api_format_collapses_legacy_options_to_three_choices():
+    assert app_runtime._ui_api_format("") == "openai_chat"
+    assert app_runtime._ui_api_format("openai_image") == "openai_chat"
+    assert app_runtime._ui_api_format("custom_openai_image") == "openai_chat"
     assert app_runtime._ui_api_format("openai_chat") == "openai_chat"
-    assert app_runtime._ui_api_format("custom_openai_chat") == "custom_openai_chat"
+    assert app_runtime._ui_api_format("custom_openai_chat") == "openai_chat"
     assert app_runtime._ui_api_format("openai") == "openai_chat"
-    assert app_runtime._ui_api_format("custom") == "custom_openai_chat"
+    assert app_runtime._ui_api_format("custom") == "openai_chat"
     assert app_runtime._ui_api_format("openai_responses") == "openai_responses"
     assert app_runtime._ui_api_format("messages") == "anthropic"
 
 
-def test_ui_api_format_choices_expose_openai_image_options():
+def test_ui_api_format_choices_expose_only_three_protocols():
     choices = dict(app_runtime.UI_API_FORMAT_CHOICES)
 
-    assert choices["OpenAI Image"] == "openai_image"
-    assert choices["Custom OpenAI Image"] == "custom_openai_image"
-    assert choices["Anthropic Messages"] == "anthropic"
+    assert choices == {
+        "response": "openai_responses",
+        "completion": "openai_chat",
+        "message": "anthropic",
+    }
 
 
 def test_get_config_inherits_default_runtime_config_without_keys_for_fresh_token_namespace(tmp_path, monkeypatch):
@@ -467,7 +473,7 @@ def test_load_model_config_for_ui_wraps_legacy_sections_as_provider_profiles(tmp
         "model": "analysis-model",
     }]
     assert config["activeImageProviderId"] == "image-default"
-    assert config["imageProviders"][0]["apiFormat"] == "openai_image"
+    assert config["imageProviders"][0]["apiFormat"] == "openai_chat"
 
 
 def test_save_model_config_to_files_persists_multiple_provider_profiles(tmp_path, monkeypatch):
@@ -570,7 +576,9 @@ def test_save_model_config_to_files_persists_multiple_provider_profiles(tmp_path
     assert saved["llm"]["providers"][0]["provider_name"] == "Analysis A"
     assert saved["image_gen"]["active_provider_id"] == "image-b"
     assert saved["image_gen"]["provider_name"] == "Image B"
-    assert saved["image_gen"]["api_format"] == "custom_openai_image"
+    assert saved["image_gen"]["api_format"] == "openai_chat"
+    assert saved["image_gen"]["providers"][0]["api_format"] == "openai_chat"
+    assert saved["image_gen"]["providers"][1]["api_format"] == "openai_chat"
     assert saved["image_gen"]["providers"][1]["api_key"] == "image-b-key"
 
 
@@ -702,7 +710,7 @@ def test_build_config_from_dict_uses_active_provider_profile():
     assert cfg.llm.base_url == "https://analysis-b.example/v1"
     assert cfg.llm.model == "analysis-b-model"
     assert cfg.image_gen.provider_name == "Image B"
-    assert cfg.image_gen.api_format == "custom_openai_image"
+    assert cfg.image_gen.api_format == "openai_chat"
     assert cfg.image_gen.api_key == "image-b-key"
     assert cfg.image_gen.base_url == "https://image-b.example/v1"
     assert cfg.image_gen.model == "image-b-model"

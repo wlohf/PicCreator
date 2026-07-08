@@ -7,6 +7,8 @@ from pathlib import Path
 
 
 DEFAULT_PROMPT_ENGINE_VERSION = "llm_prompt_v1"
+DEFAULT_CHAT_MAX_OUTPUT_TOKENS = 131072
+DEFAULT_CHAT_CONTEXT_SIZE = 131072
 
 
 @dataclass
@@ -17,49 +19,27 @@ class AdapterConfig:
     base_url: Optional[str] = None
     timeout: int = 60
     provider_name: str = "Custom"
-    api_format: str = "openai_chat"  # openai_chat | openai_responses | openai_image | anthropic
+    api_format: str = "openai_chat"  # completion | response | message route family
     supports_image_inputs: Optional[bool] = None
     supports_negative_prompt: Optional[bool] = None
 
 
 SUPPORTED_API_FORMATS = (
-    "openai_chat",
     "openai_responses",
-    "gemini",
-    "openai_image",
+    "openai_chat",
     "anthropic",
-    "azure_openai",
-    "custom_openai_chat",
-    "custom_openai_image",
-    "ollama",
-    "new_api",
-    "cherryin",
 )
 
 API_FORMAT_LABELS = {
-    "openai_chat": "OpenAI Chat Completions",
-    "openai_image": "OpenAI Image",
-    "openai_responses": "OpenAI Responses",
-    "gemini": "Gemini",
-    "anthropic": "Anthropic Messages",
-    "azure_openai": "Azure OpenAI",
-    "new_api": "New API",
-    "cherryin": "CherryIN",
-    "ollama": "Ollama",
-    "custom_openai_chat": "Custom OpenAI Chat Completions",
-    "custom_openai_image": "Custom OpenAI Image",
+    "openai_responses": "response",
+    "openai_chat": "completion",
+    "anthropic": "message",
 }
 
 COMMON_API_FORMAT_CHOICES = (
-    ("OpenAI Chat Completions", "openai_chat"),
-    ("OpenAI Image", "openai_image"),
-    ("OpenAI Responses", "openai_responses"),
-    ("Gemini", "gemini"),
-    ("Anthropic Messages", "anthropic"),
-    ("Azure OpenAI", "azure_openai"),
-    ("Ollama", "ollama"),
-    ("Custom OpenAI Chat Completions", "custom_openai_chat"),
-    ("Custom OpenAI Image", "custom_openai_image"),
+    ("response", "openai_responses"),
+    ("completion", "openai_chat"),
+    ("message", "anthropic"),
 )
 
 
@@ -75,6 +55,8 @@ class AppConfig:
     image_model_fallbacks: list[str] = field(default_factory=list)
     model_switch_after_failures: int = 2
     stop_after_last_model_failures: int = 2
+    chat_max_output_tokens: int = DEFAULT_CHAT_MAX_OUTPUT_TOKENS
+    chat_context_size: int = DEFAULT_CHAT_CONTEXT_SIZE
 
 
 def load_config(path: str = "config.json") -> AppConfig:
@@ -119,7 +101,7 @@ def build_config_from_dict(data: dict, env_values: Mapping[str, str] | None = No
         env_name = str(d.get("api_key_env", "") or "").strip()
         key = env.get(env_name, d.get("api_key", "")) if env_name else d.get("api_key", "")
         legacy_provider = d.get("provider", "openai_compat")
-        api_format = d.get("api_format") or _legacy_provider_to_api_format(legacy_provider)
+        api_format = normalize_api_format(d.get("api_format") or _legacy_provider_to_api_format(legacy_provider))
         return AdapterConfig(
             provider=legacy_provider,
             api_key=key,
@@ -142,6 +124,8 @@ def build_config_from_dict(data: dict, env_values: Mapping[str, str] | None = No
         image_model_fallbacks=data.get("image_model_fallbacks", []),
         model_switch_after_failures=max(1, int(data.get("model_switch_after_failures", 2))),
         stop_after_last_model_failures=max(1, int(data.get("stop_after_last_model_failures", 2))),
+        chat_max_output_tokens=max(1, int(data.get("chat_max_output_tokens", DEFAULT_CHAT_MAX_OUTPUT_TOKENS))),
+        chat_context_size=max(1, int(data.get("chat_context_size", DEFAULT_CHAT_CONTEXT_SIZE))),
     )
     _validate_app_config(cfg)
     return cfg
@@ -168,8 +152,6 @@ def _legacy_provider_to_api_format(provider: str) -> str:
     p = (provider or "").strip().lower()
     if p == "anthropic":
         return "anthropic"
-    if p == "google":
-        return "openai_image"
     return "openai_chat"
 
 
@@ -180,43 +162,61 @@ def normalize_api_format(api_format: str) -> str:
         if fmt == label.lower():
             return value
     aliases = {
+        "response": "openai_responses",
+        "openai response": "openai_responses",
+        "openai-response": "openai_responses",
+        "openai responses": "openai_responses",
+        "responses": "openai_responses",
+        "completion": "openai_chat",
+        "completions": "openai_chat",
         "openai": "openai_chat",
         "openai_compat": "openai_chat",
         "openai-compatible": "openai_chat",
         "openai-compatible-chat": "openai_chat",
-        "openai response": "openai_responses",
-        "openai-response": "openai_responses",
-        "responses": "openai_responses",
         "chat_completions": "openai_chat",
         "chat/completions": "openai_chat",
-        "openai image": "openai_image",
-        "openai-image": "openai_image",
-        "images": "openai_image",
-        "image": "openai_image",
-        "google": "gemini",
-        "imagen": "gemini",
-        "google_gemini": "gemini",
+        "openai chat": "openai_chat",
+        "openai chat completions": "openai_chat",
+        "openai compatible chat": "openai_chat",
+        "openai image": "openai_chat",
+        "openai-image": "openai_chat",
+        "openai images api": "openai_chat",
+        "openai_image": "openai_chat",
+        "images": "openai_chat",
+        "image": "openai_chat",
+        "google": "openai_chat",
+        "gemini": "openai_chat",
+        "imagen": "openai_chat",
+        "google_gemini": "openai_chat",
+        "gemini compatible": "openai_chat",
         "message": "anthropic",
         "messages": "anthropic",
         "anthropic message": "anthropic",
         "anthropic messages": "anthropic",
         "anthropic_messages": "anthropic",
         "claude": "anthropic",
-        "azure": "azure_openai",
-        "azure-openai": "azure_openai",
-        "newapi": "custom_openai_chat",
-        "new-api": "custom_openai_chat",
-        "cherry_in": "custom_openai_chat",
-        "cherry-in": "custom_openai_chat",
-        "custom": "custom_openai_chat",
-        "custom openai": "custom_openai_chat",
-        "custom openai-compatible chat": "custom_openai_chat",
-        "custom openai chat": "custom_openai_chat",
-        "custom_chat": "custom_openai_chat",
-        "openai chat": "openai_chat",
-        "openai chat completions": "openai_chat",
-        "openai compatible chat": "openai_chat",
-        "custom_image": "custom_openai_image",
+        "azure": "openai_chat",
+        "azure_openai": "openai_chat",
+        "azure-openai": "openai_chat",
+        "azure openai": "openai_chat",
+        "newapi": "openai_chat",
+        "new_api": "openai_chat",
+        "new-api": "openai_chat",
+        "cherryin": "openai_chat",
+        "cherry_in": "openai_chat",
+        "cherry-in": "openai_chat",
+        "custom": "openai_chat",
+        "custom openai": "openai_chat",
+        "custom openai-compatible chat": "openai_chat",
+        "custom openai chat": "openai_chat",
+        "custom openai chat completions": "openai_chat",
+        "custom_openai_chat": "openai_chat",
+        "custom_chat": "openai_chat",
+        "custom_image": "openai_chat",
+        "custom_openai_image": "openai_chat",
+        "custom openai image": "openai_chat",
+        "custom openai images api": "openai_chat",
+        "ollama": "openai_chat",
     }
     return aliases.get(fmt, fmt)
 
@@ -244,17 +244,9 @@ def adapter_supports_image_inputs(cfg: AdapterConfig, model: Optional[str] = Non
         return bool(cfg.supports_image_inputs)
     if normalized == "anthropic":
         return False
-    if normalized in ("openai_image", "custom_openai_image"):
-        return True
     return normalized in (
         "openai_chat",
         "openai_responses",
-        "gemini",
-        "azure_openai",
-        "custom_openai_chat",
-        "new_api",
-        "cherryin",
-        "ollama",
         "",
     )
 

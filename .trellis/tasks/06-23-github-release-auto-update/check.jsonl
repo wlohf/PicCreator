@@ -1,0 +1,9 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "检查后端更新接口和服务实现是否符合规范入口"}
+{"file": ".trellis/spec/backend/deployment-operations.md", "reason": "检查 release 更新是否保持部署更新脚本、重启和健康检查契约"}
+{"file": ".trellis/spec/backend/error-handling.md", "reason": "检查错误信息、认证和失败路径是否清晰可控"}
+{"file": ".trellis/spec/backend/quality-guidelines.md", "reason": "检查后端实现是否避免不安全 shell/git/network 模式"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "检查系统维护面板变更是否符合前端规范入口"}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "检查面板 UI 与现有组件约定一致"}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "检查新增 release 字段类型和空值处理"}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "检查前端质量、构建和交互状态"}
+{"file": ".trellis/tasks/06-23-github-release-auto-update/research/github-release-update.md", "reason": "检查实现是否符合 release tag 更新决策"}

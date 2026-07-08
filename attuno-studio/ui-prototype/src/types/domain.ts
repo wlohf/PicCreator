@@ -54,20 +54,53 @@ export type WebSearchMetadata = {
 export type SystemUpdateStatus = {
   ok: boolean;
   enabled: boolean;
+  update_source?: "release" | "branch" | string;
   repo_root?: string;
   branch?: string;
   remote?: string;
   remote_branch?: string;
+  github_repository?: string;
   current_commit?: string;
   remote_commit?: string;
+  current_version?: string;
+  latest_version?: string;
+  latest_release_tag?: string;
+  latest_release_name?: string;
+  latest_release_url?: string;
+  latest_release_published_at?: string;
+  latest_release_commit?: string;
   has_update?: boolean;
   fast_forward?: boolean;
+  can_apply?: boolean;
+  apply_blockers?: string[];
   dirty?: boolean;
   checked_at?: string;
   error?: string;
   applied?: boolean;
   message?: string;
   log?: string;
+};
+
+export type SystemRuntimeStatus = {
+  ok: boolean;
+  service?: string;
+  build?: string;
+  environment?: string;
+  checked_at?: string;
+  database?: {
+    ok?: boolean;
+    required?: boolean;
+    configured?: boolean;
+    fallback?: boolean;
+    error?: string;
+  };
+  storage?: {
+    ok?: boolean;
+    data_dir?: string;
+    writable?: boolean;
+    error?: string;
+  };
+  update?: Pick<SystemUpdateStatus, "ok" | "enabled" | "update_source" | "current_version" | "latest_version" | "has_update" | "can_apply" | "apply_blockers" | "checked_at" | "error">;
 };
 
 export type ApiProviderProfile = {
@@ -95,6 +128,8 @@ export type ApiConfig = {
   activeImageProviderId: string;
   imageProviders: ApiProviderProfile[];
   tavilyApiKeys: string;
+  chatMaxOutputTokens: number;
+  chatContextSize: number;
   floorAnalysisSystemPrompt: string;
   promptGenSystem3dCn: string;
   fallbackModels: string;

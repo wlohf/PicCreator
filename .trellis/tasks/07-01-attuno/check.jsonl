@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Verify chat history source-of-truth, cache, and durable-session behavior remains intact"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Verify namespace/account isolation behavior remains intact for chat-history routes"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify data contracts survive backend/frontend round trip"}
+{"file": "attuno-studio/docs/chat-history-performance-plan.md", "reason": "Verify implementation matches the documented performance plan"}

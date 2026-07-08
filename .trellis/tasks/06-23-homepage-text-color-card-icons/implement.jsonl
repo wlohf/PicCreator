@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend layer index for this styling-only homepage adjustment."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "Component/style conventions relevant to prompt starter card presentation."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality expectations for scoped CSS changes."}
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared pre-modification thinking guide index."}

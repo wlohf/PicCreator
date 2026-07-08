@@ -1,0 +1,5 @@
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend check context for release/update/config changes"}
+{"file": ".trellis/spec/backend/deployment-operations.md", "reason": "Validate update/status behavior against deployment contracts"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Validate generation/message behavior against project contracts"}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend check context for UI/state changes"}
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Validate frontend persistence and session state changes"}

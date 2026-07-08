@@ -154,6 +154,7 @@ def test_chat_endpoint_routes_logo_name_brainstorm_to_daily_chat_model(tmp_path,
                 "analysisBaseUrl": "https://chat.example/v1",
                 "analysisApiKey": "chat-key",
                 "analysisModel": "chat-model",
+                "chatMaxOutputTokens": 4096,
             },
         },
     )
@@ -201,6 +202,7 @@ def test_daily_chat_endpoint_uses_configured_analysis_model(tmp_path, monkeypatc
                 "analysisBaseUrl": "https://chat.example/v1",
                 "analysisApiKey": "chat-key",
                 "analysisModel": "chat-model",
+                "chatMaxOutputTokens": 4096,
             },
         },
     )
@@ -213,7 +215,7 @@ def test_daily_chat_endpoint_uses_configured_analysis_model(tmp_path, monkeypatc
     assert calls
     assert calls[-1]["cfg"].provider_name == "Configured Chat"
     assert calls[-1]["cfg"].model == "chat-model"
-    assert calls[-1]["kwargs"]["max_tokens"] == 131072
+    assert calls[-1]["kwargs"]["max_tokens"] == 4096
 
 
 def test_daily_chat_endpoint_injects_web_search_context(tmp_path, monkeypatch):
@@ -892,6 +894,8 @@ def test_default_workspace_config_save_persists_analysis_image_config_and_env(tm
             "fallback_models_text": "dall-e-3\nbackup-image",
             "model_switch_after_failures": "3",
             "stop_after_last_model_failures": "4",
+            "chat_max_output_tokens": "8192",
+            "chat_context_size": "262144",
         },
     )
 
@@ -907,6 +911,8 @@ def test_default_workspace_config_save_persists_analysis_image_config_and_env(tm
     assert saved["image_model_fallbacks"] == ["dall-e-3", "backup-image"]
     assert saved["model_switch_after_failures"] == 3
     assert saved["stop_after_last_model_failures"] == 4
+    assert saved["chat_max_output_tokens"] == 8192
+    assert saved["chat_context_size"] == 262144
     env_text = Path(".env").read_text(encoding="utf-8")
     assert "LLM_API_KEY=analysis-key" in env_text
     assert "VISION_API_KEY=analysis-key" in env_text
@@ -916,6 +922,7 @@ def test_default_workspace_config_save_persists_analysis_image_config_and_env(tm
 def test_config_load_returns_saved_project_config(tmp_path, monkeypatch):
     _patch_runtime_files(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ATTUNO_STUDIO_DATA_DIR", str(tmp_path / "data"))
     client = _auth_client("colored-user")
 
     response = client.get("/api/config")
@@ -924,10 +931,12 @@ def test_config_load_returns_saved_project_config(tmp_path, monkeypatch):
     payload = response.json()
     assert payload["ok"] is True
     assert payload["config"]["imageModel"] == "gpt-image-2"
+    assert payload["config"]["imageProviderName"] == "Xyleisure Relay"
+    assert payload["config"]["imageBaseUrl"] == "https://api.xyleisure.site/v1"
     assert "analysisApiFormat" in payload["config"]
 
 
-def test_image_api_format_save_and_load_preserves_openai_image_option(tmp_path, monkeypatch):
+def test_image_api_format_save_and_load_collapses_openai_image_alias(tmp_path, monkeypatch):
     _patch_runtime_files(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
     client = _auth_client("openai-image-format-user")
@@ -955,10 +964,10 @@ def test_image_api_format_save_and_load_preserves_openai_image_option(tmp_path, 
     payload = load_response.json()
     assert payload["ok"] is True
     assert payload["config"]["analysisApiFormat"] == "openai_chat"
-    assert payload["config"]["imageApiFormat"] == "openai_image"
+    assert payload["config"]["imageApiFormat"] == "openai_chat"
 
 
-def test_image_api_format_save_and_load_preserves_custom_openai_image_option(tmp_path, monkeypatch):
+def test_image_api_format_save_and_load_collapses_custom_aliases(tmp_path, monkeypatch):
     _patch_runtime_files(monkeypatch, tmp_path)
     monkeypatch.chdir(tmp_path)
     client = _auth_client("custom-openai-image-format-user")
@@ -985,8 +994,8 @@ def test_image_api_format_save_and_load_preserves_custom_openai_image_option(tmp
     assert load_response.status_code == 200
     payload = load_response.json()
     assert payload["ok"] is True
-    assert payload["config"]["analysisApiFormat"] == "custom_openai_chat"
-    assert payload["config"]["imageApiFormat"] == "custom_openai_image"
+    assert payload["config"]["analysisApiFormat"] == "openai_chat"
+    assert payload["config"]["imageApiFormat"] == "openai_chat"
 
 
 def test_analysis_api_format_save_and_load_accepts_messages_alias(tmp_path, monkeypatch):
@@ -1106,8 +1115,10 @@ def test_config_save_and_load_preserves_multiple_provider_profiles(tmp_path, mon
     assert config["analysisProviders"][0]["providerName"] == "Analysis Primary"
     assert config["analysisProviders"][0]["apiFormat"] == "openai_chat"
     assert config["analysisProviderName"] == "Analysis Backup"
-    assert config["analysisApiFormat"] == "custom_openai_chat"
+    assert config["analysisApiFormat"] == "openai_chat"
     assert config["imageProviders"][0]["providerName"] == "Image Primary"
+    assert config["imageProviders"][0]["apiFormat"] == "openai_chat"
+    assert config["imageProviders"][1]["apiFormat"] == "openai_chat"
     assert config["imageProviderName"] == "Image Backup"
 
 
@@ -1181,7 +1192,9 @@ def test_config_load_preserves_non_active_provider_keys_for_current_user(tmp_pat
     assert config["activeAnalysisProviderId"] == "analysis-empty"
     assert config["activeImageProviderId"] == "image-empty"
     assert config["analysisProviders"][0]["apiFormat"] == "openai_chat"
-    assert config["analysisProviders"][1]["apiFormat"] == "custom_openai_chat"
+    assert config["analysisProviders"][1]["apiFormat"] == "openai_chat"
+    assert config["imageProviders"][0]["apiFormat"] == "openai_chat"
+    assert config["imageProviders"][1]["apiFormat"] == "openai_chat"
     assert config["analysisProviders"][0]["apiKey"] == "analysis-saved-key"
     assert config["analysisProviders"][1]["apiKey"] == ""
     assert config["imageProviders"][0]["apiKey"] == "image-saved-key"

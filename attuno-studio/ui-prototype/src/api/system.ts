@@ -1,5 +1,5 @@
 import { apiFetch, parseApiJson } from "./client";
-import type { SystemUpdateStatus } from "../types/domain";
+import type { SystemRuntimeStatus, SystemUpdateStatus } from "../types/domain";
 
 export type UpdateAdminCredentials = {
   username: string;
@@ -26,6 +26,20 @@ async function requestUpdateStatus(path: string, method: "GET" | "POST", credent
 
 export function getSystemUpdateStatus(credentials: UpdateAdminCredentials) {
   return requestUpdateStatus("/api/system/update/status", "GET", credentials);
+}
+
+export async function getSystemRuntimeStatus(credentials: UpdateAdminCredentials): Promise<SystemRuntimeStatus> {
+  const response = await apiFetch("/api/system/status", {
+    method: "GET",
+    headers: {
+      Authorization: authHeader(credentials),
+    },
+  });
+  const data = await parseApiJson<SystemRuntimeStatus | { detail?: string }>(response);
+  if (!response.ok) {
+    throw new Error("detail" in data && data.detail ? data.detail : response.statusText);
+  }
+  return data as SystemRuntimeStatus;
 }
 
 export function checkSystemUpdate(credentials: UpdateAdminCredentials) {

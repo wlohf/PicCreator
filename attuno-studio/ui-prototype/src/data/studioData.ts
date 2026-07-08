@@ -121,35 +121,30 @@ export const tools: Array<{ key: ToolKey; label: LocalizedText; icon: "pointer" 
 
 export const modelOptions = ["gpt-image-2"];
 export const apiFormatOptions = [
-  { value: "", label: "config.json" },
-  { value: "openai_chat", label: "OpenAI Chat Completions (/chat/completions)" },
-  { value: "openai_image", label: "OpenAI Images API" },
-  { value: "openai_responses", label: "OpenAI Responses (/responses)" },
-  { value: "gemini", label: "Gemini compatible" },
-  { value: "anthropic", label: "Anthropic Messages (/messages)" },
-  { value: "azure_openai", label: "Azure OpenAI" },
-  { value: "ollama", label: "Ollama" },
-  { value: "custom_openai_chat", label: "Custom OpenAI-compatible Chat (/chat/completions)" },
-  { value: "custom_openai_image", label: "Custom OpenAI Images API" }
+  { value: "openai_responses", label: "response" },
+  { value: "openai_chat", label: "completion" },
+  { value: "anthropic", label: "message" }
 ];
 export const iterationOptions = [3, 4, 5];
 
 export const defaultApiConfig: ApiConfig = {
   analysisProviderName: "",
-  analysisApiFormat: "",
+  analysisApiFormat: "openai_chat",
   analysisBaseUrl: defaultApiBaseUrl,
   analysisApiKey: "",
   analysisModel: "",
   activeAnalysisProviderId: "",
   analysisProviders: [],
   imageProviderName: "",
-  imageApiFormat: "",
+  imageApiFormat: "openai_chat",
   imageBaseUrl: defaultApiBaseUrl,
   imageApiKey: "",
   imageModel: "gpt-image-2",
   activeImageProviderId: "",
   imageProviders: [],
   tavilyApiKeys: "",
+  chatMaxOutputTokens: 131072,
+  chatContextSize: 131072,
   floorAnalysisSystemPrompt: "",
   promptGenSystem3dCn: "",
   fallbackModels: "",

@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend task; provides the relevant spec layer index."}
+{"file": ".trellis/spec/frontend/component-guidelines.md", "reason": "UI changes should follow project component patterns where documented."}
+{"file": ".trellis/spec/frontend/quality-guidelines.md", "reason": "Frontend quality/testing expectations for UI behavior changes."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse existing memory APIs and comparison candidate data rather than duplicating logic."}

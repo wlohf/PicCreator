@@ -30,6 +30,8 @@ class ChatApiConfig(BaseModel):
     analysisBaseUrl: str = ""
     analysisApiKey: str = ""
     analysisModel: str = ""
+    chatMaxOutputTokens: int | None = None
+    chatContextSize: int | None = None
 
 
 class ChatPayload(BaseModel):
@@ -75,6 +77,8 @@ def _effort_instruction(effort: str) -> str:
 
 
 def _daily_chat_max_tokens(payload: ChatPayload) -> int:
+    if payload.api_config and payload.api_config.chatMaxOutputTokens:
+        return min(200000, max(1, int(payload.api_config.chatMaxOutputTokens)))
     return CHAT_RESPONSE_MAX_TOKENS
 
 

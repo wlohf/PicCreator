@@ -1,0 +1,7 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Shared quality checklist for cross-layer changes."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Check that repeated format constants were updated consistently."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify config values survive storage/API/UI round trips."}
+{"file": ".trellis/spec/backend/index.md", "reason": "Backend quality context."}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Validate intentional spec update for simplified API format choices."}
+{"file": ".trellis/spec/frontend/index.md", "reason": "Frontend quality context."}
+{"file": ".trellis/spec/frontend/type-safety.md", "reason": "Validate frontend API config value handling."}

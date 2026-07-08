@@ -1,0 +1,4 @@
+{"file": ".trellis/spec/frontend/state-management.md", "reason": "Chat history source-of-truth, localStorage cache, durable session, and account isolation contracts"}
+{"file": ".trellis/spec/backend/generation-contracts.md", "reason": "Account-scoped route and namespace fallback contracts for chat-history APIs"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "This change spans backend storage, API payloads, frontend state, and tests"}
+{"file": "attuno-studio/docs/chat-history-performance-plan.md", "reason": "Technical plan and API contract for this performance optimization"}

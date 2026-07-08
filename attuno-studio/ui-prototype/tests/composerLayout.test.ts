@@ -28,6 +28,36 @@ assert(
 );
 
 assert(
+  chatWorkspaceSource.includes("rows={1}") &&
+  /\.chatgpt-composer textarea,[\s\S]*?\.chatgpt-composer--empty-conversation textarea\s*\{[\s\S]*?min-height:\s*calc\(1lh \+ 18px\);[\s\S]*?white-space:\s*pre-wrap;[\s\S]*?overflow-wrap:\s*anywhere;[\s\S]*?word-break:\s*break-word;/m.test(finalStyles) &&
+  appSource.includes("Math.min(textarea.scrollHeight, COMPOSER_MAX_VISIBLE_HEIGHT)"),
+  "chat composer textarea should start compact, wrap long text, and grow dynamically up to the visible height cap",
+);
+
+assert(
+  domainSource.includes("chatMaxOutputTokens: number;") &&
+  domainSource.includes("chatContextSize: number;") &&
+  studioDataSource.includes("chatMaxOutputTokens: 131072") &&
+  studioDataSource.includes("chatContextSize: 131072") &&
+  appSource.includes("输出 Token 上限") &&
+  appSource.includes("上下文大小") &&
+  appSource.includes("normalizePositiveInteger(event.target.value, current.chatMaxOutputTokens") &&
+  appSource.includes("normalizePositiveInteger(event.target.value, current.chatContextSize"),
+  "settings UI should expose saved chat output token and context size controls",
+);
+
+assert(
+  appSource.includes("const CHAT_AUTO_FOLLOW_BOTTOM_THRESHOLD = 96") &&
+  appSource.includes("const shouldAutoFollowChatRef = useRef(true)") &&
+  appSource.includes("function isChatThreadNearBottom") &&
+  appSource.includes("function handleChatThreadScroll") &&
+  appSource.includes("shouldAutoFollowChatRef.current = true;") &&
+  appSource.includes("if (!thread || !shouldAutoFollowChatRef.current) return;") &&
+  appSource.includes("onScroll={handleChatThreadScroll}"),
+  "streaming chat should auto-follow only while the user remains near the bottom of the thread",
+);
+
+assert(
   /\.chatgpt-composer\.composer\s*\{[\s\S]*?position:\s*relative;[\s\S]*?left:\s*auto;[\s\S]*?bottom:\s*auto;[\s\S]*?margin:\s*0 auto 24px;[\s\S]*?transform:\s*none;/m.test(finalStyles),
   "restored non-empty conversations should keep the composer in the main grid flow instead of inheriting the old absolute centered position",
 );
@@ -221,6 +251,35 @@ assert(
 );
 
 assert(
+  appSource.includes('type MemoryProjectPreferenceGroup = "style" | "furniture" | "structure" | "materials" | "lighting" | "avoid";') &&
+  appSource.includes('const [newMemoryDraft, setNewMemoryDraft] = useState<MemoryDraft>({ text: "", sectionId: "long_term_preferences", group: "style" });') &&
+  appSource.includes("projectPreferenceGroupOptions.map((option)") &&
+  appSource.includes("function handlePrepareMemoryDraftForSection") &&
+  appSource.includes("function handleCopyMemoryItemToDraft") &&
+  appSource.includes("createMemoryItem(nextText, newMemoryDraft.sectionId, DEFAULT_PROJECT_ID, newMemoryDraft.group)") &&
+  appSource.includes("添加到这里") &&
+  appSource.includes("转为记忆") &&
+  styles.includes(".memory-section-head") &&
+  styles.includes(".memory-item-group"),
+  "memory management should expose section add-here actions, project preference groups, and read-only copy-to-form controls",
+);
+
+assert(
+  appSource.includes('type ComparisonSlot = "left" | "right";') &&
+  appSource.includes('const [comparisonActiveSlot, setComparisonActiveSlot] = useState<ComparisonSlot>("right");') &&
+  appSource.includes('const [comparisonCandidateSource, setComparisonCandidateSource] = useState<ImageComparisonCandidateSource>("conversation");') &&
+  appSource.includes("function handleAssignComparisonCandidate") &&
+  appSource.includes('className="comparison-slot-row"') &&
+  appSource.includes('className="comparison-source-tabs"') &&
+  appSource.includes('className="comparison-thumbnail-grid"') &&
+  appSource.includes('data-source={candidate.source}') &&
+  appSource.includes("candidate.source === comparisonCandidateSource") &&
+  styles.includes(".comparison-slot-card") &&
+  styles.includes(".comparison-thumbnail-grid"),
+  "comparison analysis should provide visual A/B slots, current-chat/library tabs, and clickable thumbnail candidates",
+);
+
+assert(
   appSource.includes("chatProviderLabel") &&
   appSource.includes("chatModelValue") &&
   appSource.includes("handleChatModelChange") &&
@@ -336,6 +395,7 @@ assert(
 );
 
 const generationFlowBlock = appSource.match(/async function runConversationFlow[\s\S]*?function handleGenerate/m)?.[0] ?? "";
+const annotationEditFlowBlock = appSource.match(/async function handleSubmitAnnotationEdit[\s\S]*?function applyGenerationProgress/m)?.[0] ?? "";
 assert(
   appSource.includes("function clearComposerDraft()") &&
   appSource.includes("function clearComposerAfterSubmit") &&
@@ -654,6 +714,37 @@ assert(
   appSource.includes("generation-progress-status") &&
   styles.includes(".generation-progress-status"),
   "image generation should immediately show a visible assistant pending state and clear it before final success or failure output",
+);
+
+const finalRenderMessageBlocks = [...generationFlowBlock.matchAll(/\{\s*id: `m-api-render-\$\{idBase\}`,[\s\S]*?\.\.\.variantPatchToAssistantMessage\(renderPatch,/g)]
+  .map((match) => match[0]);
+const renderRetryUpdateMatches = [...generationFlowBlock.matchAll(/updateRunSessionActiveMessageVariant\(runGuard, retryTargetMessageId, renderPatch\)/g)];
+assert(
+  finalRenderMessageBlocks.length === 3 &&
+  finalRenderMessageBlocks.every((block) => block.includes("parentId: userMessageId")) &&
+  renderRetryUpdateMatches.length === 3 &&
+  !generationFlowBlock.includes('id: `m-api-analysis-${idBase}`') &&
+  !generationFlowBlock.includes('parentId: `m-api-analysis-${idBase}`') &&
+  generationFlowBlock.includes("promptText: finalPrompt") &&
+  generationFlowBlock.includes("imageUrl: historyItem.imageUrl || firstImage?.url || firstImage?.data_url") &&
+  generationFlowBlock.includes("sourceResultId: historyItem.id"),
+  "successful image generation/edit flows should append only the final render message directly under the user request",
+);
+
+const annotationRenderMessageBlocks = [...annotationEditFlowBlock.matchAll(/\{\s*id: `m-api-annotation-render-\$\{idBase\}`,[\s\S]*?sourceResultId: historyItem.id,/g)]
+  .map((match) => match[0]);
+assert(
+  annotationEditFlowBlock.includes("id: annotationProgressMessageId") &&
+  annotationEditFlowBlock.includes("removeRunSessionMessage(runGuard, annotationProgressMessageId)") &&
+  annotationRenderMessageBlocks.length === 1 &&
+  annotationRenderMessageBlocks.every((block) =>
+    block.includes("parentId: annotationUserMessageId") &&
+    block.includes("bullets: {") &&
+    block.includes("promptText: historyItem.prompt")
+  ) &&
+  !annotationEditFlowBlock.includes('id: `m-api-annotation-analysis-${idBase}`') &&
+  annotationEditFlowBlock.includes('id: `m-api-annotation-error-${idBase}`'),
+  "successful annotated image edits should remove progress and append one render message with result metadata while failures stay explicit",
 );
 
 assert(

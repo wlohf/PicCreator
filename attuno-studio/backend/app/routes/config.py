@@ -122,6 +122,8 @@ def save_config(
     fallback_models_text: str = Form(""),
     model_switch_after_failures: int = Form(2),
     stop_after_last_model_failures: int = Form(2),
+    chat_max_output_tokens: int = Form(131072),
+    chat_context_size: int = Form(131072),
 ):
     try:
         message = save_model_config_to_files(
@@ -140,6 +142,8 @@ def save_config(
             fallback_models_text,
             model_switch_after_failures,
             stop_after_last_model_failures,
+            chat_max_output_tokens,
+            chat_context_size,
             analysis_providers_json=analysis_providers_json,
             active_analysis_provider_id=active_analysis_provider_id,
             image_providers_json=image_providers_json,

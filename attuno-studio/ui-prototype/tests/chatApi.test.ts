@@ -8,12 +8,14 @@ function assert(condition: unknown, message: string) {
 }
 
 const chatApiSource = readFileSync(new URL("../src/api/chat.ts", import.meta.url), "utf8");
+const configApiSource = readFileSync(new URL("../src/api/config.ts", import.meta.url), "utf8");
 const systemApiSource = readFileSync(new URL("../src/api/system.ts", import.meta.url), "utf8");
 const chatHistorySource = readFileSync(new URL("../src/api/chatHistory.ts", import.meta.url), "utf8");
 const resultsApiSource = readFileSync(new URL("../src/api/results.ts", import.meta.url), "utf8");
 const generationApiSource = readFileSync(new URL("../src/api/generation.ts", import.meta.url), "utf8");
 const imageEditsApiSource = readFileSync(new URL("../src/api/imageEdits.ts", import.meta.url), "utf8");
 const appSource = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
+const studioDataSource = readFileSync(new URL("../src/data/studioData.ts", import.meta.url), "utf8");
 const chatWorkspaceSource = readFileSync(new URL("../src/components/chat-workspace.tsx", import.meta.url), "utf8");
 const workspaceSource = `${appSource}\n${chatWorkspaceSource}`;
 
@@ -25,11 +27,29 @@ assert(
 );
 
 assert(
+  configApiSource.includes('formData.append("chat_max_output_tokens", String(apiConfig.chatMaxOutputTokens))') &&
+  configApiSource.includes('formData.append("chat_context_size", String(apiConfig.chatContextSize))'),
+  "config save API should persist chat output token and context size settings",
+);
+
+assert(
+  !studioDataSource.includes('label: "config.json"') &&
+  !studioDataSource.includes("custom_openai_chat") &&
+  !studioDataSource.includes("custom_openai_image") &&
+  studioDataSource.includes('{ value: "openai_responses", label: "response" }') &&
+  studioDataSource.includes('{ value: "openai_chat", label: "completion" }') &&
+  studioDataSource.includes('{ value: "anthropic", label: "message" }'),
+  "settings API format selector should expose only response, completion, and message",
+);
+
+assert(
   chatApiSource.includes("web_search?: WebSearchMetadata") &&
   appSource.includes("webSearch: streamResponse.web_search") &&
   appSource.includes("webSearch: response.web_search") &&
   appSource.includes("<WebSearchSourcesCard search={activeMessage.webSearch} locale={locale} />") &&
-  appSource.includes("function WebSearchSourcesCard"),
+  appSource.includes("function WebSearchSourcesCard") &&
+  appSource.includes("className=\"web-search-citation\"") &&
+  appSource.includes("className=\"message-markdown-link\""),
   "chat API and message rendering should preserve and display web search source metadata",
 );
 

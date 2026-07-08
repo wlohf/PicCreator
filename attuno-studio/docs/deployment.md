@@ -105,12 +105,25 @@ IMAGE_API_KEY=...
 
 ### Web 更新管理员
 
-Web 端“设置 -> 系统维护”可以检测 GitHub 新版本。执行更新默认关闭，必须在服务器环境中显式启用：
+Web 端“设置 -> 系统维护”可以检测 GitHub latest release。执行更新默认关闭，必须在服务器环境中显式启用：
 
 ```ini
 Environment=ATTUNO_UPDATE_ENABLED=1
 Environment=ATTUNO_UPDATE_ADMIN_USERNAME=admin
 Environment=ATTUNO_UPDATE_ADMIN_PASSWORD_HASH=生成后的哈希
+```
+
+默认更新来源是 GitHub latest release。后端会从 `origin` 远端 URL 推导 `owner/repo`，读取 latest release 的 tag，checkout 到 tag 对应 commit，然后复用 `deploy/update.sh` 完成依赖安装、前端构建、服务重启和健康检查。私有仓库或需要提高 GitHub API rate limit 时，可以额外配置：
+
+```ini
+Environment=ATTUNO_GITHUB_REPOSITORY=owner/repo
+Environment=ATTUNO_GITHUB_TOKEN=github_pat_xxx
+```
+
+`ATTUNO_GITHUB_TOKEN` 只在后端请求 GitHub API 时使用，不会返回给前端。若仍想沿用旧的 `origin/main` fast-forward 更新模式，可配置：
+
+```ini
+Environment=ATTUNO_UPDATE_SOURCE=branch
 ```
 
 生成密码哈希：
@@ -182,16 +195,16 @@ http://你的域名或服务器IP/
 
 ## 7. 后续更新
 
-以后更新代码时，在服务器运行：
+以后更新代码时，推荐先在 GitHub 创建 release，然后在 Web 端“设置 -> 系统维护”点击“检查更新”和“开始更新”。也可以在服务器运行：
 
 ```bash
 cd /opt/attuno/PicCreator
 bash deploy/update.sh
 ```
 
-更新脚本会依次执行：
+Web 端 release 更新会先 checkout 到 latest release tag 对应 commit，再让更新脚本依次执行：
 
-1. `git pull --ff-only`
+1. 跳过 `git pull`（release 模式已 checkout 目标 tag）
 2. 安装/刷新 Python 依赖
 3. 初始化/迁移 PostgreSQL schema（配置 `DATABASE_URL` 时）
 4. `npm ci` 或 `npm install`
@@ -200,7 +213,9 @@ bash deploy/update.sh
 7. 检查 `http://127.0.0.1:8787/api/health`
 8. `nginx -t` 后 reload Nginx
 
-Web 端更新按钮使用同一套受控流程：只检测和更新当前仓库的 `origin/main`，不接受任意 shell 命令或任意分支参数。工作树有未提交改动、远端不是 fast-forward、构建失败或健康检查失败时，更新会停止并返回错误。
+Web 端更新按钮使用受控流程：默认只检测 GitHub latest release 的 tag，不接受任意 shell 命令、任意分支参数或任意 release asset URL。工作树有未提交改动、当前提交不是 latest release 提交的祖先、构建失败或健康检查失败时，更新会停止并返回错误。
+
+如果配置了 `ATTUNO_UPDATE_SOURCE=branch`，Web 更新会回到旧模式：检测并更新当前仓库的 `origin/main`，只允许 fast-forward。
 
 常用覆盖项：
 
@@ -221,13 +236,13 @@ cp attuno-studio/.env "attuno-env-$(date +%F).bak"
 cp attuno-studio/config.json "attuno-config-$(date +%F).bak"
 ```
 
-如果更新后要回滚代码：
+如果 release 更新后要回滚代码：
 
 ```bash
 cd /opt/attuno/PicCreator
 git log --oneline -5
-git checkout <上一个可用提交>
-bash deploy/update.sh
+git checkout --detach <上一个可用 release tag 或提交>
+SKIP_GIT_PULL=1 bash deploy/update.sh
 ```
 
 `deploy/update.sh` 默认使用 `git pull --ff-only`，不会强制覆盖服务器本地修改。

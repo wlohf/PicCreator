@@ -154,36 +154,36 @@ return {
 - Text-only `PromptSet` input calls `client.images.generate(model, prompt, response_format="b64_json", n=1)`.
 - `PromptSet.floor_plan` or `PromptSet.reference_image` calls `client.images.edit(model, image, prompt, response_format="b64_json", n=1)`.
 - Successful Images API responses may return image bytes as `data[0].b64_json`, a `data:image/...;base64,...` URL in `data[0].url`, or a remote HTTP(S) URL in `data[0].url`.
-- Frontend setup options must distinguish chat-compatible formats from Images API formats, including `openai_image` and `custom_openai_image`.
+- Frontend setup options expose only the simplified protocol families `response`, `completion`, and `message`; legacy Images API values such as `openai_image` and `custom_openai_image` are accepted as compatibility aliases that collapse to `completion`.
 
 ### 3. Contracts
 - Do not require users to configure endpoint-specific URLs. Users provide the Base URL; the adapter chooses generate vs edit based on whether image bytes exist.
 - `reference_image` is the preferred edit image when both `reference_image` and `floor_plan` are present, but generation metadata must preserve both `has_reference_image` and `has_floor_plan`.
 - `generation_params.endpoint` must be `images.generate` for text-only calls and `images.edit` for image-input calls.
 - Image adapters must parse `b64_json`, data URLs, and remote URLs before declaring a successful Images API response empty; do not pass `None` into `base64.b64decode`.
-- `openai_image` and `custom_openai_image` support image inputs for `gpt-image-*` models because image edits are routed through `/images/edits`.
+- `gpt-image-*` models support image inputs through the existing image-role routing, which calls `/images/edits` when an edit/reference image is present.
 - `dall-e-2` and `dall-e-3` remain text-only, even if a config override claims image-input support.
 
 ### 4. Validation & Error Matrix
 - Text-to-image verification failure -> report `文生图调用失败` with provider, format, model, Base URL, and original error.
 - Image-input verification failure -> report `图生图/参考图调用失败` with the same adapter context.
 - Image input with a text-only model chain -> return the existing no-compatible-model error before losing the image constraint.
-- Saved `openai_image` / `custom_openai_image` format -> load back as the same UI value, not as generic `openai` / `custom`.
+- Saved legacy `openai_image` / `custom_openai_image` format -> load back as `openai_chat` / `completion` in the simplified UI, while image-role routing still chooses the appropriate image endpoint for compatible models.
 
 ### 5. Good / Base / Bad Cases
-- Good: configure Base URL plus API key with `OpenAI Images API`, set model `gpt-image-2`, verify both text-to-image and reference-image edit probes.
+- Good: configure Base URL plus API key with `completion`, set model `gpt-image-2`, verify both text-to-image and reference-image edit probes.
 - Good: edit an existing result; the source result image is passed to `images.edit` and the returned `b64_json` is stored as a new result version.
 - Base: default mode with only text still uses `images.generate`.
-- Bad: route image-input prompts to `chat/completions` when the selected provider format is `openai_image`.
-- Bad: collapse `openai_image` to `openai` when loading saved settings, because that hides the selected endpoint family.
+- Bad: expose separate vendor/adapter implementation choices such as `OpenAI Images API`, `Gemini`, or `Azure OpenAI` in the simplified format selector.
+- Bad: collapse `openai_responses` to `completion` when loading saved settings, because that changes the text protocol family.
 - Bad: mark DALL-E models as image-input capable through a broad config override.
 
 ### 6. Tests Required
 - Adapter test asserting text-only prompts call `images.generate`.
 - Adapter tests asserting `reference_image` and `floor_plan` prompts call `images.edit`, decode `data[0].b64_json`, and set endpoint metadata.
-- Capability tests asserting `openai_image` / `custom_openai_image` support `gpt-image-*` image inputs and reject DALL-E image inputs.
+- Capability tests asserting `gpt-image-*` image inputs are supported through the image-role route and DALL-E image inputs are rejected.
 - Runtime verification tests asserting text and edit probes both run when image inputs are supported.
-- Backend config tests asserting `openai_image` / `custom_openai_image` save and load without value collapse.
+- Backend config tests asserting legacy `openai_image` / `custom_openai_image` inputs save and load as `openai_chat` in the simplified three-format contract.
 - Frontend build/typecheck covering setup option values.
 
 ### 7. Wrong vs Correct
@@ -231,7 +231,7 @@ else:
 - Missing API format -> return a config error before any remote call.
 - Unsupported API format -> return an explicit “暂未实现 ... 模型列表检测” error.
 - Missing API key -> return the same account-aware key guidance as config verification.
-- Azure OpenAI -> return a manual-entry guidance error because model listing depends on resource-specific API versions.
+- Legacy vendor aliases such as Azure/OpenAI Image/Gemini/Ollama -> normalize before validation and use the simplified protocol family's detection behavior; unsupported provider-specific `/models` shapes should surface as remote detection failures, not as extra selector options.
 - Remote HTTP failure -> return `ok=false` with stage `models-analysis` or `models-image`.
 - Empty or unrecognized response -> return a clear “模型列表接口返回为空” style error.
 
@@ -701,7 +701,7 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
   - `image_providers_json`
   - `active_image_provider_id`
 - Runtime config JSON stores profiles under adapter sections as `providers` plus `active_provider_id`.
-- `apiFormat` values exposed by `GET /api/config`, frontend provider profiles, and saved canonical config should use normalized backend values such as `openai_chat`, `openai_responses`, `anthropic`, `custom_openai_chat`, `openai_image`, and `custom_openai_image`. Short aliases such as `openai`, `custom`, or `messages` are accepted only as legacy/user-facing input aliases.
+- `apiFormat` values exposed by `GET /api/config`, frontend provider profiles, and saved canonical config should use one of the three normalized backend route families: `openai_responses` (`response`), `openai_chat` (`completion`), or `anthropic` (`message`). Short or legacy aliases such as `openai`, `custom`, `messages`, `openai_image`, `custom_openai_image`, `gemini`, `azure_openai`, or `ollama` are accepted only as input aliases and normalize before storage/load.
 
 ### 3. Contracts
 - The selected provider profile is mirrored into the existing flat fields (`analysisProviderName`, `analysisBaseUrl`, `imageApiKey`, etc.) before chat/generation/image-edit requests are sent.
@@ -710,7 +710,7 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
 - `config.py` must apply `active_provider_id` before building `AdapterConfig`, otherwise runtime calls ignore saved profile switching.
 - Legacy config files with only flat adapter sections must load as a one-item provider profile list.
 - UI-load conversion must preserve each stored provider `id`. Fallback ids are only for profiles missing an id; rewriting ids breaks `active_provider_id` matching and makes reload select the wrong provider.
-- UI-load conversion must preserve the endpoint-family choice. `openai_chat` / `custom_openai_chat` mean `/chat/completions`; `openai_responses` means `/responses`; `anthropic` means Anthropic Messages (`messages.create`); image formats mean Images API. Do not collapse canonical values into generic aliases when returning `analysisApiFormat`, `imageApiFormat`, or nested provider `apiFormat`.
+- UI-load conversion must preserve the simplified protocol family. `openai_chat` means `/chat/completions`; `openai_responses` means `/responses`; `anthropic` means Anthropic Messages (`messages.create`). Legacy vendor/adapter-specific values collapse to `openai_chat` unless they are responses or messages aliases.
 - Non-default users must not inherit default workspace keys. Clear default/base flat `api_key` and nested provider keys before merging account overrides, so a current user's own non-active provider keys are preserved while inherited workspace keys stay hidden.
 
 ### 4. Validation & Error Matrix
@@ -720,7 +720,7 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
 - Duplicate provider ids in save payload -> keep the first occurrence and ignore later duplicates.
 - Non-dict provider entries -> ignore them instead of crashing config load.
 - Active provider has an empty key but another current-user provider has a key -> preserve the non-active provider key in `GET /api/config`.
-- Legacy alias input such as `openai`, `custom`, `chat/completions`, `message`, or `messages` -> normalize before storage/load and return the canonical value (`openai_chat`, `custom_openai_chat`, or `anthropic`) from `GET /api/config`.
+- Legacy alias input such as `openai`, `custom`, `chat/completions`, `openai_image`, `custom_openai_image`, `message`, or `messages` -> normalize before storage/load and return the canonical simplified value (`openai_chat`, `openai_responses`, or `anthropic`) from `GET /api/config`.
 
 ### 5. Good / Base / Bad Cases
 - Good: user saves two analysis providers and two image providers, selects provider B, reloads, and all calls use B without retyping key/Base URL/model.
@@ -731,7 +731,7 @@ SEARCH_INTENT_MARKERS = ("联网", "搜索", "查找", "最新", "新闻")
 - Bad: storing profiles only in frontend localStorage; the backend then loses them on another browser or after reload.
 - Bad: changing the profile selector without syncing flat fields; generation/chat requests would still use the previous provider.
 - Bad: applying nested default-user provider keys to a logged-in user namespace that has not saved its own key.
-- Bad: returning `openai` or `custom` from `GET /api/config`, because the UI can no longer tell whether the selected endpoint family is Chat Completions or Responses.
+- Bad: returning vendor/adapter-specific labels such as `custom_openai_chat`, `openai_image`, `gemini`, or `azure_openai` from `GET /api/config`, because the UI should only expose response/completion/message.
 
 ### 6. Tests Required
 - Backend unit test for legacy section -> one UI provider profile.

@@ -8,10 +8,10 @@
     "timeout": 180
   },
   "image_gen": {
-    "provider_name": "BLTCY",
+    "provider_name": "Xyleisure Relay",
     "api_format": "openai_chat",
     "api_key_env": "IMAGE_API_KEY",
-    "base_url": "https://api.bltcy.ai/v1",
+    "base_url": "https://api.xyleisure.site/v1",
     "model": "gpt-image-2",
     "timeout": 300
   },

@@ -11,6 +11,7 @@ from backend.app.services.update_service import (
     credentials_from_basic_authorization,
     update_status,
 )
+from backend.app.services.system_status_service import get_system_status
 
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -28,6 +29,12 @@ def _require_update_admin(request: Request) -> None:
 def get_update_status(request: Request):
     _require_update_admin(request)
     return update_status(use_cache=True)
+
+
+@router.get("/status")
+def get_status(request: Request):
+    _require_update_admin(request)
+    return get_system_status()
 
 
 @router.post("/update/check")
