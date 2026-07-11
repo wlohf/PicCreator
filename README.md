@@ -8,6 +8,13 @@ Attuno 是一个面向室内设计场景的 AI 对话与图像辅助项目。当
 - 前端：Vite + React，提供聊天优先的工作台界面
 - 旧的 Gradio 本地工作台不再是默认入口
 
+## 项目文档
+
+- [文档索引](docs/README.md)
+- [需求文档](docs/requirements.md)
+- [技术文档](docs/technical-architecture.md)
+- [项目进度](docs/project-status.md)
+
 ## 当前产品形态
 
 - 聊天优先：默认进入日常对话工作区，普通聊天不会隐式触发出图

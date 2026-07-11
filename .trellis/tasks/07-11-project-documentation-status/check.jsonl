@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/deployment-operations.md","reason":"核对部署、运行数据和更新流程的描述不偏离现有契约。"}
+{"file":".trellis/spec/backend/generation-contracts.md","reason":"核对生成能力、用户隔离和结果元数据的描述。"}
+{"file":".trellis/spec/frontend/state-management.md","reason":"核对前端会话和历史加载的技术债描述。"}

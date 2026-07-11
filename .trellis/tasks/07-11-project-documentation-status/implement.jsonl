@@ -1,0 +1,3 @@
+{"file":".trellis/spec/backend/index.md","reason":"技术文档需要准确描述后端规范、存储和部署约束。"}
+{"file":".trellis/spec/frontend/index.md","reason":"技术文档需要准确描述前端目录和状态管理现状。"}
+{"file":".trellis/spec/guides/index.md","reason":"跨层文档梳理需遵循项目的复用与跨层思考指引。"}
