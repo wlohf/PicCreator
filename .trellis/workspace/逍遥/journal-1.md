@@ -72,3 +72,39 @@ Verified and pushed chat-history startup loading plus completed Attuno productiz
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Attuno documentation and v0.1.0 release
+
+**Date**: 2026-07-11
+**Task**: Attuno documentation and v0.1.0 release
+**Branch**: `main`
+
+### Summary
+
+Created requirements, architecture, and progress documentation; completed full regression verification; pushed main and published GitHub Release v0.1.0.
+
+### Main Changes
+
+(Add details)
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `42fbe7a` | (see git log) |
+| `49cb6e0` | (see git log) |
+| `af357be` | (see git log) |
+| `a0a45e6` | (see git log) |
+
+### Testing
+
+- [OK] (Add test results)
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

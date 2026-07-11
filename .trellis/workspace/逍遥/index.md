@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 2
-- **Last Active**: 2026-07-08
+- **Total Sessions**: 3
+- **Last Active**: 2026-07-11
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~74 | Active |
+| `journal-1.md` | ~110 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 3 | 2026-07-11 | Attuno documentation and v0.1.0 release | `42fbe7a`, `49cb6e0`, `af357be`, `a0a45e6` | `main` |
 | 2 | 2026-07-08 | Push completed Attuno changes | `4191dca`, `f8b9c18` | `main` |
 | 1 | 2026-05-18 | Rename project to Attuno | `9ecffd4` | `refine-3d-render-agent-frontend-backend` |
 <!-- @@@/auto:session-history -->
