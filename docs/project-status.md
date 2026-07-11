@@ -44,6 +44,8 @@ ahead/behind:  0 / 0
 
 限制：本次尝试直接连接 `github.com` 失败，因此以上结论来自本地 `origin/main` 远端跟踪引用，而不是本次实时 GitHub 查询。当前文档与 Trellis 任务是本次新产生的未提交改动，需在审核后单独提交。
 
+2026-07-11 已完成主分支推送，并创建公开的 GitHub Release `v0.1.0`，指向提交 `af357be`。Release 创建后产生的本行记录会随下一次文档提交推送；Release 标签本身仍指向 `af357be`。
+
 ### VPS `vps`
 
 本地远端跟踪引用显示：

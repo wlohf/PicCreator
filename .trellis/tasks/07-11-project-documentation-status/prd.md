@@ -28,7 +28,7 @@
 * [x] `git diff --check` 通过。
 * [x] 后端完整测试通过：179 passed，2 skipped。
 * [x] 7 个前端静态测试和生产构建通过。
-* [ ] 已推送 `main` 并发布 GitHub Release。
+* [x] 已推送 `main` 并发布 GitHub Release：`v0.1.0`。
 
 ## Definition of Done
 
