@@ -1,7 +1,8 @@
 # Attuno 项目进度
 
-> 核对日期：2026-07-11  
-> 核对范围：本地工作区 `E:\xyleisure\PicCreator`、Git 提交与远端跟踪引用、Trellis 任务记录。  
+> 核对日期：2026-07-11
+>
+> 核对范围：本地工作区 `E:\xyleisure\PicCreator`、Git 提交与远端跟踪引用、Trellis 任务记录。
 > 注意：此文件不是实时部署监控。GitHub 与 VPS 的在线状态需要在网络可用时重新 fetch/SSH 核对。
 
 ## 1. 当前阶段
@@ -84,6 +85,16 @@ npm.cmd run build
 ```
 
 当前仓库包含 13 个后端测试文件和 7 个前端静态测试文件。PostgreSQL 集成测试需要额外配置 `TEST_DATABASE_URL`。本次文档整理不会替代新代码变更后的完整测试；后续每次发布仍应重新执行目标测试、构建和部署健康检查。
+
+2026-07-11 在发布前重新执行的本地回归结果：
+
+```text
+后端：179 passed, 2 skipped
+前端：7 个静态测试通过
+前端：npm run build 通过
+```
+
+部署脚本的 `bash -n` 未能在本机执行，因为 Windows Subsystem for Linux 尚未安装 Linux 发行版，且本机没有可用的 Git Bash。该限制不影响后端和前端回归结果，但部署前仍应在 Ubuntu 目标环境执行脚本语法检查和健康检查。
 
 ## 6. 下一步优化路线图
 
